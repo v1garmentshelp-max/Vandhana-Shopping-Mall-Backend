@@ -13,13 +13,9 @@ const defaultOrigins = [
   'http://127.0.0.1:3001',
   'http://localhost:3002',
   'http://127.0.0.1:3002',
-  'https://taras-kart-shopping-mall.vercel.app',
-  'https://website-super-admin.vercel.app',
-  'https://taras-kart-admin.vercel.app',
-  'https://www.taraskart.com',
-  'https://taraskart.com',
-  'https://www.attach.co.in/',
-  'https://www.attach.co.in'
+  'https://vandhana-shopping-mall-backend.vercel.app',
+  'https://vandhana-shopping-mall-admin.vercel.app',
+  'https://vandhana-shopping-mall-website.vercel.app'
 ]
 
 const envOrigins = (process.env.CORS_ORIGINS || '')
@@ -75,7 +71,7 @@ app.use('/api', require('./routes/returnsRoutes'))
 app.use('/api/razorpay', require('./routes/razorpayRoutes'))
 app.use('/api/homepage-images', require('./routes/homepageImageRoutes'))
 
-app.get('/', (req, res) => res.status(200).send('Taras Kart API'))
+app.get('/', (req, res) => res.status(200).send('Vandana Shopping Mall API is running'))
 app.get('/healthz', (req, res) => res.status(200).send('ok'))
 
 app.get('/api/debug/blob-env', (req, res) => {
