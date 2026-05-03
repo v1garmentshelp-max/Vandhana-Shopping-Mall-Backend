@@ -34,6 +34,7 @@ function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || ''
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
   if (!token) return res.status(401).json({ message: 'Unauthorized' })
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET)
     req.user = decoded
@@ -87,7 +88,7 @@ async function createUser(req, res) {
 
   try {
     const existing = await pool.query(
-      'SELECT id FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      'SELECT id FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
       [cleanEmail]
     )
 
@@ -98,7 +99,7 @@ async function createUser(req, res) {
     const hashedPassword = await bcrypt.hash(cleanPassword, 10)
 
     const insert = await pool.query(
-      `INSERT INTO vandana_users (name, email, mobile, password, type, created_at, updated_at)
+      `INSERT INTO public.vandana_users (name, email, mobile, password, type, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING id, name, email, mobile, type`,
       [cleanName, cleanEmail, cleanMobile, hashedPassword, cleanType]
@@ -135,7 +136,7 @@ router.post('/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT * FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      'SELECT * FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
       [cleanEmail]
     )
 
@@ -187,7 +188,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, email, mobile, type, created_at, updated_at FROM vandana_users WHERE id = $1 LIMIT 1',
+      'SELECT id, name, email, mobile, type, created_at, updated_at FROM public.vandana_users WHERE id = $1 LIMIT 1',
       [req.user.id]
     )
 
@@ -222,7 +223,7 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT password FROM vandana_users WHERE id = $1 LIMIT 1',
+      'SELECT password FROM public.vandana_users WHERE id = $1 LIMIT 1',
       [req.user.id]
     )
 
@@ -246,7 +247,7 @@ router.post('/change-password', requireAuth, async (req, res) => {
     const hashed = await bcrypt.hash(newPassword, 10)
 
     await pool.query(
-      'UPDATE vandana_users SET password = $1, updated_at = NOW() WHERE id = $2',
+      'UPDATE public.vandana_users SET password = $1, updated_at = NOW() WHERE id = $2',
       [hashed, req.user.id]
     )
 
@@ -272,7 +273,7 @@ router.post('/forgot/start', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT id, type FROM vandana_users WHERE lower(email) = $1',
+      'SELECT id, type FROM public.vandana_users WHERE lower(email) = $1',
       [cleanEmail]
     )
 
@@ -284,7 +285,7 @@ router.post('/forgot/start', async (req, res) => {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
 
     await pool.query(
-      'UPDATE vandana_users SET otp = $1, otp_expiry = $2, updated_at = NOW() WHERE lower(email) = $3',
+      'UPDATE public.vandana_users SET otp = $1, otp_expiry = $2, updated_at = NOW() WHERE lower(email) = $3',
       [otp, expiresAt, cleanEmail]
     )
 
@@ -319,7 +320,7 @@ router.post('/forgot/verify', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT otp, otp_expiry FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      'SELECT otp, otp_expiry FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
       [cleanEmail]
     )
 
@@ -365,7 +366,7 @@ router.post('/forgot/reset', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT otp, otp_expiry FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      'SELECT otp, otp_expiry FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
       [cleanEmail]
     )
 
@@ -386,7 +387,7 @@ router.post('/forgot/reset', async (req, res) => {
     const hashedPassword = await bcrypt.hash(cleanNewPassword, 10)
 
     await pool.query(
-      'UPDATE vandana_users SET password = $1, otp = NULL, otp_expiry = NULL, updated_at = NOW() WHERE lower(email) = $2',
+      'UPDATE public.vandana_users SET password = $1, otp = NULL, otp_expiry = NULL, updated_at = NOW() WHERE lower(email) = $2',
       [hashedPassword, cleanEmail]
     )
 
@@ -419,7 +420,7 @@ router.post('/firebase-login', async (req, res) => {
       await client.query('BEGIN')
 
       const existing = await client.query(
-        'SELECT id, name, email, mobile, type FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+        'SELECT id, name, email, mobile, type FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
         [cleanEmail]
       )
 
@@ -429,7 +430,7 @@ router.post('/firebase-login', async (req, res) => {
         user = existing.rows[0]
       } else {
         const inserted = await client.query(
-          'INSERT INTO vandana_users (name, email, mobile, password, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING id, name, email, mobile, type',
+          'INSERT INTO public.vandana_users (name, email, mobile, password, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING id, name, email, mobile, type',
           [displayName, cleanEmail, '', '', 'B2C']
         )
         user = inserted.rows[0]
