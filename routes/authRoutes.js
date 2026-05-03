@@ -1,12 +1,11 @@
-const express = require('express');
-const pool = require('../db');
-const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
-const jwt = require('jsonwebtoken');
-const router = express.Router();
-require('dotenv').config();
+const express = require('express')
+const pool = require('../db')
+const bcrypt = require('bcryptjs')
+const nodemailer = require('nodemailer')
+const jwt = require('jsonwebtoken')
+const router = express.Router()
 
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env';
+const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env'
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -16,331 +15,389 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS
   }
-});
+})
 
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ message: 'Email and password are required' });
-
-  try {
-    const result = await pool.query('SELECT * FROM userstaras WHERE email = $1', [email]);
-    if (result.rows.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
-
-    const user = result.rows[0];
-
-    let isMatch = false;
-    try {
-      if (user.password) {
-        if (
-          user.password.startsWith('$2a$') ||
-          user.password.startsWith('$2b$') ||
-          user.password.startsWith('$2y$')
-        ) {
-          isMatch = await bcrypt.compare(password, user.password);
-        } else {
-          isMatch = password === user.password;
-        }
-      }
-    } catch (e) {
-      isMatch = false;
-    }
-
-    if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
-
-    const payload = {
+function signToken(user) {
+  return jwt.sign(
+    {
       id: user.id,
       email: user.email,
-      type: user.type || 'customer'
-    };
+      type: user.type || 'B2C'
+    },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  )
+}
 
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || ''
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET)
+    req.user = decoded
+    return next()
+  } catch {
+    return res.status(401).json({ message: 'Unauthorized' })
+  }
+}
 
-    res.json({
+function isBcryptHash(value = '') {
+  return (
+    typeof value === 'string' &&
+    (value.startsWith('$2a$') || value.startsWith('$2b$') || value.startsWith('$2y$'))
+  )
+}
+
+function isValidEmail(email = '') {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())
+}
+
+function isValidMobile(mobile = '') {
+  return /^[6-9]\d{9}$/.test(String(mobile).trim())
+}
+
+router.post('/signup', async (req, res) => {
+  const { name, email, mobile, password, type } = req.body || {}
+
+  const cleanName = String(name || '').trim()
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanMobile = String(mobile || '').trim()
+  const cleanPassword = String(password || '')
+  const cleanType = String(type || 'B2C').trim() || 'B2C'
+
+  if (!cleanName || !cleanEmail || !cleanMobile || !cleanPassword) {
+    return res.status(400).json({ message: 'name, email, mobile and password are required' })
+  }
+
+  if (!isValidEmail(cleanEmail)) {
+    return res.status(400).json({ message: 'Invalid email address' })
+  }
+
+  if (!isValidMobile(cleanMobile)) {
+    return res.status(400).json({ message: 'Invalid mobile number' })
+  }
+
+  if (cleanPassword.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters' })
+  }
+
+  try {
+    const existing = await pool.query(
+      'SELECT id FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      [cleanEmail]
+    )
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ message: 'User already exists with this email' })
+    }
+
+    const hashedPassword = await bcrypt.hash(cleanPassword, 10)
+
+    const insert = await pool.query(
+      `INSERT INTO vandana_users (name, email, mobile, password, type, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+       RETURNING id, name, email, mobile, type`,
+      [cleanName, cleanEmail, cleanMobile, hashedPassword, cleanType]
+    )
+
+    const user = insert.rows[0]
+
+    return res.status(201).json({
+      message: 'Account created successfully',
+      user
+    })
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
+
+router.post('/register', async (req, res) => {
+  return router.handle(
+    {
+      ...req,
+      url: '/signup',
+      method: 'POST'
+    },
+    res
+  )
+})
+
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body || {}
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanPassword = String(password || '')
+
+  if (!cleanEmail || !cleanPassword) {
+    return res.status(400).json({ message: 'Email and password are required' })
+  }
+
+  try {
+    const result = await pool.query('SELECT * FROM vandana_users WHERE lower(email) = $1 LIMIT 1', [
+      cleanEmail
+    ])
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials' })
+    }
+
+    const user = result.rows[0]
+
+    let isMatch = false
+
+    if (user.password) {
+      if (isBcryptHash(user.password)) {
+        isMatch = await bcrypt.compare(cleanPassword, user.password)
+      } else {
+        isMatch = cleanPassword === user.password
+      }
+    }
+
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' })
+    }
+
+    const token = signToken(user)
+
+    return res.json({
       token,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
-        type: user.type || 'customer'
+        mobile: user.mobile,
+        type: user.type || 'B2C'
       }
-    });
+    })
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    return res.status(500).json({ message: 'Server error' })
   }
-});
+})
 
-router.get('/branch-admins', async (req, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT 
-         u.id,
-         u.username,
-         u.hashed_pw,
-         u.role_enum,
-         u.branch_id,
-         u.last_login,
-         sw.warehouse_id,
-         sw.name AS warehouse_name,
-         sw.city,
-         sw.pincode,
-         sw.state,
-         sw.address,
-         sw.phone
-       FROM users u
-       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
-       ORDER BY u.id`
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch branch admins' });
-  }
-});
+      'SELECT id, name, email, mobile, type, created_at, updated_at FROM vandana_users WHERE id = $1 LIMIT 1',
+      [req.user.id]
+    )
 
-router.post('/branch-admins', async (req, res) => {
-  const { username, password, role_enum, branch_id } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password are required' });
-  }
-  try {
-    const result = await pool.query(
-      `INSERT INTO users (username, hashed_pw, role_enum, branch_id, last_login)
-       VALUES ($1, $2, $3, $4, NULL)
-       RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`,
-      [username, password, role_enum || null, branch_id || null]
-    );
-    const row = result.rows[0];
-    const joined = await pool.query(
-      `SELECT 
-         u.id,
-         u.username,
-         u.hashed_pw,
-         u.role_enum,
-         u.branch_id,
-         u.last_login,
-         sw.warehouse_id,
-         sw.name AS warehouse_name,
-         sw.city,
-         sw.pincode,
-         sw.state,
-         sw.address,
-         sw.phone
-       FROM users u
-       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
-       WHERE u.id = $1`,
-      [row.id]
-    );
-    res.status(201).json(joined.rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to create branch admin' });
-  }
-});
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' })
+    }
 
-router.put('/branch-admins/:id', async (req, res) => {
-  const { id } = req.params;
-  const { username, password, role_enum, branch_id } = req.body;
-  if (!username && !password && typeof role_enum === 'undefined' && typeof branch_id === 'undefined') {
-    return res.status(400).json({ message: 'No fields to update' });
+    return res.json(result.rows[0])
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error' })
   }
+})
+
+router.post('/change-password', requireAuth, async (req, res) => {
+  const { old_password, new_password } = req.body || {}
+  const oldPassword = String(old_password || '')
+  const newPassword = String(new_password || '')
+
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ message: 'Both passwords required' })
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ message: 'New password must be at least 6 characters' })
+  }
+
   try {
-    let query;
-    let params;
-    if (password) {
-      query = `UPDATE users
-               SET username = $1,
-                   hashed_pw = $2,
-                   role_enum = $3,
-                   branch_id = $4
-               WHERE id = $5
-               RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`;
-      params = [username, password, role_enum || null, branch_id || null, id];
+    const result = await pool.query('SELECT password FROM vandana_users WHERE id = $1 LIMIT 1', [
+      req.user.id
+    ])
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' })
+    }
+
+    const currentPassword = result.rows[0].password
+    let isMatch = false
+
+    if (isBcryptHash(currentPassword)) {
+      isMatch = await bcrypt.compare(oldPassword, currentPassword)
     } else {
-      query = `UPDATE users
-               SET username = $1,
-                   role_enum = $2,
-                   branch_id = $3
-               WHERE id = $4
-               RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`;
-      params = [username, role_enum || null, branch_id || null, id];
+      isMatch = oldPassword === currentPassword
     }
-    const result = await pool.query(query, params);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Branch admin not found' });
-    }
-    const row = result.rows[0];
-    const joined = await pool.query(
-      `SELECT 
-         u.id,
-         u.username,
-         u.hashed_pw,
-         u.role_enum,
-         u.branch_id,
-         u.last_login,
-         sw.warehouse_id,
-         sw.name AS warehouse_name,
-         sw.city,
-         sw.pincode,
-         sw.state,
-         sw.address,
-         sw.phone
-       FROM users u
-       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
-       WHERE u.id = $1`,
-      [row.id]
-    );
-    res.json(joined.rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to update branch admin' });
-  }
-});
 
-router.delete('/branch-admins/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const result = await pool.query(
-      'DELETE FROM users WHERE id = $1 RETURNING id',
-      [id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Branch admin not found' });
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' })
     }
-    res.json({ message: 'Branch admin deleted', id: result.rows[0].id });
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to delete branch admin' });
-  }
-});
 
-router.get('/:email', async (req, res) => {
-  const { email } = req.params;
-  try {
-    const result = await pool.query(
-      'SELECT id, name, email, mobile, type, created_at FROM userstaras WHERE email = $1',
-      [email]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
-    res.json(result.rows[0]);
+    const hashed = await bcrypt.hash(newPassword, 10)
+
+    await pool.query('UPDATE vandana_users SET password = $1, updated_at = NOW() WHERE id = $2', [
+      hashed,
+      req.user.id
+    ])
+
+    return res.json({ message: 'Password updated' })
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return res.status(500).json({ message: 'Server error' })
   }
-});
+})
 
 router.post('/forgot/start', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ message: 'Email is required' });
+  const { email } = req.body || {}
+  const cleanEmail = String(email || '').trim().toLowerCase()
+
+  if (!cleanEmail) {
+    return res.status(400).json({ message: 'Email is required' })
+  }
 
   try {
-    const result = await pool.query('SELECT id, type FROM userstaras WHERE email = $1', [email]);
-    if (result.rows.length === 0) return res.status(404).json({ message: 'You are a new user. Please register' });
+    const result = await pool.query('SELECT id, type FROM vandana_users WHERE lower(email) = $1', [
+      cleanEmail
+    ])
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-    const updateResult = await pool.query(
-      'UPDATE userstaras SET otp = $1, otp_expiry = $2 WHERE email = $3',
-      [otp, expiresAt, email]
-    );
-
-    if (updateResult.rowCount === 0) {
-      return res.status(500).json({ message: 'Failed to update OTP' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'You are a new user. Please register' })
     }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString()
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
+
+    await pool.query(
+      'UPDATE vandana_users SET otp = $1, otp_expiry = $2, updated_at = NOW() WHERE lower(email) = $3',
+      [otp, expiresAt, cleanEmail]
+    )
 
     await transporter.sendMail({
       from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-      to: email,
-      subject: 'Your Tars Kart OTP',
+      to: cleanEmail,
+      subject: 'Your Vandana Shopping Mall OTP',
       text: `Your OTP is ${otp}. It is valid for 10 minutes.`,
-      html: `<div style="font-family:Arial,sans-serif;font-size:16px;color:#111">
-        <p>Your OTP is <strong>${otp}</strong></p>
-        <p>This code is valid for 10 minutes.</p>
-      </div>`
-    });
+      html: `<div style="font-family:Arial,sans-serif;font-size:16px;color:#111"><p>Your OTP is <strong>${otp}</strong></p><p>This code is valid for 10 minutes.</p></div>`
+    })
 
-    res.json({ message: 'OTP sent' });
+    return res.json({ message: 'OTP sent' })
   } catch (err) {
-    res.status(500).json({ message: 'Could not start reset' });
+    return res.status(500).json({ message: 'Could not start reset' })
   }
-});
+})
 
 router.post('/forgot/verify', async (req, res) => {
-  const { email, otp } = req.body;
-  if (!email || !otp) return res.status(400).json({ message: 'Email and OTP are required' });
+  const { email, otp } = req.body || {}
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanOtp = String(otp || '').trim()
+
+  if (!cleanEmail || !cleanOtp) {
+    return res.status(400).json({ message: 'Email and OTP are required' })
+  }
 
   try {
-    const result = await pool.query('SELECT otp, otp_expiry FROM userstaras WHERE email = $1', [email]);
-    if (result.rows.length === 0) return res.status(400).json({ message: 'Invalid or expired OTP' });
+    const result = await pool.query(
+      'SELECT otp, otp_expiry FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      [cleanEmail]
+    )
 
-    const user = result.rows[0];
-    if (user.otp !== otp) return res.status(400).json({ message: 'Invalid OTP' });
-    if (new Date(user.otp_expiry).getTime() < Date.now()) {
-      return res.status(400).json({ message: 'OTP expired' });
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' })
     }
 
-    res.json({ message: 'OTP verified' });
+    const user = result.rows[0]
+
+    if (String(user.otp || '') !== cleanOtp) {
+      return res.status(400).json({ message: 'Invalid OTP' })
+    }
+
+    if (!user.otp_expiry || new Date(user.otp_expiry).getTime() < Date.now()) {
+      return res.status(400).json({ message: 'OTP expired' })
+    }
+
+    return res.json({ message: 'OTP verified' })
   } catch (err) {
-    res.status(500).json({ message: 'Verification failed' });
+    return res.status(500).json({ message: 'Verification failed' })
   }
-});
+})
 
 router.post('/forgot/reset', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
-  if (!email || !otp || !newPassword) {
-    return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+  const { email, otp, newPassword } = req.body || {}
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanOtp = String(otp || '').trim()
+  const cleanNewPassword = String(newPassword || '').trim()
+
+  if (!cleanEmail || !cleanOtp || !cleanNewPassword) {
+    return res.status(400).json({ message: 'Email, OTP, and new password are required' })
+  }
+
+  if (cleanNewPassword.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters' })
   }
 
   try {
-    const result = await pool.query('SELECT otp, otp_expiry FROM userstaras WHERE email = $1', [email]);
-    if (result.rows.length === 0) return res.status(400).json({ message: 'Invalid or expired OTP' });
+    const result = await pool.query(
+      'SELECT otp, otp_expiry FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      [cleanEmail]
+    )
 
-    const user = result.rows[0];
-    if (user.otp !== otp) return res.status(400).json({ message: 'Invalid OTP' });
-    if (new Date(user.otp_expiry).getTime() < Date.now()) {
-      return res.status(400).json({ message: 'OTP expired' });
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' })
     }
 
-    await pool.query('UPDATE userstaras SET password = $1 WHERE email = $2', [newPassword, email]);
-    await pool.query('UPDATE userstaras SET otp = NULL, otp_expiry = NULL WHERE email = $1', [email]);
+    const user = result.rows[0]
 
-    res.json({ message: 'Password updated successfully' });
+    if (String(user.otp || '') !== cleanOtp) {
+      return res.status(400).json({ message: 'Invalid OTP' })
+    }
+
+    if (!user.otp_expiry || new Date(user.otp_expiry).getTime() < Date.now()) {
+      return res.status(400).json({ message: 'OTP expired' })
+    }
+
+    const hashedPassword = await bcrypt.hash(cleanNewPassword, 10)
+
+    await pool.query(
+      'UPDATE vandana_users SET password = $1, otp = NULL, otp_expiry = NULL, updated_at = NOW() WHERE lower(email) = $2',
+      [hashedPassword, cleanEmail]
+    )
+
+    return res.json({ message: 'Password updated successfully' })
   } catch (err) {
-    res.status(500).json({ message: 'Password reset failed' });
+    return res.status(500).json({ message: 'Password reset failed' })
   }
-});
+})
 
 router.post('/firebase-login', async (req, res) => {
-  const { uid, email, name } = req.body;
-  if (!uid || !email) return res.status(400).json({ message: 'uid and email are required' });
+  const { uid, email, name } = req.body || {}
 
-  const displayName = name || email.split('@')[0] || 'User';
+  if (!uid || !email) {
+    return res.status(400).json({ message: 'uid and email are required' })
+  }
+
+  const cleanEmail = String(email).trim().toLowerCase()
+  const displayName = String(name || cleanEmail.split('@')[0] || 'User').trim()
+
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const existing = await client.query(
-        'SELECT id, name, email, mobile, type FROM userstaras WHERE email = $1',
-        [email]
-      );
+    const client = await pool.connect()
 
-      let user;
+    try {
+      await client.query('BEGIN')
+
+      const existing = await client.query(
+        'SELECT id, name, email, mobile, type FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+        [cleanEmail]
+      )
+
+      let user
+
       if (existing.rows.length > 0) {
-        user = existing.rows[0];
+        user = existing.rows[0]
       } else {
         const inserted = await client.query(
-          'INSERT INTO userstaras (name, email, password, type, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id, name, email, mobile, type',
-          [displayName, email, '', 'B2C']
-        );
-        user = inserted.rows[0];
+          'INSERT INTO vandana_users (name, email, mobile, password, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING id, name, email, mobile, type',
+          [displayName, cleanEmail, '', '', 'B2C']
+        )
+        user = inserted.rows[0]
       }
 
-      await client.query('COMMIT');
+      await client.query('COMMIT')
 
-      const payload = {
-        id: user.id,
-        email: user.email,
-        type: user.type || 'B2C'
-      };
+      const token = signToken(user)
 
-      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-
-      res.json({
+      return res.json({
         token,
         user: {
           id: user.id,
@@ -349,16 +406,16 @@ router.post('/firebase-login', async (req, res) => {
           mobile: user.mobile,
           type: user.type || 'B2C'
         }
-      });
+      })
     } catch (e) {
-      await client.query('ROLLBACK');
-      res.status(500).json({ message: 'Server error' });
+      await client.query('ROLLBACK')
+      return res.status(500).json({ message: 'Server error' })
     } finally {
-      client.release();
+      client.release()
     }
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    return res.status(500).json({ message: 'Server error' })
   }
-});
+})
 
-module.exports = router;
+module.exports = router

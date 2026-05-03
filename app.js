@@ -1,4 +1,6 @@
-require('dotenv').config()
+const dotenv = require('dotenv')
+dotenv.config()
+
 const express = require('express')
 const cors = require('cors')
 
@@ -13,6 +15,8 @@ const defaultOrigins = [
   'http://127.0.0.1:3001',
   'http://localhost:3002',
   'http://127.0.0.1:3002',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
   'https://vandhana-shopping-mall-backend.vercel.app',
   'https://vandhana-shopping-mall-admin.vercel.app',
   'https://vandhana-shopping-mall-website.vercel.app'
@@ -20,7 +24,7 @@ const defaultOrigins = [
 
 const envOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean)
 
 const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins
@@ -30,9 +34,9 @@ const corsOptions = {
     if (!origin) return cb(null, true)
     if (allowedOrigins.includes('*')) return cb(null, true)
     if (allowedOrigins.includes(origin)) return cb(null, true)
-    return cb(null, false)
+    return cb(new Error('Not allowed by CORS'))
   },
-  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['authorization', 'content-type'],
   credentials: true
 }
@@ -49,6 +53,7 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(express.json())
+
 app.use('/api', shiprocketPublicRoutes)
 app.use('/api/upload', require('./routes/uploadRoutes'))
 app.use('/api/products', require('./routes/productRoutes'))
@@ -78,8 +83,8 @@ app.get('/api/debug/blob-env', (req, res) => {
   res.json({
     hasToken: Boolean(
       process.env.BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_RW_TOKEN
+        process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
+        process.env.VERCEL_BLOB_RW_TOKEN
     )
   })
 })
@@ -99,6 +104,13 @@ app.get('/api/debug/db', async (req, res) => {
   }
 })
 
-app.use((req, res) => res.status(404).send('Not found'))
+app.use((err, req, res, next) => {
+  if (err && err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ message: 'CORS blocked' })
+  }
+  return next(err)
+})
+
+app.use((req, res) => res.status(404).json({ message: 'Not found' }))
 
 module.exports = app
