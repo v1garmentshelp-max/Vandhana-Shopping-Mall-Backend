@@ -83,8 +83,8 @@ app.get('/api/debug/blob-env', (req, res) => {
   res.json({
     hasToken: Boolean(
       process.env.BLOB_READ_WRITE_TOKEN ||
-        process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-        process.env.VERCEL_BLOB_RW_TOKEN
+      process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
+      process.env.VERCEL_BLOB_RW_TOKEN
     )
   })
 })
@@ -97,7 +97,7 @@ app.get('/api/debug/db', async (req, res) => {
   const pool = require('./db')
   try {
     const r1 = await pool.query('SELECT 1 as ok')
-    const r2 = await pool.query('SELECT COUNT(*)::int AS n FROM users')
+    const r2 = await pool.query('SELECT COUNT(*)::int AS n FROM vandana_users')
     res.json({ dbOk: r1.rows[0].ok === 1, usersCount: r2.rows[0].n })
   } catch (e) {
     res.status(500).json({ dbOk: false, error: String(e?.message || e) })

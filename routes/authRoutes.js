@@ -3,6 +3,7 @@ const pool = require('../db')
 const bcrypt = require('bcryptjs')
 const nodemailer = require('nodemailer')
 const jwt = require('jsonwebtoken')
+
 const router = express.Router()
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env'
@@ -43,9 +44,10 @@ function requireAuth(req, res, next) {
 }
 
 function isBcryptHash(value = '') {
-  return (
-    typeof value === 'string' &&
-    (value.startsWith('$2a$') || value.startsWith('$2b$') || value.startsWith('$2y$'))
+  return typeof value === 'string' && (
+    value.startsWith('$2a$') ||
+    value.startsWith('$2b$') ||
+    value.startsWith('$2y$')
   )
 }
 
@@ -57,7 +59,7 @@ function isValidMobile(mobile = '') {
   return /^[6-9]\d{9}$/.test(String(mobile).trim())
 }
 
-router.post('/signup', async (req, res) => {
+async function createUser(req, res) {
   const { name, email, mobile, password, type } = req.body || {}
 
   const cleanName = String(name || '').trim()
@@ -101,27 +103,17 @@ router.post('/signup', async (req, res) => {
       [cleanName, cleanEmail, cleanMobile, hashedPassword, cleanType]
     )
 
-    const user = insert.rows[0]
-
     return res.status(201).json({
       message: 'Account created successfully',
-      user
+      user: insert.rows[0]
     })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Server error' })
   }
-})
+}
 
-router.post('/register', async (req, res) => {
-  return router.handle(
-    {
-      ...req,
-      url: '/signup',
-      method: 'POST'
-    },
-    res
-  )
-})
+router.post('/signup', createUser)
+router.post('/register', createUser)
 
 router.post('/login', async (req, res) => {
   const { email, password } = req.body || {}
@@ -133,9 +125,10 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    const result = await pool.query('SELECT * FROM vandana_users WHERE lower(email) = $1 LIMIT 1', [
-      cleanEmail
-    ])
+    const result = await pool.query(
+      'SELECT * FROM vandana_users WHERE lower(email) = $1 LIMIT 1',
+      [cleanEmail]
+    )
 
     if (result.rows.length === 0) {
       return res.status(401).json({ message: 'Invalid credentials' })
@@ -169,7 +162,7 @@ router.post('/login', async (req, res) => {
         type: user.type || 'B2C'
       }
     })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Server error' })
   }
 })
@@ -186,7 +179,7 @@ router.get('/me', requireAuth, async (req, res) => {
     }
 
     return res.json(result.rows[0])
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Server error' })
   }
 })
@@ -205,9 +198,10 @@ router.post('/change-password', requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await pool.query('SELECT password FROM vandana_users WHERE id = $1 LIMIT 1', [
-      req.user.id
-    ])
+    const result = await pool.query(
+      'SELECT password FROM vandana_users WHERE id = $1 LIMIT 1',
+      [req.user.id]
+    )
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'User not found' })
@@ -228,13 +222,13 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
     const hashed = await bcrypt.hash(newPassword, 10)
 
-    await pool.query('UPDATE vandana_users SET password = $1, updated_at = NOW() WHERE id = $2', [
-      hashed,
-      req.user.id
-    ])
+    await pool.query(
+      'UPDATE vandana_users SET password = $1, updated_at = NOW() WHERE id = $2',
+      [hashed, req.user.id]
+    )
 
     return res.json({ message: 'Password updated' })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Server error' })
   }
 })
@@ -248,9 +242,10 @@ router.post('/forgot/start', async (req, res) => {
   }
 
   try {
-    const result = await pool.query('SELECT id, type FROM vandana_users WHERE lower(email) = $1', [
-      cleanEmail
-    ])
+    const result = await pool.query(
+      'SELECT id, type FROM vandana_users WHERE lower(email) = $1',
+      [cleanEmail]
+    )
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'You are a new user. Please register' })
@@ -273,7 +268,7 @@ router.post('/forgot/start', async (req, res) => {
     })
 
     return res.json({ message: 'OTP sent' })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Could not start reset' })
   }
 })
@@ -308,7 +303,7 @@ router.post('/forgot/verify', async (req, res) => {
     }
 
     return res.json({ message: 'OTP verified' })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Verification failed' })
   }
 })
@@ -355,7 +350,7 @@ router.post('/forgot/reset', async (req, res) => {
     )
 
     return res.json({ message: 'Password updated successfully' })
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Password reset failed' })
   }
 })
@@ -407,13 +402,13 @@ router.post('/firebase-login', async (req, res) => {
           type: user.type || 'B2C'
         }
       })
-    } catch (e) {
+    } catch {
       await client.query('ROLLBACK')
       return res.status(500).json({ message: 'Server error' })
     } finally {
       client.release()
     }
-  } catch (err) {
+  } catch {
     return res.status(500).json({ message: 'Server error' })
   }
 })
