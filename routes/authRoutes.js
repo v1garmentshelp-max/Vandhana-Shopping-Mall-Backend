@@ -38,8 +38,9 @@ function requireAuth(req, res, next) {
     const decoded = jwt.verify(token, JWT_SECRET)
     req.user = decoded
     return next()
-  } catch {
-    return res.status(401).json({ message: 'Unauthorized' })
+  } catch (err) {
+    console.error('AUTH VERIFY ERROR:', err)
+    return res.status(401).json({ message: 'Unauthorized', error: err.message })
   }
 }
 
@@ -107,8 +108,16 @@ async function createUser(req, res) {
       message: 'Account created successfully',
       user: insert.rows[0]
     })
-  } catch {
-    return res.status(500).json({ message: 'Server error' })
+  } catch (err) {
+    console.error('SIGNUP ERROR:', err)
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null,
+      table: err.table || null,
+      constraint: err.constraint || null
+    })
   }
 }
 
@@ -162,8 +171,16 @@ router.post('/login', async (req, res) => {
         type: user.type || 'B2C'
       }
     })
-  } catch {
-    return res.status(500).json({ message: 'Server error' })
+  } catch (err) {
+    console.error('LOGIN ERROR:', err)
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null,
+      table: err.table || null,
+      constraint: err.constraint || null
+    })
   }
 })
 
@@ -179,8 +196,14 @@ router.get('/me', requireAuth, async (req, res) => {
     }
 
     return res.json(result.rows[0])
-  } catch {
-    return res.status(500).json({ message: 'Server error' })
+  } catch (err) {
+    console.error('ME ERROR:', err)
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
@@ -228,8 +251,14 @@ router.post('/change-password', requireAuth, async (req, res) => {
     )
 
     return res.json({ message: 'Password updated' })
-  } catch {
-    return res.status(500).json({ message: 'Server error' })
+  } catch (err) {
+    console.error('CHANGE PASSWORD ERROR:', err)
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
@@ -268,8 +297,14 @@ router.post('/forgot/start', async (req, res) => {
     })
 
     return res.json({ message: 'OTP sent' })
-  } catch {
-    return res.status(500).json({ message: 'Could not start reset' })
+  } catch (err) {
+    console.error('FORGOT START ERROR:', err)
+    return res.status(500).json({
+      message: 'Could not start reset',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
@@ -303,8 +338,14 @@ router.post('/forgot/verify', async (req, res) => {
     }
 
     return res.json({ message: 'OTP verified' })
-  } catch {
-    return res.status(500).json({ message: 'Verification failed' })
+  } catch (err) {
+    console.error('FORGOT VERIFY ERROR:', err)
+    return res.status(500).json({
+      message: 'Verification failed',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
@@ -350,8 +391,14 @@ router.post('/forgot/reset', async (req, res) => {
     )
 
     return res.json({ message: 'Password updated successfully' })
-  } catch {
-    return res.status(500).json({ message: 'Password reset failed' })
+  } catch (err) {
+    console.error('FORGOT RESET ERROR:', err)
+    return res.status(500).json({
+      message: 'Password reset failed',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
@@ -402,14 +449,26 @@ router.post('/firebase-login', async (req, res) => {
           type: user.type || 'B2C'
         }
       })
-    } catch {
+    } catch (err) {
       await client.query('ROLLBACK')
-      return res.status(500).json({ message: 'Server error' })
+      console.error('FIREBASE LOGIN TX ERROR:', err)
+      return res.status(500).json({
+        message: 'Server error',
+        error: err.message,
+        detail: err.detail || null,
+        code: err.code || null
+      })
     } finally {
       client.release()
     }
-  } catch {
-    return res.status(500).json({ message: 'Server error' })
+  } catch (err) {
+    console.error('FIREBASE LOGIN ERROR:', err)
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message,
+      detail: err.detail || null,
+      code: err.code || null
+    })
   }
 })
 
