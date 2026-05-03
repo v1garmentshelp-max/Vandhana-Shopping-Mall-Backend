@@ -30,7 +30,7 @@ const envOrigins = (process.env.CORS_ORIGINS || '')
 const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins
 
 const corsOptions = {
-  origin: function (origin, cb) {
+  origin(origin, cb) {
     if (!origin) return cb(null, true)
     if (allowedOrigins.includes('*')) return cb(null, true)
     if (allowedOrigins.includes(origin)) return cb(null, true)
@@ -79,28 +79,39 @@ app.use('/api/homepage-images', require('./routes/homepageImageRoutes'))
 app.get('/', (req, res) => res.status(200).send('Vandana Shopping Mall API is running'))
 app.get('/healthz', (req, res) => res.status(200).send('ok'))
 
-app.get('/api/debug/blob-env', (req, res) => {
-  res.json({
-    hasToken: Boolean(
-      process.env.BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_RW_TOKEN
-    )
-  })
-})
-
 app.get('/api/debug/jwt', (req, res) => {
   res.json({ jwtSecretPresent: Boolean(process.env.JWT_SECRET) })
 })
 
 app.get('/api/debug/db', async (req, res) => {
   const pool = require('./db')
+  const schema = process.env.DB_SCHEMA || 'public'
+
   try {
-    const r1 = await pool.query('SELECT 1 as ok')
-    const r2 = await pool.query('SELECT COUNT(*)::int AS n FROM vandana_users')
-    res.json({ dbOk: r1.rows[0].ok === 1, usersCount: r2.rows[0].n })
+    const dbInfo = await pool.query('SELECT current_database() AS db, current_schema() AS current_schema')
+    const tableInfo = await pool.query(
+      `SELECT table_schema, table_name
+       FROM information_schema.tables
+       WHERE table_name = 'vandana_users'
+       ORDER BY table_schema, table_name`
+    )
+    const rowInfo = await pool.query(`SELECT COUNT(*)::int AS count FROM "${schema}"."vandana_users"`)
+
+    res.json({
+      dbOk: true,
+      database: dbInfo.rows[0],
+      vandanaUsersTables: tableInfo.rows,
+      vandanaUsersCount: rowInfo.rows[0].count
+    })
   } catch (e) {
-    res.status(500).json({ dbOk: false, error: String(e?.message || e) })
+    res.status(500).json({
+      dbOk: false,
+      error: e.message,
+      detail: e.detail || null,
+      code: e.code || null,
+      table: e.table || null,
+      constraint: e.constraint || null
+    })
   }
 })
 

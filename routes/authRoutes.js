@@ -7,6 +7,8 @@ const jwt = require('jsonwebtoken')
 const router = express.Router()
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env'
+const DB_SCHEMA = process.env.DB_SCHEMA || 'public'
+const USERS_TABLE = `"${DB_SCHEMA}"."vandana_users"`
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -33,14 +35,15 @@ function signToken(user) {
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || ''
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized' })
+  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET)
     req.user = decoded
     return next()
   } catch (err) {
-    console.error('AUTH VERIFY ERROR:', err)
     return res.status(401).json({ message: 'Unauthorized', error: err.message })
   }
 }
@@ -88,7 +91,7 @@ async function createUser(req, res) {
 
   try {
     const existing = await pool.query(
-      'SELECT id FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
+      `SELECT id FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
       [cleanEmail]
     )
 
@@ -99,7 +102,7 @@ async function createUser(req, res) {
     const hashedPassword = await bcrypt.hash(cleanPassword, 10)
 
     const insert = await pool.query(
-      `INSERT INTO public.vandana_users (name, email, mobile, password, type, created_at, updated_at)
+      `INSERT INTO ${USERS_TABLE} (name, email, mobile, password, type, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING id, name, email, mobile, type`,
       [cleanName, cleanEmail, cleanMobile, hashedPassword, cleanType]
@@ -110,7 +113,6 @@ async function createUser(req, res) {
       user: insert.rows[0]
     })
   } catch (err) {
-    console.error('SIGNUP ERROR:', err)
     return res.status(500).json({
       message: 'Server error',
       error: err.message,
@@ -136,7 +138,7 @@ router.post('/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT * FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
+      `SELECT * FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
       [cleanEmail]
     )
 
@@ -173,7 +175,6 @@ router.post('/login', async (req, res) => {
       }
     })
   } catch (err) {
-    console.error('LOGIN ERROR:', err)
     return res.status(500).json({
       message: 'Server error',
       error: err.message,
@@ -188,7 +189,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, email, mobile, type, created_at, updated_at FROM public.vandana_users WHERE id = $1 LIMIT 1',
+      `SELECT id, name, email, mobile, type, created_at, updated_at FROM ${USERS_TABLE} WHERE id = $1 LIMIT 1`,
       [req.user.id]
     )
 
@@ -198,7 +199,6 @@ router.get('/me', requireAuth, async (req, res) => {
 
     return res.json(result.rows[0])
   } catch (err) {
-    console.error('ME ERROR:', err)
     return res.status(500).json({
       message: 'Server error',
       error: err.message,
@@ -223,7 +223,7 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT password FROM public.vandana_users WHERE id = $1 LIMIT 1',
+      `SELECT password FROM ${USERS_TABLE} WHERE id = $1 LIMIT 1`,
       [req.user.id]
     )
 
@@ -247,13 +247,12 @@ router.post('/change-password', requireAuth, async (req, res) => {
     const hashed = await bcrypt.hash(newPassword, 10)
 
     await pool.query(
-      'UPDATE public.vandana_users SET password = $1, updated_at = NOW() WHERE id = $2',
+      `UPDATE ${USERS_TABLE} SET password = $1, updated_at = NOW() WHERE id = $2`,
       [hashed, req.user.id]
     )
 
     return res.json({ message: 'Password updated' })
   } catch (err) {
-    console.error('CHANGE PASSWORD ERROR:', err)
     return res.status(500).json({
       message: 'Server error',
       error: err.message,
@@ -273,7 +272,7 @@ router.post('/forgot/start', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT id, type FROM public.vandana_users WHERE lower(email) = $1',
+      `SELECT id, type FROM ${USERS_TABLE} WHERE lower(email) = $1`,
       [cleanEmail]
     )
 
@@ -285,7 +284,7 @@ router.post('/forgot/start', async (req, res) => {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
 
     await pool.query(
-      'UPDATE public.vandana_users SET otp = $1, otp_expiry = $2, updated_at = NOW() WHERE lower(email) = $3',
+      `UPDATE ${USERS_TABLE} SET otp = $1, otp_expiry = $2, updated_at = NOW() WHERE lower(email) = $3`,
       [otp, expiresAt, cleanEmail]
     )
 
@@ -299,7 +298,6 @@ router.post('/forgot/start', async (req, res) => {
 
     return res.json({ message: 'OTP sent' })
   } catch (err) {
-    console.error('FORGOT START ERROR:', err)
     return res.status(500).json({
       message: 'Could not start reset',
       error: err.message,
@@ -320,7 +318,7 @@ router.post('/forgot/verify', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT otp, otp_expiry FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
+      `SELECT otp, otp_expiry FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
       [cleanEmail]
     )
 
@@ -340,7 +338,6 @@ router.post('/forgot/verify', async (req, res) => {
 
     return res.json({ message: 'OTP verified' })
   } catch (err) {
-    console.error('FORGOT VERIFY ERROR:', err)
     return res.status(500).json({
       message: 'Verification failed',
       error: err.message,
@@ -366,7 +363,7 @@ router.post('/forgot/reset', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT otp, otp_expiry FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
+      `SELECT otp, otp_expiry FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
       [cleanEmail]
     )
 
@@ -387,13 +384,12 @@ router.post('/forgot/reset', async (req, res) => {
     const hashedPassword = await bcrypt.hash(cleanNewPassword, 10)
 
     await pool.query(
-      'UPDATE public.vandana_users SET password = $1, otp = NULL, otp_expiry = NULL, updated_at = NOW() WHERE lower(email) = $2',
+      `UPDATE ${USERS_TABLE} SET password = $1, otp = NULL, otp_expiry = NULL, updated_at = NOW() WHERE lower(email) = $2`,
       [hashedPassword, cleanEmail]
     )
 
     return res.json({ message: 'Password updated successfully' })
   } catch (err) {
-    console.error('FORGOT RESET ERROR:', err)
     return res.status(500).json({
       message: 'Password reset failed',
       error: err.message,
@@ -420,7 +416,7 @@ router.post('/firebase-login', async (req, res) => {
       await client.query('BEGIN')
 
       const existing = await client.query(
-        'SELECT id, name, email, mobile, type FROM public.vandana_users WHERE lower(email) = $1 LIMIT 1',
+        `SELECT id, name, email, mobile, type FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
         [cleanEmail]
       )
 
@@ -430,7 +426,9 @@ router.post('/firebase-login', async (req, res) => {
         user = existing.rows[0]
       } else {
         const inserted = await client.query(
-          'INSERT INTO public.vandana_users (name, email, mobile, password, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING id, name, email, mobile, type',
+          `INSERT INTO ${USERS_TABLE} (name, email, mobile, password, type, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+           RETURNING id, name, email, mobile, type`,
           [displayName, cleanEmail, '', '', 'B2C']
         )
         user = inserted.rows[0]
@@ -452,7 +450,6 @@ router.post('/firebase-login', async (req, res) => {
       })
     } catch (err) {
       await client.query('ROLLBACK')
-      console.error('FIREBASE LOGIN TX ERROR:', err)
       return res.status(500).json({
         message: 'Server error',
         error: err.message,
@@ -463,7 +460,6 @@ router.post('/firebase-login', async (req, res) => {
       client.release()
     }
   } catch (err) {
-    console.error('FIREBASE LOGIN ERROR:', err)
     return res.status(500).json({
       message: 'Server error',
       error: err.message,
