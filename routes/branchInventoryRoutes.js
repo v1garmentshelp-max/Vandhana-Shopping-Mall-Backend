@@ -241,8 +241,8 @@ router.get('/:branchId/import-jobs', async (req, res) => {
       [branchId]
     )
     res.json(rows)
-  } catch {
-    res.status(500).json({ message: 'Server error' })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' })
   }
 })
 
@@ -305,8 +305,8 @@ router.get('/:branchId/import-rows', async (req, res) => {
       nextOffset,
       total: totalQ.rows[0].c
     })
-  } catch {
-    res.status(500).json({ message: 'Server error' })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' })
   }
 })
 
@@ -343,7 +343,7 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
 
     await client.query('BEGIN')
 
-    const uploadedBy = 1
+    const uploadedBy = null
     const fileName = req.file.originalname || `import_${Date.now()}.xlsx`
 
     const { rows } = await client.query(
@@ -703,8 +703,8 @@ router.get('/:branchId/stock', async (req, res) => {
       params
     )
     res.json(rows)
-  } catch {
-    res.status(500).json({ message: 'Server error' })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' })
   }
 })
 
@@ -741,8 +741,8 @@ router.get('/:branchId/discounts', async (req, res) => {
       return res.json({ b2c_discount_pct: 0, b2b_discount_pct: 0 })
     }
     res.json(rows[0])
-  } catch {
-    res.status(500).json({ message: 'Server error' })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' })
   }
 })
 
@@ -764,8 +764,8 @@ router.post('/:branchId/discounts', async (req, res) => {
       [branchId, b2c, b2b]
     )
     res.json({ b2c_discount_pct: b2c, b2b_discount_pct: b2b })
-  } catch {
-    res.status(500).json({ message: 'Server error' })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' })
   }
 })
 
