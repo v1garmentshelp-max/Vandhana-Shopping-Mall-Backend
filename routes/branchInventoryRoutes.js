@@ -23,6 +23,16 @@ const HEADER_ALIASES = {
   b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 }
 
+function parseBranchId(req) {
+  const n = parseInt(req.params.branchId, 10)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
+async function ensureBranchExists(branchId) {
+  const { rows } = await pool.query('SELECT id FROM branches WHERE id = $1 LIMIT 1', [branchId])
+  return rows.length > 0
+}
+
 function normalizeRow(raw) {
   const out = {}
   for (const [k, v] of Object.entries(raw || {})) {
@@ -73,10 +83,6 @@ function normGender(v) {
   if (s === 'WOMAN' || s === 'FEMALE' || s === 'LADIES' || s === 'WOMENS' || s === "WOMEN'S") return 'WOMEN'
   if (s === 'CHILD' || s === 'CHILDREN' || s === 'BOYS' || s === 'GIRLS' || s === 'KID') return 'KIDS'
   return ''
-}
-
-function getBranchId() {
-  return 3
 }
 
 function extractEANFromName(name) {
@@ -230,8 +236,13 @@ async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
 }
 
 router.get('/:branchId/import-jobs', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     const { rows } = await pool.query(
       `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender
        FROM import_jobs
@@ -247,13 +258,18 @@ router.get('/:branchId/import-jobs', async (req, res) => {
 })
 
 router.get('/:branchId/import-rows', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null
   const offset = Math.max(0, parseInt(req.query.offset || '0', 10))
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)))
   const status = String(req.query.status || '').trim()
 
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     await ensureImportRowsTable()
 
     let job
@@ -311,7 +327,8 @@ router.get('/:branchId/import-rows', async (req, res) => {
 })
 
 router.post('/:branchId/import', upload.single('file'), async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
   if (!req.file) return res.status(400).json({ message: 'File required' })
 
   const gender = normGender(req.body && req.body.gender)
@@ -320,6 +337,9 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
   const client = await pool.connect()
 
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     await ensureImportRowsTable()
 
     const enumValues = await getAllowedImportRowStatuses()
@@ -370,11 +390,16 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
 })
 
 router.post('/:branchId/import/process/:jobId', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   const jobId = parseInt(req.params.jobId, 10)
   const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)))
 
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     await ensureImportRowsTable()
 
     const enumValues = await getAllowedImportRowStatuses()
@@ -615,10 +640,16 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 })
 
 router.post('/:branchId/images/confirm', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   const images = Array.isArray(req.body && req.body.images) ? req.body.images : []
   if (!images.length) return res.status(400).json({ message: 'No images' })
+
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS product_images (
         ean_code text PRIMARY KEY,
@@ -626,20 +657,24 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         uploaded_at timestamptz DEFAULT now()
       )
     `)
+
     const client = await pool.connect()
     let updated = 0
+
     try {
       await client.query('BEGIN')
       for (const img of images) {
         const ean = extractEANFromName(img.ean || '')
         const url = String(img.secure_url || '').trim()
         if (!ean || !url) continue
+
         await client.query(
           `INSERT INTO product_images (ean_code, image_url, uploaded_at)
            VALUES ($1, $2, NOW())
            ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
           [ean, url]
         )
+
         await client.query(
           `UPDATE product_variants v
              SET image_url = $2
@@ -647,6 +682,7 @@ router.post('/:branchId/images/confirm', async (req, res) => {
            WHERE b.variant_id = v.id AND b.ean_code = $1`,
           [ean, url]
         )
+
         updated += 1
       }
       await client.query('COMMIT')
@@ -656,6 +692,7 @@ router.post('/:branchId/images/confirm', async (req, res) => {
     } finally {
       client.release()
     }
+
     res.json({ totalUpdated: updated })
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
@@ -663,15 +700,23 @@ router.post('/:branchId/images/confirm', async (req, res) => {
 })
 
 router.get('/:branchId/stock', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   const gender = normGender(req.query && req.query.gender)
+
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     const params = [branchId]
     let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`
+
     if (gender) {
       params.push(gender)
       where += ` AND p.gender = $${params.length}`
     }
+
     const { rows } = await pool.query(
       `SELECT
          p.id AS product_id,
@@ -702,6 +747,7 @@ router.get('/:branchId/stock', async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       params
     )
+
     res.json(rows)
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
@@ -709,8 +755,13 @@ router.get('/:branchId/stock', async (req, res) => {
 })
 
 router.get('/:branchId/discounts', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     const { rows } = await pool.query(
       `SELECT
          COALESCE(
@@ -737,9 +788,11 @@ router.get('/:branchId/discounts', async (req, res) => {
          ) AS b2b_discount_pct`,
       [branchId]
     )
+
     if (!rows.length) {
       return res.json({ b2c_discount_pct: 0, b2b_discount_pct: 0 })
     }
+
     res.json(rows[0])
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
@@ -747,13 +800,20 @@ router.get('/:branchId/discounts', async (req, res) => {
 })
 
 router.post('/:branchId/discounts', async (req, res) => {
-  const branchId = getBranchId()
+  const branchId = parseBranchId(req)
+  if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
+
   const b2c = Number(req.body && req.body.b2c_discount_pct)
   const b2b = Number(req.body && req.body.b2b_discount_pct)
+
   if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0) {
     return res.status(400).json({ message: 'Invalid discount values' })
   }
+
   try {
+    const exists = await ensureBranchExists(branchId)
+    if (!exists) return res.status(404).json({ message: 'Branch not found' })
+
     await pool.query(
       `UPDATE product_variants v
          SET b2c_discount_pct = $2,
@@ -763,6 +823,7 @@ router.post('/:branchId/discounts', async (req, res) => {
          AND bvs.branch_id = $1`,
       [branchId, b2c, b2b]
     )
+
     res.json({ b2c_discount_pct: b2c, b2b_discount_pct: b2b })
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
