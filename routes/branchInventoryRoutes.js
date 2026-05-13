@@ -2,7 +2,6 @@ const express = require('express')
 const multer = require('multer')
 const XLSX = require('xlsx')
 const pool = require('../db')
-const { put } = require('@vercel/blob')
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } })
@@ -318,9 +317,6 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
   const gender = normGender(req.body && req.body.gender)
   if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' })
 
-  const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN
-  if (!token) return res.status(500).json({ message: 'Upload store not configured' })
-
   const client = await pool.connect()
 
   try {
@@ -345,19 +341,16 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
       if (shouldQueueRow(prepared)) preparedRows.push(prepared)
     }
 
-    const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase()
-    const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
-    const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token })
-
     await client.query('BEGIN')
 
     const uploadedBy = 1
+    const fileName = req.file.originalname || `import_${Date.now()}.xlsx`
 
     const { rows } = await client.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender)
        VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender`,
-      [req.file.originalname || name, stored.url, uploadedBy, preparedRows.length, branchId, gender]
+      [fileName, null, uploadedBy, preparedRows.length, branchId, gender]
     )
 
     const job = rows[0]
