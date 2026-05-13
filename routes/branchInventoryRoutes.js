@@ -1,5 +1,4 @@
 const express = require('express')
-const jwt = require('jsonwebtoken')
 const multer = require('multer')
 const XLSX = require('xlsx')
 const pool = require('../db')
@@ -77,25 +76,8 @@ function normGender(v) {
   return ''
 }
 
-function requireBranchAuth(req, res, next) {
-  const hdr = req.headers.authorization || ''
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : ''
-  if (!token) return res.status(401).json({ message: 'Unauthorized' })
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret')
-    req.user = payload
-    return next()
-  } catch {
-    return res.status(401).json({ message: 'Unauthorized' })
-  }
-}
-
-function getBranchId(req) {
-  const fromUser = Number(req.user && req.user.branch_id)
-  if (Number.isInteger(fromUser) && fromUser > 0) return fromUser
-  const fromParam = Number(req.params && req.params.branchId)
-  if (Number.isInteger(fromParam) && fromParam > 0) return fromParam
-  return 1
+function getBranchId() {
+  return 3
 }
 
 function extractEANFromName(name) {
@@ -248,8 +230,8 @@ async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
   }
 }
 
-router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.get('/:branchId/import-jobs', async (req, res) => {
+  const branchId = getBranchId()
   try {
     const { rows } = await pool.query(
       `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender
@@ -265,8 +247,8 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   }
 })
 
-router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.get('/:branchId/import-rows', async (req, res) => {
+  const branchId = getBranchId()
   const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null
   const offset = Math.max(0, parseInt(req.query.offset || '0', 10))
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)))
@@ -329,8 +311,8 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
   }
 })
 
-router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async (req, res) => {
-  const branchId = getBranchId(req)
+router.post('/:branchId/import', upload.single('file'), async (req, res) => {
+  const branchId = getBranchId()
   if (!req.file) return res.status(400).json({ message: 'File required' })
 
   const gender = normGender(req.body && req.body.gender)
@@ -369,11 +351,13 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 
     await client.query('BEGIN')
 
+    const uploadedBy = 1
+
     const { rows } = await client.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender)
        VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender`,
-      [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender]
+      [req.file.originalname || name, stored.url, uploadedBy, preparedRows.length, branchId, gender]
     )
 
     const job = rows[0]
@@ -392,8 +376,8 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
   }
 })
 
-router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.post('/:branchId/import/process/:jobId', async (req, res) => {
+  const branchId = getBranchId()
   const jobId = parseInt(req.params.jobId, 10)
   const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)))
 
@@ -637,8 +621,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   }
 })
 
-router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.post('/:branchId/images/confirm', async (req, res) => {
+  const branchId = getBranchId()
   const images = Array.isArray(req.body && req.body.images) ? req.body.images : []
   if (!images.length) return res.status(400).json({ message: 'No images' })
   try {
@@ -685,8 +669,8 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
   }
 })
 
-router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.get('/:branchId/stock', async (req, res) => {
+  const branchId = getBranchId()
   const gender = normGender(req.query && req.query.gender)
   try {
     const params = [branchId]
@@ -731,8 +715,8 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   }
 })
 
-router.get('/:branchId/discounts', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.get('/:branchId/discounts', async (req, res) => {
+  const branchId = getBranchId()
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -769,8 +753,8 @@ router.get('/:branchId/discounts', requireBranchAuth, async (req, res) => {
   }
 })
 
-router.post('/:branchId/discounts', requireBranchAuth, async (req, res) => {
-  const branchId = getBranchId(req)
+router.post('/:branchId/discounts', async (req, res) => {
+  const branchId = getBranchId()
   const b2c = Number(req.body && req.body.b2c_discount_pct)
   const b2b = Number(req.body && req.body.b2b_discount_pct)
   if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0) {
