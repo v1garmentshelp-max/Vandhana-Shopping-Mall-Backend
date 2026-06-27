@@ -7,7 +7,7 @@ const toInt = (v) => {
   return Number.isInteger(n) ? n : null
 }
 
-router.post('/tarascart', async (req, res) => {
+router.post('/vandana-cart', async (req, res) => {
   const { user_id, product_id, selected_size, selected_color, quantity } = req.body
 
   const uid = toInt(user_id)
@@ -20,7 +20,7 @@ router.post('/tarascart', async (req, res) => {
 
   try {
     const upd = await pool.query(
-      `UPDATE tarascart
+      `UPDATE vandana_cart
        SET selected_size=$3,
            selected_color=$4,
            quantity=COALESCE(quantity,0)+$5,
@@ -31,7 +31,7 @@ router.post('/tarascart', async (req, res) => {
 
     if (upd.rowCount === 0) {
       await pool.query(
-        `INSERT INTO tarascart (user_id, product_id, selected_size, selected_color, quantity, updated_at)
+        `INSERT INTO vandana_cart (user_id, product_id, selected_size, selected_color, quantity, updated_at)
          VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
         [uid, vid, selected_size, selected_color, qty]
       )
@@ -43,7 +43,7 @@ router.post('/tarascart', async (req, res) => {
   }
 })
 
-router.put('/tarascart', async (req, res) => {
+router.put('/vandana-cart', async (req, res) => {
   const { user_id, product_id, quantity } = req.body
 
   const uid = toInt(user_id)
@@ -56,11 +56,12 @@ router.put('/tarascart', async (req, res) => {
 
   try {
     await pool.query(
-      `UPDATE tarascart
+      `UPDATE vandana_cart
        SET quantity=$3, updated_at=CURRENT_TIMESTAMP
        WHERE user_id=$1 AND product_id=$2`,
       [uid, vid, qty]
     )
+
     res.json({ message: 'Quantity updated' })
   } catch (err) {
     res.status(500).json({ message: 'Error updating cart', error: err.message })
@@ -69,7 +70,10 @@ router.put('/tarascart', async (req, res) => {
 
 router.get('/:userId', async (req, res) => {
   const uid = toInt(req.params.userId)
-  if (!uid) return res.status(400).json({ message: 'Invalid userId' })
+
+  if (!uid) {
+    return res.status(400).json({ message: 'Invalid userId' })
+  }
 
   try {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
@@ -78,25 +82,25 @@ router.get('/:userId', async (req, res) => {
       WITH base AS (
         SELECT
           c.user_id,
-          c.product_id            AS variant_id,
+          c.product_id AS variant_id,
           c.selected_size,
           c.selected_color,
           COALESCE(c.quantity, 1)::int AS quantity,
-          v.product_id            AS product_id,
-          p.name                  AS product_name,
-          p.brand_name            AS brand,
+          v.product_id AS product_id,
+          p.name AS product_name,
+          p.brand_name AS brand,
           p.gender,
           v.size,
-          v.colour                AS color,
-          v.mrp::numeric          AS mrp,
-          v.sale_price::numeric   AS sale_price,
+          v.colour AS color,
+          v.mrp::numeric AS mrp,
+          v.sale_price::numeric AS sale_price,
           COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
           COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
           COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
-          v.image_url             AS v_image,
-          pi.image_url            AS pi_image
-        FROM tarascart c
+          v.image_url AS v_image,
+          pi.image_url AS pi_image
+        FROM vandana_cart c
         JOIN product_variants v ON v.id = c.product_id
         JOIN products p ON p.id = v.product_id
         LEFT JOIN LATERAL (
@@ -152,14 +156,16 @@ router.get('/:userId', async (req, res) => {
     `
 
     const { rows } = await pool.query(sql, [uid, cloud])
+
     return res.json(rows)
   } catch (err) {
     res.status(500).json({ message: 'Error fetching cart', error: err.message })
   }
 })
 
-router.delete('/tarascart', async (req, res) => {
+router.delete('/vandana-cart', async (req, res) => {
   const { user_id, product_id } = req.body
+
   const uid = toInt(user_id)
   const vid = toInt(product_id)
 
@@ -168,7 +174,11 @@ router.delete('/tarascart', async (req, res) => {
   }
 
   try {
-    await pool.query(`DELETE FROM tarascart WHERE user_id=$1 AND product_id=$2`, [uid, vid])
+    await pool.query(
+      `DELETE FROM vandana_cart WHERE user_id=$1 AND product_id=$2`,
+      [uid, vid]
+    )
+
     res.json({ message: 'Item removed from cart' })
   } catch (err) {
     res.status(500).json({ message: 'Error removing from cart', error: err.message })

@@ -11,7 +11,7 @@ const HEADER_ALIASES = {
   brandname: ['brand', 'brand name', 'brandname'],
   costprice: ['cost', 'purchase cost', 'costprice'],
   purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty'],
-  eancode: ['ean', 'barcode', 'bar code', 'ean code', 'eancode'],
+  barcode: ['barcode', 'bar code', 'bar-code', 'barcode number', 'barcode no', 'sku', 'sku code', 'ean', 'ean code', 'eancode'],
   mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp ', 'mrp'],
   rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
   markcode: ['mark code', 'mark', 'marking', 'markcode'],
@@ -33,6 +33,32 @@ async function ensureBranchExists(branchId) {
   return rows.length > 0
 }
 
+function cleanText(v) {
+  if (v == null) return ''
+  return String(v).replace(/\s+/g, ' ').trim()
+}
+
+function normalizeBarcode(v) {
+  return String(v ?? '')
+    .trim()
+    .replace(/^"|"$/g, '')
+    .replace(/\s+/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, '')
+}
+
+function baseNameNoExt(name) {
+  const n = String(name || '').split('/').pop() || String(name || '')
+  const i = n.lastIndexOf('.')
+  return i > 0 ? n.slice(0, i) : n
+}
+
+function extractBarcodeFromName(name) {
+  const base = baseNameNoExt(name)
+  const strictBase = base.includes('__') ? base.split('__')[0] : base
+  return normalizeBarcode(strictBase)
+}
+
 function normalizeRow(raw) {
   const out = {}
   for (const [k, v] of Object.entries(raw || {})) {
@@ -52,17 +78,12 @@ function normalizeRow(raw) {
   if (!out.productname && raw && raw.__EMPTY) out.productname = raw.__EMPTY
   if (!out.brandname && raw && raw.__EMPTY_1) out.brandname = raw.__EMPTY_1
   if (out.purchaseqty == null && raw && raw.__EMPTY_2 != null) out.purchaseqty = raw.__EMPTY_2
-  if (!out.eancode && raw && raw.__EMPTY_3) out.eancode = raw.__EMPTY_3
+  if (!out.barcode && raw && raw.__EMPTY_3) out.barcode = raw.__EMPTY_3
   if (out.mrp == null && raw && raw.__EMPTY_4 != null) out.mrp = raw.__EMPTY_4
   if (!out.size && raw && raw.__EMPTY_5) out.size = raw.__EMPTY_5
   if (!out.colour && raw && raw.__EMPTY_6) out.colour = raw.__EMPTY_6
   if (!out.pattern && raw && raw.__EMPTY_7) out.pattern = raw.__EMPTY_7
   return out
-}
-
-function cleanText(v) {
-  if (v == null) return ''
-  return String(v).replace(/\s+/g, ' ').trim()
 }
 
 function toNumOrNull(v) {
@@ -85,16 +106,11 @@ function normGender(v) {
   return ''
 }
 
-function extractEANFromName(name) {
-  const m = String(name).match(/(\d{12,14})/)
-  return m ? m[1] : null
-}
-
 function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
   const summary = cleanText((raw && (raw['Stock Summary'] || raw['stock summary'])) || '')
   const allMainEmpty = !ProductName && !BrandName && !SIZE && !COLOUR
   const hasAnyDataField =
-    cleanText(row.eancode) ||
+    cleanText(row.barcode) ||
     toNumOrNull(row.mrp) != null ||
     toNumOrNull(row.rsaleprice) != null ||
     toIntOrZero(row.purchaseqty) !== 0
@@ -157,8 +173,7 @@ function rowToPreparedRecord(raw) {
   const PurchaseQty = toIntOrZero(row.purchaseqty)
   const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0
   const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0
-  let EANCode = row.eancode
-  if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode)
+  const Barcode = normalizeBarcode(row.barcode)
 
   return {
     raw,
@@ -175,7 +190,7 @@ function rowToPreparedRecord(raw) {
     PurchaseQty,
     B2CDiscount,
     B2BDiscount,
-    EANCode
+    Barcode
   }
 }
 
@@ -335,6 +350,7 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
   if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' })
 
   const client = await pool.connect()
+  let txStarted = false
 
   try {
     const exists = await ensureBranchExists(branchId)
@@ -362,6 +378,7 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
     }
 
     await client.query('BEGIN')
+    txStarted = true
 
     const uploadedBy = null
     const fileName = req.file.originalname || `import_${Date.now()}.xlsx`
@@ -380,9 +397,14 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
     }
 
     await client.query('COMMIT')
+    txStarted = false
     res.status(201).json(job)
   } catch (e) {
-    await client.query('ROLLBACK')
+    if (txStarted) {
+      try {
+        await client.query('ROLLBACK')
+      } catch {}
+    }
     res.status(500).json({ message: e.message || 'Server error' })
   } finally {
     client.release()
@@ -481,8 +503,8 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
         const raw = batchRow.raw_row_json || {}
         const prepared = rowToPreparedRecord(raw)
 
-        if (!prepared.ProductName || !prepared.BrandName || !prepared.SIZE || !prepared.COLOUR) {
-          const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)'
+        if (!prepared.ProductName || !prepared.BrandName || !prepared.SIZE || !prepared.COLOUR || !prepared.Barcode) {
+          const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR/Barcode)'
           await client.query(
             `UPDATE import_rows
              SET status_enum = $2,
@@ -528,15 +550,13 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 
           const variantId = vRes.rows[0].id
 
-          if (prepared.EANCode) {
-            await client.query(
-              `INSERT INTO barcodes (variant_id, ean_code)
-               VALUES ($1, $2)
-               ON CONFLICT (ean_code)
-               DO UPDATE SET variant_id = EXCLUDED.variant_id`,
-              [variantId, prepared.EANCode]
-            )
-          }
+          await client.query(
+            `INSERT INTO barcodes (variant_id, ean_code)
+             VALUES ($1, $2)
+             ON CONFLICT (ean_code)
+             DO UPDATE SET variant_id = EXCLUDED.variant_id`,
+            [variantId, prepared.Barcode]
+          )
 
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
@@ -660,19 +680,37 @@ router.post('/:branchId/images/confirm', async (req, res) => {
 
     const client = await pool.connect()
     let updated = 0
+    const unmatched = []
 
     try {
       await client.query('BEGIN')
+
       for (const img of images) {
-        const ean = extractEANFromName(img.ean || '')
-        const url = String(img.secure_url || '').trim()
-        if (!ean || !url) continue
+        const directBarcode = normalizeBarcode(img.barcode || img.ean_code || img.ean || '')
+        const fallbackBarcode = extractBarcodeFromName(img.original_filename || img.public_id || '')
+        const barcode = directBarcode || fallbackBarcode
+        const url = String(img.secure_url || img.url || img.image_url || '').trim()
+
+        if (!barcode || !url) {
+          unmatched.push({ barcode: barcode || null, reason: 'Missing barcode or URL' })
+          continue
+        }
+
+        const barcodeExists = await client.query(
+          `SELECT variant_id FROM barcodes WHERE ean_code = $1 LIMIT 1`,
+          [barcode]
+        )
+
+        if (!barcodeExists.rowCount) {
+          unmatched.push({ barcode, reason: 'Barcode not found in database' })
+          continue
+        }
 
         await client.query(
           `INSERT INTO product_images (ean_code, image_url, uploaded_at)
            VALUES ($1, $2, NOW())
            ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
-          [ean, url]
+          [barcode, url]
         )
 
         await client.query(
@@ -680,11 +718,12 @@ router.post('/:branchId/images/confirm', async (req, res) => {
              SET image_url = $2
            FROM barcodes b
            WHERE b.variant_id = v.id AND b.ean_code = $1`,
-          [ean, url]
+          [barcode, url]
         )
 
         updated += 1
       }
+
       await client.query('COMMIT')
     } catch (e) {
       await client.query('ROLLBACK')
@@ -693,7 +732,7 @@ router.post('/:branchId/images/confirm', async (req, res) => {
       client.release()
     }
 
-    res.json({ totalUpdated: updated })
+    res.json({ totalUpdated: updated, unmatched })
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
   }
@@ -734,6 +773,7 @@ router.get('/:branchId/stock', async (req, res) => {
          v.cost_price,
          bvs.on_hand,
          bvs.reserved,
+         COALESCE(bc.ean_code,'') AS barcode,
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(v.image_url, pi.image_url, '') AS image_url
        FROM branch_variant_stock bvs
