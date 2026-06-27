@@ -49,6 +49,17 @@ function normalizeBarcode(v) {
     .replace(/[^A-Z0-9._-]/g, '')
 }
 
+function normalizeImageType(v) {
+  const s = String(v || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]/g, '')
+  if (s.includes('front')) return 'front'
+  if (s.includes('back')) return 'back'
+  if (s.includes('main')) return 'main'
+  return s || 'main'
+}
+
 function baseNameNoExt(name) {
   const n = String(name || '').split('/').pop() || String(name || '')
   const i = n.lastIndexOf('.')
@@ -57,8 +68,18 @@ function baseNameNoExt(name) {
 
 function extractBarcodeFromName(name) {
   const base = baseNameNoExt(name)
-  const strictBase = base.includes('__') ? base.split('__')[0] : base
-  return normalizeBarcode(strictBase)
+  if (base.includes('__')) return normalizeBarcode(base.split('__')[0])
+  const dotMatch = base.match(/^(.+)\.(front|back|main)$/i)
+  if (dotMatch) return normalizeBarcode(dotMatch[1])
+  return normalizeBarcode(base)
+}
+
+function extractImageTypeFromName(name) {
+  const base = baseNameNoExt(name)
+  if (base.includes('__')) return normalizeImageType(base.split('__').slice(1).join('__'))
+  const dotMatch = base.match(/^(.+)\.(front|back|main)$/i)
+  if (dotMatch) return normalizeImageType(dotMatch[2])
+  return 'main'
 }
 
 function normalizeRow(raw) {
@@ -161,6 +182,28 @@ async function ensureImportRowsTable() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_branch_uploaded_id ON import_jobs(branch_id, id DESC)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_barcodes_variant_id ON barcodes(variant_id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_branch_variant_stock_branch_active ON branch_variant_stock(branch_id, is_active, variant_id)`)
+}
+
+async function ensureProductImagesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      id BIGSERIAL PRIMARY KEY,
+      ean_code TEXT NOT NULL,
+      image_type TEXT NOT NULL,
+      image_url TEXT NOT NULL,
+      public_id TEXT,
+      uploaded_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `)
+
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS id BIGSERIAL`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS ean_code TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_type TEXT NOT NULL DEFAULT 'main'`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_url TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS public_id TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ DEFAULT NOW()`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS product_images_ean_code_image_type_key ON product_images(ean_code, image_type)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_images_ean_code ON product_images(ean_code)`)
 }
 
 function rowToPreparedRecord(raw) {
@@ -713,13 +756,7 @@ router.post('/:branchId/images/confirm', async (req, res) => {
     const exists = await ensureBranchExists(branchId)
     if (!exists) return res.status(404).json({ message: 'Branch not found' })
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS product_images (
-        ean_code text PRIMARY KEY,
-        image_url text NOT NULL,
-        uploaded_at timestamptz DEFAULT now()
-      )
-    `)
+    await ensureProductImagesTable()
 
     const client = await pool.connect()
     let updated = 0
@@ -732,10 +769,17 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         const directBarcode = normalizeBarcode(img.barcode || img.ean_code || img.ean || '')
         const fallbackBarcode = extractBarcodeFromName(img.original_filename || img.public_id || '')
         const barcode = directBarcode || fallbackBarcode
+        const imageType = normalizeImageType(img.image_type || extractImageTypeFromName(img.original_filename || img.public_id || ''))
         const url = String(img.secure_url || img.url || img.image_url || '').trim()
+        const publicId = String(img.public_id || '').trim()
 
         if (!barcode || !url) {
-          unmatched.push({ barcode: barcode || null, reason: 'Missing barcode or URL' })
+          unmatched.push({
+            barcode: barcode || null,
+            image_type: imageType,
+            original_filename: img.original_filename || '',
+            reason: 'Missing barcode or URL'
+          })
           continue
         }
 
@@ -745,24 +789,42 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         )
 
         if (!barcodeExists.rowCount) {
-          unmatched.push({ barcode, reason: 'Barcode not found in database' })
+          unmatched.push({
+            barcode,
+            image_type: imageType,
+            original_filename: img.original_filename || '',
+            reason: 'Barcode not found in database'
+          })
           continue
         }
 
         await client.query(
-          `INSERT INTO product_images (ean_code, image_url, uploaded_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
-          [barcode, url]
+          `INSERT INTO product_images (ean_code, image_type, image_url, public_id, uploaded_at)
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (ean_code, image_type)
+           DO UPDATE SET image_url = EXCLUDED.image_url,
+                         public_id = EXCLUDED.public_id,
+                         uploaded_at = NOW()`,
+          [barcode, imageType, url, publicId || null]
         )
 
-        await client.query(
-          `UPDATE product_variants v
-             SET image_url = $2
-           FROM barcodes b
-           WHERE b.variant_id = v.id AND b.ean_code = $1`,
-          [barcode, url]
-        )
+        if (imageType === 'front' || imageType === 'main') {
+          await client.query(
+            `UPDATE product_variants v
+               SET image_url = $2
+             FROM barcodes b
+             WHERE b.variant_id = v.id AND b.ean_code = $1`,
+            [barcode, url]
+          )
+        } else {
+          await client.query(
+            `UPDATE product_variants v
+               SET image_url = COALESCE(NULLIF(v.image_url, ''), $2)
+             FROM barcodes b
+             WHERE b.variant_id = v.id AND b.ean_code = $1`,
+            [barcode, url]
+          )
+        }
 
         updated += 1
       }
@@ -791,6 +853,8 @@ router.get('/:branchId/stock', async (req, res) => {
     const exists = await ensureBranchExists(branchId)
     if (!exists) return res.status(404).json({ message: 'Branch not found' })
 
+    await ensureProductImagesTable()
+
     const params = [branchId]
     let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`
 
@@ -818,14 +882,33 @@ router.get('/:branchId/stock', async (req, res) => {
          bvs.reserved,
          COALESCE(bc.ean_code,'') AS barcode,
          COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(v.image_url, pi.image_url, '') AS image_url
+         COALESCE(imgs.front_image_url, imgs.main_image_url, v.image_url, '') AS image_url,
+         COALESCE(imgs.front_image_url, '') AS front_image_url,
+         COALESCE(imgs.back_image_url, '') AS back_image_url,
+         COALESCE(imgs.main_image_url, '') AS main_image_url,
+         COALESCE(imgs.images, '[]'::json) AS images
        FROM branch_variant_stock bvs
        JOIN product_variants v ON v.id = bvs.variant_id
        JOIN products p ON p.id = v.product_id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+       LEFT JOIN LATERAL (
+         SELECT
+           MAX(image_url) FILTER (WHERE image_type = 'front') AS front_image_url,
+           MAX(image_url) FILTER (WHERE image_type = 'back') AS back_image_url,
+           MAX(image_url) FILTER (WHERE image_type = 'main') AS main_image_url,
+           JSON_AGG(
+             JSON_BUILD_OBJECT(
+               'image_type', image_type,
+               'image_url', image_url,
+               'public_id', public_id
+             )
+             ORDER BY CASE image_type WHEN 'front' THEN 1 WHEN 'main' THEN 2 WHEN 'back' THEN 3 ELSE 4 END, id
+           ) AS images
+         FROM product_images pi
+         WHERE pi.ean_code = bc.ean_code
+       ) imgs ON TRUE
        WHERE ${where}
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       params
