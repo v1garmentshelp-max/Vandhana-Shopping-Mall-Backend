@@ -5,6 +5,8 @@ const pool = require('../db')
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } })
+const PROCESS_MAX_LIMIT = 250
+const INSERT_CHUNK_SIZE = 500
 
 const HEADER_ALIASES = {
   productname: ['product', 'product name', 'item', 'item name', 'productname'],
@@ -156,6 +158,9 @@ async function ensureImportRowsTable() {
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS raw_row_json JSONB`)
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS error_msg TEXT`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows(import_job_id, status_enum, id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_branch_uploaded_id ON import_jobs(branch_id, id DESC)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_barcodes_variant_id ON barcodes(variant_id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_branch_variant_stock_branch_active ON branch_variant_stock(branch_id, is_active, variant_id)`)
 }
 
 function rowToPreparedRecord(raw) {
@@ -164,7 +169,7 @@ function rowToPreparedRecord(raw) {
   const BrandName = cleanText(row.brandname)
   const SIZE = cleanText(row.size)
   const COLOUR = cleanText(row.colour)
-  const PATTERN = cleanText(row.pattern) || null
+  const PATTERN = cleanText(row.pattern) || ''
   const FITT = cleanText(row.fitt) || null
   const MarkCode = cleanText(row.markcode) || null
   const MRP = toNumOrNull(row.mrp)
@@ -232,15 +237,19 @@ function resolveErrorStatus(enumValues) {
 }
 
 async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
-  const chunkSize = 250
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize)
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + INSERT_CHUNK_SIZE)
     const values = []
     const params = []
     let p = 1
     for (const item of chunk) {
-      values.push(`($${p++}, $${p++}::jsonb, $${p++}, NULL)`)
-      params.push(jobId, JSON.stringify(item.raw), createdStatus)
+      values.push(`($${p++}, $${p++}::jsonb, $${p++}, $${p++})`)
+      params.push(
+        jobId,
+        JSON.stringify(item.raw),
+        item.status_enum || createdStatus,
+        item.error_msg || null
+      )
     }
     await client.query(
       `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
@@ -360,9 +369,10 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
 
     const enumValues = await getAllowedImportRowStatuses()
     const createdStatus = resolveCreatedStatus(enumValues)
+    const errorStatus = resolveErrorStatus(enumValues)
 
-    if (!createdStatus) {
-      return res.status(500).json({ message: `import_row_status enum is missing CREATED. Available values: ${enumValues.join(', ')}` })
+    if (!createdStatus || !errorStatus) {
+      return res.status(500).json({ message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}` })
     }
 
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' })
@@ -371,10 +381,30 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
 
     const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' })
     const preparedRows = []
+    const seenBarcodes = new Set()
+    let duplicateErrors = 0
 
     for (const raw of allRows) {
       const prepared = rowToPreparedRecord(raw)
-      if (shouldQueueRow(prepared)) preparedRows.push(prepared)
+      if (!shouldQueueRow(prepared)) continue
+
+      if (prepared.Barcode && seenBarcodes.has(prepared.Barcode)) {
+        preparedRows.push({
+          raw,
+          status_enum: errorStatus,
+          error_msg: `Duplicate barcode in Excel: ${prepared.Barcode}`
+        })
+        duplicateErrors += 1
+        continue
+      }
+
+      if (prepared.Barcode) seenBarcodes.add(prepared.Barcode)
+
+      preparedRows.push({
+        raw,
+        status_enum: createdStatus,
+        error_msg: null
+      })
     }
 
     await client.query('BEGIN')
@@ -383,11 +413,14 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
     const uploadedBy = null
     const fileName = req.file.originalname || `import_${Date.now()}.xlsx`
 
+    const initialStatus = preparedRows.length === 0 ? 'COMPLETE' : 'PENDING'
+    const completedAtSql = preparedRows.length === 0 ? 'NOW()' : 'NULL'
+
     const { rows } = await client.query(
-      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender)
-       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6)
+      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, completed_at)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, ${completedAtSql})
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender`,
-      [fileName, null, uploadedBy, preparedRows.length, branchId, gender]
+      [fileName, null, uploadedBy, initialStatus, preparedRows.length, duplicateErrors, branchId, gender]
     )
 
     const job = rows[0]
@@ -416,7 +449,7 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
   if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
 
   const jobId = parseInt(req.params.jobId, 10)
-  const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)))
+  const limit = Math.max(1, Math.min(PROCESS_MAX_LIMIT, parseInt(req.query.limit || String(PROCESS_MAX_LIMIT), 10)))
 
   try {
     const exists = await ensureBranchExists(branchId)
@@ -550,13 +583,23 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 
           const variantId = vRes.rows[0].id
 
-          await client.query(
-            `INSERT INTO barcodes (variant_id, ean_code)
-             VALUES ($1, $2)
-             ON CONFLICT (ean_code)
-             DO UPDATE SET variant_id = EXCLUDED.variant_id`,
-            [variantId, prepared.Barcode]
+          const existingBarcode = await client.query(
+            `SELECT variant_id FROM barcodes WHERE ean_code = $1 LIMIT 1`,
+            [prepared.Barcode]
           )
+
+          if (existingBarcode.rowCount && Number(existingBarcode.rows[0].variant_id) !== Number(variantId)) {
+            throw new Error(`Barcode already exists for another variant: ${prepared.Barcode}`)
+          }
+
+          if (!existingBarcode.rowCount) {
+            await client.query(
+              `INSERT INTO barcodes (variant_id, ean_code)
+               VALUES ($1, $2)
+               ON CONFLICT (ean_code) DO NOTHING`,
+              [variantId, prepared.Barcode]
+            )
+          }
 
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
