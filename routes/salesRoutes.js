@@ -17,6 +17,10 @@ const uuid = () => {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
 
+const getUserRole = (req) => {
+  return String(req.user?.role_enum || req.user?.role || '').toUpperCase()
+}
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -71,6 +75,7 @@ router.post('/web/place', async (req, res) => {
 
     let bagTotal = 0
     let discountTotal = 0
+
     for (const it of items) {
       const mrp = Number(it?.mrp ?? it?.price ?? 0) || 0
       const price = Number(it?.price ?? 0) || 0
@@ -96,13 +101,14 @@ router.post('/web/place', async (req, res) => {
     }
 
     const baseTotals = JSON.stringify(totals && typeof totals === 'object' ? totals : saleTotals)
-    const storedEmail = (login_email || customer_email || null) ? String(login_email || customer_email) : null
+    const storedEmail = login_email || customer_email || null ? String(login_email || customer_email) : null
 
     if (providedBranchId) {
       resolvedBranchId = providedBranchId
     } else {
       const pairs = []
       for (const [vId, qty] of agg.entries()) pairs.push({ variant_id: vId, qty })
+
       const cartJson = JSON.stringify(pairs)
 
       const branchQ = await client.query(
@@ -152,10 +158,13 @@ router.post('/web/place', async (req, res) => {
           'SELECT 1 FROM branch_variant_stock WHERE branch_id=$1 AND variant_id=$2 LIMIT 1',
           [resolvedBranchId, vId]
         )
+
         await client.query('ROLLBACK')
+
         if (!existsQ.rowCount) {
           return res.status(400).json({ message: `Stock not found for variant ${vId} in branch ${resolvedBranchId}` })
         }
+
         return res.status(400).json({ message: `Insufficient stock for variant ${vId} in branch ${resolvedBranchId}` })
       }
     }
@@ -191,6 +200,7 @@ router.post('/web/place', async (req, res) => {
     for (const it of items) {
       const vId = Number(it?.variant_id ?? it?.product_id)
       const qty = Number(it?.qty ?? 1) || 1
+
       await client.query(
         `INSERT INTO sale_items
          (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
@@ -216,7 +226,8 @@ router.post('/web/place', async (req, res) => {
     try {
       await client.query('ROLLBACK')
     } catch {}
-    const msg = isDebug() ? (e?.message || String(e)) : 'Server error'
+
+    const msg = isDebug() ? e?.message || String(e) : 'Server error'
     return res.status(500).json({ message: msg })
   } finally {
     try {
@@ -273,14 +284,9 @@ router.post('/web/place', async (req, res) => {
   })
 })
 
-
-// ══════════════════════════════════════════════════════════════
-// B2B BULK ORDER ROUTE (Bypasses Stock Checks & Shiprocket)
-// ══════════════════════════════════════════════════════════════
-router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
+router.post('/web/b2b-place', async (req, res) => {
   const { customer_email, customer_name, shipping_address, items, totals, payment_method } = req.body || {}
 
-    // Validate email is present instead
   if (!customer_email) {
     return res.status(400).json({ message: 'customer_email required' })
   }
@@ -290,10 +296,10 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
   }
 
   const client = await pool.connect()
+
   try {
     await client.query('BEGIN')
 
-    // 1. Create the Sale Record as an Inquiry
     const saleQ = await client.query(
       `INSERT INTO sales
        (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, is_b2b, created_at)
@@ -312,10 +318,7 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
 
     const saleId = saleQ.rows[0].id
 
-    // 2. Insert the Bulk Items (No stock decrementing!)
     for (const it of items) {
-      
-      // FIX 4: Validate variant_id to prevent cryptic DB errors or null inserts
       if (!it.variant_id) {
         await client.query('ROLLBACK')
         return res.status(400).json({ message: 'variant_id is required for all items' })
@@ -327,14 +330,14 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
          VALUES
          ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
         [
-          uuid(), 
-          saleId, 
-          it.variant_id, 
-          Number(it.qty) || 1, 
-          Number(it.price) || 0, 
-          Number(it.mrp) || 0, 
-          it.size || '', 
-          it.colour || '', 
+          uuid(),
+          saleId,
+          it.variant_id,
+          Number(it.qty) || 1,
+          Number(it.price) || 0,
+          Number(it.mrp) || 0,
+          it.size || '',
+          it.colour || '',
           it.image_url || ''
         ]
       )
@@ -344,13 +347,11 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
     return res.json({ id: saleId, status: 'B2B_PENDING', message: 'Bulk order submitted successfully' })
   } catch (e) {
     await client.query('ROLLBACK')
-    console.error('B2B Order Error:', e)
     return res.status(500).json({ message: 'Failed to place B2B order' })
   } finally {
     client.release()
   }
 })
-
 
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect()
@@ -358,10 +359,12 @@ router.post('/web/set-payment-status', async (req, res) => {
   try {
     const requestedSaleId = String(req.body.sale_id || '').trim()
     const status = String(req.body.status || '').trim().toUpperCase()
+
     if (!requestedSaleId || !status) {
       client.release()
       return res.status(400).json({ message: 'sale_id and status required' })
     }
+
     if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(status)) {
       client.release()
       return res.status(400).json({ message: 'invalid status' })
@@ -405,10 +408,12 @@ router.post('/web/set-payment-status', async (req, res) => {
     try {
       await client.query('ROLLBACK')
     } catch {}
+
     try {
       client.release()
     } catch {}
-    const msg = isDebug() ? (e?.message || String(e)) : 'Server error'
+
+    const msg = isDebug() ? e?.message || String(e) : 'Server error'
     return res.status(500).json({ message: msg })
   }
 })
@@ -428,9 +433,11 @@ router.get('/web', async (_req, res) => {
        ORDER BY s.created_at DESC NULLS LAST, s.id DESC
        LIMIT 200`
     )
+
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
     res.set('Expires', '0')
+
     return res.json(list.rows)
   } catch {
     return res.status(500).json({ message: 'Server error' })
@@ -441,6 +448,7 @@ router.get('/web/by-user', async (req, res) => {
   try {
     const email = String(req.query.email || '').trim()
     const mobile = String(req.query.mobile || '').trim()
+
     if (!email && !mobile) {
       return res.status(400).json({ message: 'email or mobile required' })
     }
@@ -453,10 +461,12 @@ router.get('/web/by-user', async (req, res) => {
       params.push(email)
       ors.push(`LOWER(s.customer_email) = LOWER($${params.length})`)
     }
+
     if (mobile) {
       params.push(mobile)
       ors.push(`regexp_replace(s.customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`)
     }
+
     if (ors.length) conds.push(`(${ors.join(' OR ')})`)
 
     const salesQ = await pool.query(
@@ -508,7 +518,7 @@ router.get('/web/by-user', async (req, res) => {
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
@@ -520,8 +530,10 @@ router.get('/web/by-user', async (req, res) => {
 
     const bySale = new Map()
     for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] })
+
     for (const it of itemsQ.rows) {
       const rec = bySale.get(it.sale_id)
+
       if (rec) {
         rec.items.push({
           variant_id: it.variant_id,
@@ -572,6 +584,7 @@ router.get('/web/:id', async (req, res) => {
        WHERE s.id = $1::uuid`,
       [id]
     )
+
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
 
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
@@ -594,7 +607,7 @@ router.get('/web/:id', async (req, res) => {
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
@@ -625,7 +638,7 @@ router.get('/web/:id', async (req, res) => {
 
 router.get('/admin', requireAuth, async (req, res) => {
   try {
-    const role = String(req.user?.role_enum || '').toUpperCase()
+    const role = getUserRole(req)
     const isSuper = role === 'SUPER_ADMIN'
     const branchId = Number(req.user?.branch_id || 0)
 
@@ -635,7 +648,7 @@ router.get('/admin', requireAuth, async (req, res) => {
     if (!isSuper) {
       if (!branchId) return res.status(403).json({ message: 'Forbidden' })
       params.push(branchId)
-       where.push(`(s.branch_id = $${params.length} OR s.is_b2b = true)`)
+      where.push(`(s.branch_id = $${params.length} OR s.is_b2b = true)`)
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
@@ -659,6 +672,7 @@ router.get('/admin', requireAuth, async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
     res.set('Expires', '0')
+
     return res.json(list.rows)
   } catch {
     return res.status(500).json({ message: 'Server error' })
@@ -670,18 +684,18 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
   if (!id) return res.status(400).json({ message: 'id required' })
 
   try {
-    const role = String(req.user?.role_enum || '').toUpperCase()
+    const role = getUserRole(req)
     const isSuper = role === 'SUPER_ADMIN'
     const branchId = Number(req.user?.branch_id || 0)
 
     const params = [id]
     let where = `s.id = $1::uuid`
 
-if (!isSuper) {
-  if (!branchId) return res.status(403).json({ message: 'Forbidden' })
-  params.push(branchId)
-  where += ` AND (s.branch_id = $2 OR s.is_b2b = true)`
-}
+    if (!isSuper) {
+      if (!branchId) return res.status(403).json({ message: 'Forbidden' })
+      params.push(branchId)
+      where += ` AND (s.branch_id = $2 OR s.is_b2b = true)`
+    }
 
     const s = await pool.query(
       `SELECT
@@ -706,6 +720,7 @@ if (!isSuper) {
        WHERE ${where}`,
       params
     )
+
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
 
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
@@ -728,7 +743,7 @@ if (!isSuper) {
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
@@ -757,20 +772,18 @@ if (!isSuper) {
   }
 })
 
-// ══════════════════════════════════════════════════════════════
-// ADMIN B2B STATUS UPDATE ROUTE
-// ══════════════════════════════════════════════════════════════
 router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
   const client = await pool.connect()
+
   try {
     const { sale_id, new_status, new_payment_status } = req.body || {}
+
     if (!sale_id) return res.status(400).json({ message: 'sale_id required' })
 
     await client.query('BEGIN')
-    
-    // Build the dynamic update query
-    let updates = []
-    let params = [sale_id]
+
+    const updates = []
+    const params = [sale_id]
     let paramIndex = 2
 
     if (new_status) {
@@ -778,6 +791,7 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
       params.push(new_status)
       paramIndex++
     }
+
     if (new_payment_status) {
       updates.push(`payment_status = $${paramIndex}`)
       params.push(new_payment_status)
@@ -796,7 +810,7 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
 
     await client.query('COMMIT')
     return res.json(q.rows[0])
-  } catch (e) {
+  } catch {
     await client.query('ROLLBACK')
     return res.status(500).json({ message: 'Server error during B2B update' })
   } finally {
@@ -804,5 +818,4 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
   }
 })
 
-// Ensure this stays at the absolute bottom of the file!
 module.exports = router
