@@ -1,4 +1,5 @@
 const router = require('express').Router()
+const crypto = require('crypto')
 const pool = require('../db')
 const { requireAuth } = require('../middleware/auth')
 const { getTracking } = require('../controllers/orderController')
@@ -7,6 +8,130 @@ const Shiprocket = require('../services/shiprocketService')
 const toNumber = (value) => {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+const uuid = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const b = crypto.randomBytes(16)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const s = b.toString('hex')
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
+}
+
+const cleanPhone = (value) => {
+  const v = String(value || '').replace(/\D/g, '')
+  return v || '9999999999'
+}
+
+const normalizeAddress = (address) => {
+  const a = address && typeof address === 'object' ? address : {}
+
+  return {
+    line1: String(a.line1 || a.address_line1 || a.address1 || a.street || '').trim(),
+    line2: String(a.line2 || a.address_line2 || a.address2 || a.landmark || '').trim(),
+    city: String(a.city || '').trim(),
+    state: String(a.state || '').trim(),
+    pincode: String(a.pincode || a.pin_code || '').trim()
+  }
+}
+
+const createShiprocketOrder = async ({
+  saleId,
+  branchId,
+  customerName,
+  customerEmail,
+  customerMobile,
+  shippingAddress,
+  totals,
+  paymentStatus,
+  items
+}) => {
+  const whQ = await pool.query(
+    `SELECT *
+     FROM shiprocket_warehouses
+     WHERE branch_id = $1
+     LIMIT 1`,
+    [branchId]
+  )
+
+  const warehouse = whQ.rows?.[0] || null
+
+  if (!warehouse) {
+    throw new Error(`No Shiprocket pickup warehouse mapped for branch ${branchId}`)
+  }
+
+  const sr = new Shiprocket({ pool })
+  await sr.init()
+
+  const address = normalizeAddress(shippingAddress)
+  const payable = Number(totals?.payable || totals?.total || 0)
+  const payStatus = String(paymentStatus || '').toUpperCase()
+  const shiprocketPaymentMethod = payStatus === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
+
+  const shiprocketItems = items.map((it) => ({
+    variant_id: it.variant_id,
+    qty: it.qty,
+    price: it.price,
+    mrp: it.mrp,
+    size: it.size,
+    colour: it.colour,
+    image_url: it.image_url,
+    ean_code: it.ean_code,
+    name: it.name || `Variant ${it.variant_id}`
+  }))
+
+  const data = await sr.createOrderShipment({
+    channel_order_id: String(saleId),
+    pickup_location: warehouse.name,
+    order: {
+      items: shiprocketItems,
+      payment_method: shiprocketPaymentMethod,
+      weight: 0.5,
+      dimensions: {
+        length: 10,
+        breadth: 10,
+        height: 5
+      }
+    },
+    customer: {
+      name: customerName || 'Customer',
+      email: customerEmail || 'na@example.com',
+      phone: cleanPhone(customerMobile),
+      address
+    }
+  })
+
+  const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || null
+  const shiprocketOrderId = data?.order_id || data?.data?.order_id || null
+  const trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
+
+  await pool.query(
+    `INSERT INTO shipments
+       (id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, status)
+     VALUES
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [
+      uuid(),
+      saleId,
+      branchId,
+      shiprocketOrderId,
+      shipmentId,
+      null,
+      null,
+      trackingUrl,
+      'CREATED'
+    ]
+  )
+
+  return {
+    order_id: shiprocketOrderId,
+    shipment_id: shipmentId,
+    tracking_url: trackingUrl,
+    pickup_location: warehouse.name,
+    status: 'CREATED',
+    raw: data
+  }
 }
 
 router.post('/web/place', async (req, res) => {
@@ -42,7 +167,17 @@ router.post('/web/place', async (req, res) => {
       size: it.size != null ? String(it.size) : it.selected_size != null ? String(it.selected_size) : null,
       colour: it.colour != null ? String(it.colour) : it.selected_color != null ? String(it.selected_color) : null,
       image_url: it.image_url != null ? String(it.image_url) : null,
-      ean_code: it.ean_code != null ? String(it.ean_code) : it.barcode_value != null ? String(it.barcode_value) : null
+      ean_code: it.ean_code != null ? String(it.ean_code) : it.barcode_value != null ? String(it.barcode_value) : null,
+      name:
+        it.name != null
+          ? String(it.name)
+          : it.product_name != null
+            ? String(it.product_name)
+            : it.title != null
+              ? String(it.title)
+              : variantId
+                ? `Variant ${variantId}`
+                : 'Product'
     }
   })
 
@@ -61,6 +196,9 @@ router.post('/web/place', async (req, res) => {
   )
 
   const client = await pool.connect()
+
+  let saleId = null
+  let chosenBranchId = null
 
   try {
     await client.query('BEGIN')
@@ -83,7 +221,7 @@ router.post('/web/place', async (req, res) => {
       [stockJson, requestedBranchId]
     )
 
-    const chosenBranchId = branchQ.rows?.[0]?.branch_id || null
+    chosenBranchId = branchQ.rows?.[0]?.branch_id || null
 
     if (!chosenBranchId) {
       await client.query('ROLLBACK')
@@ -140,7 +278,7 @@ router.post('/web/place', async (req, res) => {
       ]
     )
 
-    const saleId = saleQ.rows?.[0]?.id || null
+    saleId = saleQ.rows?.[0]?.id || null
 
     if (!saleId) {
       await client.query('ROLLBACK')
@@ -171,13 +309,6 @@ router.post('/web/place', async (req, res) => {
     }
 
     await client.query('COMMIT')
-
-    return res.json({
-      id: saleId,
-      status: 'PLACED',
-      payment_status,
-      branch_id: chosenBranchId
-    })
   } catch (e) {
     try {
       await client.query('ROLLBACK')
@@ -189,6 +320,34 @@ router.post('/web/place', async (req, res) => {
   } finally {
     client.release()
   }
+
+  let shiprocket = null
+  let shiprocket_error = null
+
+  try {
+    shiprocket = await createShiprocketOrder({
+      saleId,
+      branchId: chosenBranchId,
+      customerName: customer_name,
+      customerEmail: customer_email,
+      customerMobile: customer_mobile,
+      shippingAddress: shipping_address,
+      totals,
+      paymentStatus: payment_status,
+      items: normalizedItems
+    })
+  } catch (e) {
+    shiprocket_error = e?.message || String(e)
+  }
+
+  return res.json({
+    id: saleId,
+    status: 'PLACED',
+    payment_status,
+    branch_id: chosenBranchId,
+    shiprocket,
+    shiprocket_error
+  })
 })
 
 router.get('/', requireAuth, async (req, res) => {
