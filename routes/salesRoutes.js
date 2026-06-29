@@ -21,6 +21,100 @@ const getUserRole = (req) => {
   return String(req.user?.role_enum || req.user?.role || '').toUpperCase()
 }
 
+const orderItemsSelectForSingleSale = `
+  SELECT
+    si.variant_id,
+    si.qty,
+    si.price,
+    si.mrp,
+    si.size,
+    si.colour,
+    si.ean_code,
+    COALESCE(
+      NULLIF(si.image_url,''),
+      NULLIF(pi.image_url,''),
+      CASE
+        WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
+        THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+        ELSE NULL
+      END
+    ) AS image_url,
+    p.name AS product_name,
+    p.brand_name
+  FROM sale_items si
+  LEFT JOIN product_variants v ON v.id = si.variant_id
+  LEFT JOIN products p ON p.id = v.product_id
+  LEFT JOIN LATERAL (
+    SELECT pix.image_url
+    FROM product_images pix
+    WHERE pix.ean_code = si.ean_code
+    ORDER BY
+      CASE
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'front' THEN 0
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'main' THEN 1
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'back' THEN 2
+        ELSE 3
+      END,
+      pix.id ASC
+    LIMIT 1
+  ) pi ON TRUE
+  WHERE si.sale_id = $1::uuid
+`
+
+const orderItemsSelectForMultipleSales = `
+  SELECT
+    si.sale_id,
+    si.variant_id,
+    si.qty,
+    si.price,
+    si.mrp,
+    si.size,
+    si.colour,
+    si.ean_code,
+    COALESCE(
+      NULLIF(si.image_url,''),
+      NULLIF(pi.image_url,''),
+      CASE
+        WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
+        THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+        ELSE NULL
+      END
+    ) AS image_url,
+    p.name AS product_name,
+    p.brand_name
+  FROM sale_items si
+  LEFT JOIN product_variants v ON v.id = si.variant_id
+  LEFT JOIN products p ON p.id = v.product_id
+  LEFT JOIN LATERAL (
+    SELECT pix.image_url
+    FROM product_images pix
+    WHERE pix.ean_code = si.ean_code
+    ORDER BY
+      CASE
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'front' THEN 0
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'main' THEN 1
+        WHEN LOWER(COALESCE(pix.image_type, '')) = 'back' THEN 2
+        ELSE 3
+      END,
+      pix.id ASC
+    LIMIT 1
+  ) pi ON TRUE
+  WHERE si.sale_id = ANY($1::uuid[])
+`
+
+const mapSaleItem = (r) => ({
+  variant_id: r.variant_id,
+  qty: Number(r.qty || 0),
+  price: Number(r.price || 0),
+  mrp: r.mrp != null ? Number(r.mrp) : null,
+  size: r.size,
+  colour: r.colour,
+  ean_code: r.ean_code,
+  image_url: r.image_url,
+  product_name: r.product_name,
+  brand_name: r.brand_name
+})
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -52,9 +146,10 @@ router.post('/web/place', async (req, res) => {
   }
 
   const agg = new Map()
+
   for (const it of items) {
     const vId = Number(it?.variant_id ?? it?.product_id)
-    const qty = Number(it?.qty ?? 1)
+    const qty = Number(it?.qty ?? it?.quantity ?? 1)
     if (!vId || qty <= 0) continue
     agg.set(vId, (agg.get(vId) || 0) + qty)
   }
@@ -79,14 +174,14 @@ router.post('/web/place', async (req, res) => {
     for (const it of items) {
       const mrp = Number(it?.mrp ?? it?.price ?? 0) || 0
       const price = Number(it?.price ?? 0) || 0
-      const qty = Number(it?.qty ?? 1) || 1
+      const qty = Number(it?.qty ?? it?.quantity ?? 1) || 1
       bagTotal += mrp * qty
       discountTotal += Math.max(mrp - price, 0) * qty
     }
 
     const couponPct = Number(totals?.couponPct ?? 0) || 0
     const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100)
-    const convenience = Number(totals?.convenience ?? 0) || 0
+    const convenience = Number(totals?.convenience ?? totals?.shipping ?? 0) || 0
     const giftWrap = Number(totals?.giftWrap ?? 0) || 0
     const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap
 
@@ -101,13 +196,16 @@ router.post('/web/place', async (req, res) => {
     }
 
     const baseTotals = JSON.stringify(totals && typeof totals === 'object' ? totals : saleTotals)
-    const storedEmail = login_email || customer_email || null ? String(login_email || customer_email) : null
+    const storedEmail = login_email || customer_email ? String(login_email || customer_email) : null
 
     if (providedBranchId) {
       resolvedBranchId = providedBranchId
     } else {
       const pairs = []
-      for (const [vId, qty] of agg.entries()) pairs.push({ variant_id: vId, qty })
+
+      for (const [vId, qty] of agg.entries()) {
+        pairs.push({ variant_id: vId, qty })
+      }
 
       const cartJson = JSON.stringify(pairs)
 
@@ -141,6 +239,7 @@ router.post('/web/place', async (req, res) => {
 
     for (const vId of variantIds) {
       const qty = Number(agg.get(vId) || 0)
+
       const upd = await client.query(
         `
         UPDATE branch_variant_stock
@@ -199,7 +298,7 @@ router.post('/web/place', async (req, res) => {
 
     for (const it of items) {
       const vId = Number(it?.variant_id ?? it?.product_id)
-      const qty = Number(it?.qty ?? 1) || 1
+      const qty = Number(it?.qty ?? it?.quantity ?? 1) || 1
 
       await client.query(
         `INSERT INTO sale_items
@@ -255,7 +354,7 @@ router.post('/web/place', async (req, res) => {
       pincode: shipping_address?.pincode || null,
       items: items.map(it => ({
         variant_id: Number(it?.variant_id ?? it?.product_id),
-        qty: Number(it?.qty ?? 1),
+        qty: Number(it?.qty ?? it?.quantity ?? 1),
         price: Number(it?.price ?? 0),
         mrp: it?.mrp != null ? Number(it.mrp) : Number(it?.price ?? 0),
         size: it?.size ?? it?.selected_size ?? null,
@@ -345,8 +444,10 @@ router.post('/web/b2b-place', async (req, res) => {
 
     await client.query('COMMIT')
     return res.json({ id: saleId, status: 'B2B_PENDING', message: 'Bulk order submitted successfully' })
-  } catch (e) {
-    await client.query('ROLLBACK')
+  } catch {
+    try {
+      await client.query('ROLLBACK')
+    } catch {}
     return res.status(500).json({ message: 'Failed to place B2B order' })
   } finally {
     client.release()
@@ -361,12 +462,10 @@ router.post('/web/set-payment-status', async (req, res) => {
     const status = String(req.body.status || '').trim().toUpperCase()
 
     if (!requestedSaleId || !status) {
-      client.release()
       return res.status(400).json({ message: 'sale_id and status required' })
     }
 
     if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(status)) {
-      client.release()
       return res.status(400).json({ message: 'invalid status' })
     }
 
@@ -382,7 +481,6 @@ router.post('/web/set-payment-status', async (req, res) => {
 
     if (!saleQ.rowCount) {
       await client.query('ROLLBACK')
-      client.release()
       return res.status(404).json({ message: 'Sale not found' })
     }
 
@@ -391,7 +489,6 @@ router.post('/web/set-payment-status', async (req, res) => {
 
     if (currentStatus === status) {
       await client.query('COMMIT')
-      client.release()
       return res.json({ id: saleRow.id, payment_status: currentStatus })
     }
 
@@ -401,7 +498,6 @@ router.post('/web/set-payment-status', async (req, res) => {
     )
 
     await client.query('COMMIT')
-    client.release()
 
     return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
   } catch (e) {
@@ -409,12 +505,10 @@ router.post('/web/set-payment-status', async (req, res) => {
       await client.query('ROLLBACK')
     } catch {}
 
-    try {
-      client.release()
-    } catch {}
-
     const msg = isDebug() ? e?.message || String(e) : 'Server error'
     return res.status(500).json({ message: msg })
+  } finally {
+    client.release()
   }
 })
 
@@ -497,60 +591,22 @@ router.get('/web/by-user', async (req, res) => {
     if (salesQ.rowCount === 0) return res.json([])
 
     const ids = salesQ.rows.map(r => r.id)
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
 
-    const itemsQ = await pool.query(
-      `SELECT
-         si.sale_id,
-         si.variant_id,
-         si.qty,
-         si.price,
-         si.mrp,
-         si.size,
-         si.colour,
-         si.ean_code,
-         COALESCE(
-           NULLIF(si.image_url,''),
-           NULLIF(pi.image_url,''),
-           CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
-             ELSE NULL
-           END
-         ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
-       FROM sale_items si
-       LEFT JOIN product_variants v ON v.id = si.variant_id
-       LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
-       WHERE si.sale_id = ANY($1::uuid[])`,
-      [ids, cloud]
-    )
+    const itemsQ = await pool.query(orderItemsSelectForMultipleSales, [ids, cloud])
 
     const bySale = new Map()
-    for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] })
+
+    for (const s of salesQ.rows) {
+      bySale.set(s.id, { ...s, items: [] })
+    }
 
     for (const it of itemsQ.rows) {
       const rec = bySale.get(it.sale_id)
-
-      if (rec) {
-        rec.items.push({
-          variant_id: it.variant_id,
-          qty: Number(it.qty || 0),
-          price: Number(it.price || 0),
-          mrp: it.mrp != null ? Number(it.mrp) : null,
-          size: it.size,
-          colour: it.colour,
-          ean_code: it.ean_code,
-          image_url: it.image_url,
-          product_name: it.product_name,
-          brand_name: it.brand_name
-        })
-      }
+      if (rec) rec.items.push(mapSaleItem(it))
     }
 
-    res.json(Array.from(bySale.values()))
+    return res.json(Array.from(bySale.values()))
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
@@ -587,48 +643,9 @@ router.get('/web/:id', async (req, res) => {
 
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
 
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
-
-    const itemsQ = await pool.query(
-      `SELECT
-         si.variant_id,
-         si.qty,
-         si.price,
-         si.mrp,
-         si.size,
-         si.colour,
-         si.ean_code,
-         COALESCE(
-           NULLIF(si.image_url,''),
-           NULLIF(pi.image_url,''),
-           CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
-             ELSE NULL
-           END
-         ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
-       FROM sale_items si
-       LEFT JOIN product_variants v ON v.id = si.variant_id
-       LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
-       WHERE si.sale_id = $1::uuid`,
-      [id, cloud]
-    )
-
-    const items = itemsQ.rows.map(r => ({
-      variant_id: r.variant_id,
-      qty: Number(r.qty || 0),
-      price: Number(r.price || 0),
-      mrp: r.mrp != null ? Number(r.mrp) : null,
-      size: r.size,
-      colour: r.colour,
-      ean_code: r.ean_code,
-      image_url: r.image_url,
-      product_name: r.product_name,
-      brand_name: r.brand_name
-    }))
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
+    const itemsQ = await pool.query(orderItemsSelectForSingleSale, [id, cloud])
+    const items = itemsQ.rows.map(mapSaleItem)
 
     return res.json({ sale: s.rows[0], items })
   } catch {
@@ -723,48 +740,9 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
 
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
 
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
-
-    const itemsQ = await pool.query(
-      `SELECT
-         si.variant_id,
-         si.qty,
-         si.price,
-         si.mrp,
-         si.size,
-         si.colour,
-         si.ean_code,
-         COALESCE(
-           NULLIF(si.image_url,''),
-           NULLIF(pi.image_url,''),
-           CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
-             ELSE NULL
-           END
-         ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
-       FROM sale_items si
-       LEFT JOIN product_variants v ON v.id = si.variant_id
-       LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
-       WHERE si.sale_id = $1::uuid`,
-      [id, cloud]
-    )
-
-    const items = itemsQ.rows.map(r => ({
-      variant_id: r.variant_id,
-      qty: Number(r.qty || 0),
-      price: Number(r.price || 0),
-      mrp: r.mrp != null ? Number(r.mrp) : null,
-      size: r.size,
-      colour: r.colour,
-      ean_code: r.ean_code,
-      image_url: r.image_url,
-      product_name: r.product_name,
-      brand_name: r.brand_name
-    }))
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
+    const itemsQ = await pool.query(orderItemsSelectForSingleSale, [id, cloud])
+    const items = itemsQ.rows.map(mapSaleItem)
 
     return res.json({ sale: s.rows[0], items })
   } catch {
@@ -809,9 +787,13 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
     )
 
     await client.query('COMMIT')
+
     return res.json(q.rows[0])
   } catch {
-    await client.query('ROLLBACK')
+    try {
+      await client.query('ROLLBACK')
+    } catch {}
+
     return res.status(500).json({ message: 'Server error during B2B update' })
   } finally {
     client.release()
