@@ -20,6 +20,7 @@ router.post('/vandana-cart', async (req, res) => {
   const {
     user_id,
     product_id,
+    variant_id,
     selected_size,
     selected_color,
     quantity,
@@ -30,7 +31,7 @@ router.post('/vandana-cart', async (req, res) => {
     custom_price,
     custom_original_price,
     custom_payload
-  } = req.body
+  } = req.body || {}
 
   const uid = toInt(user_id)
   const qty = Math.max(1, toInt(quantity) || 1)
@@ -93,10 +94,10 @@ router.post('/vandana-cart', async (req, res) => {
       })
     }
 
-    const vid = toInt(product_id)
+    const vid = toInt(variant_id || product_id)
 
     if (!vid) {
-      return res.status(400).json({ message: 'Missing product_id' })
+      return res.status(400).json({ message: 'Missing variant_id' })
     }
 
     const exists = await pool.query(
@@ -143,14 +144,15 @@ router.put('/vandana-cart', async (req, res) => {
     cart_item_id,
     user_id,
     product_id,
+    variant_id,
     selected_size,
     selected_color,
     quantity
-  } = req.body
+  } = req.body || {}
 
   const uid = toInt(user_id)
   const cartItemId = toInt(cart_item_id)
-  const vid = toInt(product_id)
+  const vid = toInt(variant_id || product_id)
   const qty = toInt(quantity)
   const size = toText(selected_size)
   const color = toText(selected_color)
@@ -322,6 +324,7 @@ router.get('/:userId', async (req, res) => {
           brand,
           gender,
           color,
+          color AS colour,
           size,
           selected_size,
           selected_color,
@@ -386,6 +389,7 @@ router.get('/:userId', async (req, res) => {
           COALESCE(NULLIF(c.custom_brand, ''), 'V1Garments') AS brand,
           'Custom' AS gender,
           c.selected_color AS color,
+          c.selected_color AS colour,
           c.selected_size AS size,
           c.selected_size,
           c.selected_color,
@@ -428,13 +432,14 @@ router.delete('/vandana-cart', async (req, res) => {
     cart_item_id,
     user_id,
     product_id,
+    variant_id,
     selected_size,
     selected_color
-  } = req.body
+  } = req.body || {}
 
   const uid = toInt(user_id)
   const cartItemId = toInt(cart_item_id)
-  const vid = toInt(product_id)
+  const vid = toInt(variant_id || product_id)
   const size = toText(selected_size)
   const color = toText(selected_color)
 
