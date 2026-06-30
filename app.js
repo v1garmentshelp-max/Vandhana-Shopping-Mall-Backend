@@ -19,7 +19,8 @@ const defaultOrigins = [
   'http://127.0.0.1:5173',
   'https://vandhana-shopping-mall-backend.vercel.app',
   'https://vandhana-shopping-mall-admin.vercel.app',
-  'https://vandhana-shopping-mall-website.vercel.app'
+  'https://vandhana-shopping-mall-website.vercel.app',
+  'https://www.v1garments.com'
 ]
 
 const envOrigins = (process.env.CORS_ORIGINS || '')
