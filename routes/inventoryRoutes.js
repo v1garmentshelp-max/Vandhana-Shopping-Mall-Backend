@@ -1,69 +1,164 @@
-const express = require('express');
-const pool = require('../db');
-const { requireAuth } = require('../middleware/auth');
-const router = express.Router();
+const express = require('express')
+const pool = require('../db')
+const { requireAuth } = require('../middleware/auth')
+
+const router = express.Router()
+
+router.get('/scan', requireAuth, async (req, res) => {
+  const branchId = Number(req.query.branch_id || req.query.branchId || req.user?.branch_id || 0)
+  const eanCode = String(req.query.ean_code || req.query.ean || req.query.barcode || '').trim()
+
+  if (!branchId || !eanCode) {
+    return res.status(400).json({ message: 'branch_id and ean_code required' })
+  }
+
+  try {
+    const q = await pool.query(
+      `
+      SELECT
+        b.variant_id,
+        b.ean_code,
+        p.name AS product_name,
+        p.brand_name,
+        v.size,
+        v.colour,
+        v.mrp,
+        COALESCE(v.sale_price, v.final_price_b2c, v.price, v.mrp, 0) AS sale_price,
+        COALESCE(bvs.on_hand, 0) AS on_hand,
+        COALESCE(bvs.reserved, 0) AS reserved,
+        pi.image_url
+      FROM barcodes b
+      JOIN product_variants v ON v.id = b.variant_id
+      LEFT JOIN products p ON p.id = v.product_id
+      LEFT JOIN branch_variant_stock bvs
+        ON bvs.variant_id = v.id
+       AND bvs.branch_id = $2
+      LEFT JOIN LATERAL (
+        SELECT pix.image_url
+        FROM product_images pix
+        WHERE pix.ean_code = b.ean_code
+        ORDER BY
+          CASE
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'front' THEN 0
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'main' THEN 1
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'back' THEN 2
+            ELSE 3
+          END,
+          pix.id ASC
+        LIMIT 1
+      ) pi ON TRUE
+      WHERE b.ean_code = $1
+      LIMIT 1
+      `,
+      [eanCode, branchId]
+    )
+
+    if (!q.rowCount) {
+      return res.status(404).json({ message: 'Barcode not found' })
+    }
+
+    const row = q.rows[0]
+
+    if (Number(row.on_hand || 0) <= 0) {
+      return res.status(409).json({ message: 'Insufficient stock' })
+    }
+
+    return res.json({
+      ok: true,
+      variant_id: row.variant_id,
+      ean_code: row.ean_code,
+      product_name: row.product_name,
+      brand_name: row.brand_name,
+      size: row.size,
+      colour: row.colour,
+      mrp: row.mrp,
+      sale_price: row.sale_price,
+      on_hand: row.on_hand,
+      reserved: row.reserved,
+      image_url: row.image_url
+    })
+  } catch {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
 
 router.post('/scan', requireAuth, async (req, res) => {
-  const { branch_id, ean_code, qty = 1, sale_id, client_action_id } = req.body || {};
-  const branchId = Number(branch_id || req.user.branch_id);
-  if (!branchId || !ean_code || !sale_id || !client_action_id) {
-    return res.status(400).json({ message: 'branch_id, ean_code, sale_id, client_action_id required' });
+  const branchId = Number(req.body?.branch_id || req.body?.branchId || req.user?.branch_id || 0)
+  const eanCode = String(req.body?.ean_code || req.body?.ean || req.body?.barcode || '').trim()
+  const qty = Math.max(1, Number(req.body?.qty || 1))
+
+  if (!branchId || !eanCode) {
+    return res.status(400).json({ message: 'branch_id and ean_code required' })
   }
 
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    const q = await pool.query(
+      `
+      SELECT
+        b.variant_id,
+        b.ean_code,
+        p.name AS product_name,
+        p.brand_name,
+        v.size,
+        v.colour,
+        v.mrp,
+        COALESCE(v.sale_price, v.final_price_b2c, v.price, v.mrp, 0) AS sale_price,
+        COALESCE(bvs.on_hand, 0) AS on_hand,
+        COALESCE(bvs.reserved, 0) AS reserved,
+        pi.image_url
+      FROM barcodes b
+      JOIN product_variants v ON v.id = b.variant_id
+      LEFT JOIN products p ON p.id = v.product_id
+      LEFT JOIN branch_variant_stock bvs
+        ON bvs.variant_id = v.id
+       AND bvs.branch_id = $2
+      LEFT JOIN LATERAL (
+        SELECT pix.image_url
+        FROM product_images pix
+        WHERE pix.ean_code = b.ean_code
+        ORDER BY
+          CASE
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'front' THEN 0
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'main' THEN 1
+            WHEN LOWER(COALESCE(pix.image_type, '')) = 'back' THEN 2
+            ELSE 3
+          END,
+          pix.id ASC
+        LIMIT 1
+      ) pi ON TRUE
+      WHERE b.ean_code = $1
+      LIMIT 1
+      `,
+      [eanCode, branchId]
+    )
 
-    const idem = await client.query('SELECT key FROM idempotency_keys WHERE key = $1', [client_action_id]);
-    if (idem.rowCount) {
-      await client.query('COMMIT');
-      return res.json({ ok: true, idempotent: true });
+    if (!q.rowCount) {
+      return res.status(404).json({ message: 'Barcode not found' })
     }
 
-    const b = await client.query('SELECT variant_id FROM barcodes WHERE ean_code = $1', [ean_code]);
-    if (!b.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'Barcode not found' });
-    }
-    const variantId = b.rows[0].variant_id;
+    const row = q.rows[0]
 
-    const s0 = await client.query(
-      'SELECT on_hand, reserved FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
-      [branchId, variantId]
-    );
-    if (!s0.rowCount) {
-      await client.query(
-        'INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active) VALUES ($1,$2,0,0,TRUE)',
-        [branchId, variantId]
-      );
-    }
-    const s1 = await client.query(
-      'SELECT on_hand, reserved FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
-      [branchId, variantId]
-    );
-    const onHand = Number(s1.rows[0].on_hand || 0);
-    if (onHand < qty) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ message: 'Insufficient stock' });
+    if (Number(row.on_hand || 0) < qty) {
+      return res.status(409).json({ message: 'Insufficient stock' })
     }
 
-    await client.query(
-      `UPDATE branch_variant_stock
-       SET on_hand = on_hand - $3,
-           reserved = reserved + $3
-       WHERE branch_id = $1 AND variant_id = $2`,
-      [branchId, variantId, qty]
-    );
-
-    await client.query('INSERT INTO idempotency_keys (key) VALUES ($1)', [client_action_id]);
-    await client.query('COMMIT');
-    res.json({ ok: true, variant_id: variantId });
-  } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ message: 'Server error' });
-  } finally {
-    client.release();
+    return res.json({
+      ok: true,
+      variant_id: row.variant_id,
+      ean_code: row.ean_code,
+      product_name: row.product_name,
+      brand_name: row.brand_name,
+      size: row.size,
+      colour: row.colour,
+      mrp: row.mrp,
+      sale_price: row.sale_price,
+      on_hand: row.on_hand,
+      reserved: row.reserved,
+      image_url: row.image_url
+    })
+  } catch {
+    return res.status(500).json({ message: 'Server error' })
   }
-});
+})
 
-module.exports = router;
+module.exports = router
