@@ -875,11 +875,53 @@ router.get('/:branchId/stock', async (req, res) => {
          v.id AS variant_id,
          v.size,
          v.colour,
-         v.mrp,
-         v.sale_price,
-         v.cost_price,
+         v.mrp::numeric AS mrp,
+         v.sale_price::numeric AS base_sale_price,
+         v.sale_price::numeric AS original_sale_price,
+         v.cost_price::numeric AS cost_price,
+         COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
+         COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
+         v.mrp::numeric AS original_price_b2c,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS final_price_b2c,
+         v.mrp::numeric AS original_price_b2b,
+         CASE
+           WHEN COALESCE(v.b2b_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS final_price_b2b,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS sale_price,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS price,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS selling_price,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS discounted_price,
+         CASE
+           WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+             THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+           ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+         END AS mahaveer_price,
          bvs.on_hand,
          bvs.reserved,
+         GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+         TRUE AS in_stock,
          COALESCE(bc.ean_code,'') AS barcode,
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(imgs.front_image_url, imgs.main_image_url, v.image_url, '') AS image_url,
