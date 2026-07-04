@@ -363,8 +363,8 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
   ) pi ON TRUE
   LEFT JOIN LATERAL (
     SELECT
-      SUM(on_hand) AS on_hand,
-      SUM(reserved) AS reserved,
+      SUM(on_hand) FILTER (WHERE is_active = TRUE) AS on_hand,
+      SUM(reserved) FILTER (WHERE is_active = TRUE) AS reserved,
       BOOL_OR(is_active) AS is_active
     FROM branch_variant_stock bvs
     WHERE bvs.variant_id = v.id
@@ -462,6 +462,11 @@ const buildExpandedCandidatesFromRow = (r) => {
   return Array.from(out).map((x) => x.split('||')[1])
 }
 
+function productWhere(extra = '') {
+  const base = `v.is_active = TRUE AND COALESCE(bvs.is_active, FALSE) = TRUE AND COALESCE(bvs.on_hand, 0) > 0`
+  return extra ? `${base} AND ${extra}` : base
+}
+
 router.get('/', async (req, res) => {
   try {
     const genderQ = toGender(req.query.gender || req.query.category || '')
@@ -477,7 +482,7 @@ router.get('/', async (req, res) => {
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true'
 
     const params = []
-    let where = 'v.is_active = TRUE'
+    let where = productWhere()
 
     if (genderQ) {
       params.push(genderQ)
@@ -585,12 +590,14 @@ router.get('/suggest', async (req, res) => {
         FROM products p
         JOIN product_variants v ON v.product_id = p.id
         LEFT JOIN LATERAL (
-          SELECT BOOL_OR(is_active) AS is_active
+          SELECT BOOL_OR(is_active) AS is_active, SUM(on_hand) FILTER (WHERE is_active = TRUE) AS on_hand
           FROM branch_variant_stock bvs
           WHERE bvs.variant_id = v.id
             AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
         ) bvs ON TRUE
         WHERE ${where}
+          AND COALESCE(bvs.is_active, FALSE) = TRUE
+          AND COALESCE(bvs.on_hand, 0) > 0
         ORDER BY p.name ASC
         LIMIT 800
       )
@@ -645,7 +652,7 @@ router.get('/category/:category', async (req, res) => {
     const wantRandom = String(req.query.random || '').trim() === '1'
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true'
     const params = []
-    let where = 'v.is_active = TRUE'
+    let where = productWhere()
     if (g) {
       params.push(g)
       where += ` AND p.gender = $${params.length}`
@@ -679,7 +686,7 @@ router.get('/gender/:gender', async (req, res) => {
     const wantRandom = String(req.query.random || '').trim() === '1'
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true'
     const params = []
-    let where = 'v.is_active = TRUE'
+    let where = productWhere()
     if (g) {
       params.push(g)
       where += ` AND p.gender = $${params.length}`
@@ -719,7 +726,7 @@ router.get('/search', async (req, res) => {
 
     const genderQ = toGender(req.query.gender || req.query.category || '')
     const params = []
-    let where = 'v.is_active = TRUE'
+    let where = productWhere()
 
     if (genderQ) {
       params.push(genderQ)
@@ -802,7 +809,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     const cloudIdx = 3
     const { rows } = await pool.query(
       `
-      ${buildProductSelectSql({ where: 'v.id = $1', branchIdx, cloudIdx })}
+      ${buildProductSelectSql({ where: productWhere('v.id = $1'), branchIdx, cloudIdx })}
       `,
       [req.params.id, branchId, cloud]
     )
@@ -814,12 +821,12 @@ router.get('/:id(\\d+)', async (req, res) => {
 })
 
 router.put('/:id(\\d+)', async (req, res) => {
-  const client = await pool.connect();
+  const client = await pool.connect()
 
   try {
-    const variantId = parseInt(req.params.id, 10);
+    const variantId = parseInt(req.params.id, 10)
     if (!Number.isFinite(variantId) || variantId <= 0) {
-      return res.status(400).json({ message: 'Invalid product id' });
+      return res.status(400).json({ message: 'Invalid product id' })
     }
 
     const {
@@ -836,9 +843,9 @@ router.put('/:id(\\d+)', async (req, res) => {
       final_price_b2c,
       total_count,
       image_url
-    } = req.body || {};
+    } = req.body || {}
 
-    await client.query('BEGIN');
+    await client.query('BEGIN')
 
     const existingVariant = await client.query(
       `
@@ -853,30 +860,30 @@ router.put('/:id(\\d+)', async (req, res) => {
       LIMIT 1
       `,
       [variantId]
-    );
+    )
 
     if (!existingVariant.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'Product not found' });
+      await client.query('ROLLBACK')
+      return res.status(404).json({ message: 'Product not found' })
     }
 
-    const row = existingVariant.rows[0];
-    const productId = row.product_id;
+    const row = existingVariant.rows[0]
+    const productId = row.product_id
 
-    const gender = toGender(category);
+    const gender = toGender(category)
     if (!gender) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'Invalid category. Use Men, Women, or Kids' });
+      await client.query('ROLLBACK')
+      return res.status(400).json({ message: 'Invalid category. Use Men, Women, or Kids' })
     }
 
     const mrp =
       Number.isFinite(Number(original_price_b2c))
         ? Number(original_price_b2c)
-        : Number(original_price_b2b);
+        : Number(original_price_b2b)
 
-    const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0;
-    const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0;
-    const stockCount = Math.max(0, parseInt(total_count, 10) || 0);
+    const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0
+    const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0
+    const stockCount = Math.max(0, parseInt(total_count, 10) || 0)
 
     await client.query(
       `
@@ -888,7 +895,7 @@ router.put('/:id(\\d+)', async (req, res) => {
       WHERE id = $4
       `,
       [product_name, brand, gender, productId]
-    );
+    )
 
     await client.query(
       `
@@ -899,13 +906,14 @@ router.put('/:id(\\d+)', async (req, res) => {
         mrp = $3,
         b2b_discount_pct = $4,
         b2c_discount_pct = $5,
-        image_url = $6
+        image_url = $6,
+        is_active = TRUE
       WHERE id = $7
       `,
       [color, size, mrp, b2bDiscount, b2cDiscount, image_url || null, variantId]
-    );
+    )
 
-    const branchId = getBranchIdFromReq(req);
+    const branchId = getBranchIdFromReq(req)
 
     if (branchId) {
       const existingStock = await client.query(
@@ -916,17 +924,19 @@ router.put('/:id(\\d+)', async (req, res) => {
         LIMIT 1
         `,
         [variantId, branchId]
-      );
+      )
 
       if (existingStock.rows.length) {
         await client.query(
           `
           UPDATE branch_variant_stock
-          SET on_hand = $1
+          SET on_hand = $1,
+              is_active = TRUE,
+              updated_at = NOW()
           WHERE variant_id = $2 AND branch_id = $3
           `,
           [stockCount, variantId, branchId]
-        );
+        )
       } else {
         await client.query(
           `
@@ -934,19 +944,19 @@ router.put('/:id(\\d+)', async (req, res) => {
           VALUES ($1, $2, $3, 0, TRUE)
           `,
           [variantId, branchId, stockCount]
-        );
+        )
       }
     }
 
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
     const refreshed = await client.query(
       `
-      ${buildProductSelectSql({ where: 'v.id = $1', branchIdx: 2, cloudIdx: 3 })}
+      ${buildProductSelectSql({ where: productWhere('v.id = $1'), branchIdx: 2, cloudIdx: 3 })}
       `,
       [variantId, branchId, cloud]
-    );
+    )
 
-    await client.query('COMMIT');
+    await client.query('COMMIT')
 
     if (!refreshed.rows.length) {
       return res.json({
@@ -964,10 +974,10 @@ router.put('/:id(\\d+)', async (req, res) => {
         final_price_b2c,
         total_count: stockCount,
         image_url
-      });
+      })
     }
 
-    const updatedRow = refreshed.rows[0];
+    const updatedRow = refreshed.rows[0]
 
     return res.json({
       ...updatedRow,
@@ -977,28 +987,29 @@ router.put('/:id(\\d+)', async (req, res) => {
       final_price_b2b,
       final_price_b2c,
       total_count: stockCount
-    });
+    })
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK')
     return res.status(500).json({
       message: 'Error updating product',
       error: err.message
-    });
+    })
   } finally {
-    client.release();
+    client.release()
   }
-});
-
+})
 
 router.delete('/:id(\\d+)', async (req, res) => {
-  const client = await pool.connect();
+  const client = await pool.connect()
 
   try {
-    const variantId = parseInt(req.params.id, 10);
+    const variantId = parseInt(req.params.id, 10)
 
     if (!Number.isFinite(variantId) || variantId <= 0) {
-      return res.status(400).json({ message: 'Invalid product id' });
+      return res.status(400).json({ message: 'Invalid product id' })
     }
+
+    await client.query('BEGIN')
 
     const existing = await client.query(
       `
@@ -1008,10 +1019,11 @@ router.delete('/:id(\\d+)', async (req, res) => {
       LIMIT 1
       `,
       [variantId]
-    );
+    )
 
     if (!existing.rows.length) {
-      return res.status(404).json({ message: 'Product not found' });
+      await client.query('ROLLBACK')
+      return res.status(404).json({ message: 'Product not found' })
     }
 
     await client.query(
@@ -1021,21 +1033,34 @@ router.delete('/:id(\\d+)', async (req, res) => {
       WHERE id = $1
       `,
       [variantId]
-    );
+    )
+
+    await client.query(
+      `
+      UPDATE branch_variant_stock
+      SET is_active = FALSE,
+          on_hand = 0,
+          updated_at = NOW()
+      WHERE variant_id = $1
+      `,
+      [variantId]
+    )
+
+    await client.query('COMMIT')
 
     return res.json({
       message: 'Product deleted successfully',
       id: variantId
-    });
+    })
   } catch (err) {
+    await client.query('ROLLBACK')
     return res.status(500).json({
       message: 'Error deleting product',
       error: err.message
-    });
+    })
   } finally {
-    client.release();
+    client.release()
   }
-});
-
+})
 
 module.exports = router

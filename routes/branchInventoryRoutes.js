@@ -856,7 +856,7 @@ router.get('/:branchId/stock', async (req, res) => {
     await ensureProductImagesTable()
 
     const params = [branchId]
-    let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`
+    let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE AND v.is_active = TRUE AND bvs.on_hand > 0`
 
     if (gender) {
       params.push(gender)
@@ -937,6 +937,8 @@ router.get('/:branchId/discounts', async (req, res) => {
              JOIN branch_variant_stock bvs ON bvs.variant_id = v.id
              WHERE bvs.branch_id = $1
                AND v.b2c_discount_pct IS NOT NULL
+               AND v.is_active = TRUE
+               AND bvs.is_active = TRUE
              LIMIT 1
            ),
            0
@@ -948,6 +950,8 @@ router.get('/:branchId/discounts', async (req, res) => {
              JOIN branch_variant_stock bvs ON bvs.variant_id = v.id
              WHERE bvs.branch_id = $1
                AND v.b2b_discount_pct IS NOT NULL
+               AND v.is_active = TRUE
+               AND bvs.is_active = TRUE
              LIMIT 1
            ),
            0
@@ -986,7 +990,9 @@ router.post('/:branchId/discounts', async (req, res) => {
              b2b_discount_pct = $3
        FROM branch_variant_stock bvs
        WHERE bvs.variant_id = v.id
-         AND bvs.branch_id = $1`,
+         AND bvs.branch_id = $1
+         AND v.is_active = TRUE
+         AND bvs.is_active = TRUE`,
       [branchId, b2c, b2b]
     )
 
