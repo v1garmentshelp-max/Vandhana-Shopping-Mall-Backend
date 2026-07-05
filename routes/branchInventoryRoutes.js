@@ -196,12 +196,18 @@ async function ensureProductImagesTable() {
     )
   `)
 
-  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS id BIGSERIAL`)
   await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS ean_code TEXT`)
   await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_type TEXT NOT NULL DEFAULT 'main'`)
   await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_url TEXT`)
   await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS public_id TEXT`)
   await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ DEFAULT NOW()`)
+  await pool.query(`
+    DELETE FROM product_images a
+    USING product_images b
+    WHERE a.ctid < b.ctid
+      AND a.ean_code = b.ean_code
+      AND a.image_type = b.image_type
+  `)
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS product_images_ean_code_image_type_key ON product_images(ean_code, image_type)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_images_ean_code ON product_images(ean_code)`)
 }
@@ -423,7 +429,7 @@ function groupStockRows(rows) {
     })
 
     const selected = rowsSorted[0] || group._rows[0] || {}
-    const imageRow = group._rows.find(r => r.image_url) || selected
+    const imageRow = group._rows.find(r => r.front_image_url || r.main_image_url || r.image_url) || selected
     const sizes = sortVariantValues(group.variants.map(v => v.size))
     const colours = sortVariantValues(group.variants.map(v => v.colour))
     const barcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
@@ -475,7 +481,7 @@ function groupStockRows(rows) {
       available_qty: totalAvailable,
       total_count: totalOnHand,
       in_stock: totalAvailable > 0,
-      image_url: imageRow.image_url,
+      image_url: imageRow.image_url || '',
       front_image_url: imageRow.front_image_url || '',
       back_image_url: imageRow.back_image_url || '',
       main_image_url: imageRow.main_image_url || '',
@@ -796,36 +802,73 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 
           const productId = pRes.rows[0].id
 
-          const vRes = await client.query(
-            `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
-             VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
-             ON CONFLICT (product_id, size, colour)
-             DO UPDATE SET is_active = TRUE,
-                           mrp = EXCLUDED.mrp,
-                           sale_price = EXCLUDED.sale_price,
-                           cost_price = EXCLUDED.cost_price,
-                           b2c_discount_pct = EXCLUDED.b2c_discount_pct,
-                           b2b_discount_pct = EXCLUDED.b2b_discount_pct
-             RETURNING id`,
-            [productId, prepared.SIZE, prepared.COLOUR, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
-          )
-
-          const variantId = vRes.rows[0].id
-
           const existingBarcode = await client.query(
-            `SELECT variant_id FROM barcodes WHERE ean_code = $1 LIMIT 1`,
+            `SELECT variant_id
+             FROM barcodes
+             WHERE REGEXP_REPLACE(UPPER(TRIM(ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
+             ORDER BY id ASC
+             LIMIT 1`,
             [prepared.Barcode]
           )
 
-          if (existingBarcode.rowCount && Number(existingBarcode.rows[0].variant_id) !== Number(variantId)) {
-            throw new Error(`Barcode already exists for another variant: ${prepared.Barcode}`)
-          }
+          let variantId
 
-          if (!existingBarcode.rowCount) {
+          if (existingBarcode.rowCount) {
+            variantId = existingBarcode.rows[0].variant_id
+
+            await client.query(
+              `UPDATE product_variants
+               SET product_id = $1,
+                   size = $2,
+                   colour = $3,
+                   is_active = TRUE,
+                   mrp = $4,
+                   sale_price = $5,
+                   cost_price = $6,
+                   b2c_discount_pct = $7,
+                   b2b_discount_pct = $8
+               WHERE id = $9`,
+              [
+                productId,
+                prepared.SIZE,
+                prepared.COLOUR,
+                prepared.MRP,
+                prepared.RSalePrice,
+                prepared.CostPrice,
+                prepared.B2CDiscount,
+                prepared.B2BDiscount,
+                variantId
+              ]
+            )
+
+            await client.query(
+              `UPDATE barcodes
+               SET ean_code = $1
+               WHERE variant_id = $2`,
+              [prepared.Barcode, variantId]
+            )
+          } else {
+            const vRes = await client.query(
+              `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
+               VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
+               ON CONFLICT (product_id, size, colour)
+               DO UPDATE SET is_active = TRUE,
+                             mrp = EXCLUDED.mrp,
+                             sale_price = EXCLUDED.sale_price,
+                             cost_price = EXCLUDED.cost_price,
+                             b2c_discount_pct = EXCLUDED.b2c_discount_pct,
+                             b2b_discount_pct = EXCLUDED.b2b_discount_pct
+               RETURNING id`,
+              [productId, prepared.SIZE, prepared.COLOUR, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
+            )
+
+            variantId = vRes.rows[0].id
+
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
                VALUES ($1, $2)
-               ON CONFLICT (ean_code) DO NOTHING`,
+               ON CONFLICT (ean_code)
+               DO UPDATE SET variant_id = EXCLUDED.variant_id`,
               [variantId, prepared.Barcode]
             )
           }
@@ -834,7 +877,8 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
-             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand,
+             DO UPDATE SET on_hand = EXCLUDED.on_hand,
+                           reserved = 0,
                            is_active = TRUE`,
             [branchId, variantId, prepared.PurchaseQty]
           )
@@ -969,19 +1013,67 @@ router.post('/:branchId/images/confirm', async (req, res) => {
           continue
         }
 
-        const barcodeExists = await client.query(
-          `SELECT variant_id FROM barcodes WHERE ean_code = $1 LIMIT 1`,
-          [barcode]
+        const barcodeResult = await client.query(
+          `SELECT
+             b.ean_code,
+             b.variant_id,
+             v.product_id,
+             v.is_active AS variant_active,
+             bvs.branch_id,
+             bvs.is_active AS stock_active,
+             bvs.on_hand
+           FROM barcodes b
+           JOIN product_variants v
+             ON v.id = b.variant_id
+           LEFT JOIN branch_variant_stock bvs
+             ON bvs.variant_id = v.id
+            AND bvs.branch_id = $2
+           WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
+           ORDER BY
+             CASE WHEN bvs.branch_id = $2 THEN 0 ELSE 1 END,
+             b.id ASC
+           LIMIT 1`,
+          [barcode, branchId]
         )
 
-        if (!barcodeExists.rowCount) {
+        if (!barcodeResult.rowCount) {
           unmatched.push({
             barcode,
             image_type: imageType,
             original_filename: img.original_filename || '',
-            reason: 'Barcode not found in database'
+            reason: 'Barcode not found in barcodes table'
           })
           continue
+        }
+
+        const matched = barcodeResult.rows[0]
+
+        if (!matched.branch_id) {
+          unmatched.push({
+            barcode,
+            image_type: imageType,
+            original_filename: img.original_filename || '',
+            reason: 'Barcode found but not available in this branch'
+          })
+          continue
+        }
+
+        if (matched.variant_active === false) {
+          await client.query(
+            `UPDATE product_variants
+             SET is_active = TRUE
+             WHERE id = $1`,
+            [matched.variant_id]
+          )
+        }
+
+        if (matched.stock_active === false) {
+          await client.query(
+            `UPDATE branch_variant_stock
+             SET is_active = TRUE
+             WHERE branch_id = $1 AND variant_id = $2`,
+            [branchId, matched.variant_id]
+          )
         }
 
         await client.query(
@@ -991,24 +1083,22 @@ router.post('/:branchId/images/confirm', async (req, res) => {
            DO UPDATE SET image_url = EXCLUDED.image_url,
                          public_id = EXCLUDED.public_id,
                          uploaded_at = NOW()`,
-          [barcode, imageType, url, publicId || null]
+          [matched.ean_code, imageType, url, publicId || null]
         )
 
         if (imageType === 'front' || imageType === 'main') {
           await client.query(
-            `UPDATE product_variants v
-               SET image_url = $2
-             FROM barcodes b
-             WHERE b.variant_id = v.id AND b.ean_code = $1`,
-            [barcode, url]
+            `UPDATE product_variants
+             SET image_url = $1
+             WHERE id = $2`,
+            [url, matched.variant_id]
           )
         } else {
           await client.query(
-            `UPDATE product_variants v
-               SET image_url = COALESCE(NULLIF(v.image_url, ''), $2)
-             FROM barcodes b
-             WHERE b.variant_id = v.id AND b.ean_code = $1`,
-            [barcode, url]
+            `UPDATE product_variants
+             SET image_url = COALESCE(NULLIF(image_url, ''), $1)
+             WHERE id = $2`,
+            [url, matched.variant_id]
           )
         }
 
