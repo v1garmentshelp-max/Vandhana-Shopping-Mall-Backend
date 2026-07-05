@@ -302,6 +302,192 @@ async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
   }
 }
 
+function toNumber(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+function uniqueValues(arr) {
+  const seen = new Set()
+  const out = []
+
+  for (const item of arr) {
+    const value = String(item || '').trim()
+    if (!value) continue
+    const key = value.toLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push(value)
+    }
+  }
+
+  return out
+}
+
+function sortVariantValues(arr) {
+  return uniqueValues(arr).sort((a, b) => {
+    const na = parseFloat(String(a).replace(/[^\d.]/g, ''))
+    const nb = parseFloat(String(b).replace(/[^\d.]/g, ''))
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb
+    return String(a).localeCompare(String(b), undefined, { numeric: true })
+  })
+}
+
+function normalizeImages(images) {
+  if (Array.isArray(images)) return images
+  if (!images) return []
+  try {
+    const parsed = JSON.parse(images)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function groupStockRows(rows) {
+  const groups = new Map()
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const key = String(row.product_id)
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        product_id: row.product_id,
+        product_name: row.product_name,
+        brand_name: row.brand_name,
+        pattern_code: row.pattern_code || '',
+        fit_type: row.fit_type || null,
+        mark_code: row.mark_code || null,
+        gender: row.gender,
+        variants: [],
+        _rows: []
+      })
+    }
+
+    const group = groups.get(key)
+
+    if (!group.variants.some(v => String(v.variant_id) === String(row.variant_id))) {
+      group.variants.push({
+        id: row.variant_id,
+        variant_id: row.variant_id,
+        product_id: row.product_id,
+        size: row.size || '',
+        colour: row.colour || '',
+        color: row.colour || '',
+        barcode: row.barcode || '',
+        ean_code: row.ean_code || row.barcode || '',
+        mrp: row.mrp,
+        base_sale_price: row.base_sale_price,
+        original_sale_price: row.original_sale_price,
+        sale_price: row.sale_price,
+        price: row.price,
+        selling_price: row.selling_price,
+        discounted_price: row.discounted_price,
+        mahaveer_price: row.mahaveer_price,
+        cost_price: row.cost_price,
+        b2c_discount_pct: row.b2c_discount_pct,
+        b2b_discount_pct: row.b2b_discount_pct,
+        original_price_b2c: row.original_price_b2c,
+        final_price_b2c: row.final_price_b2c,
+        original_price_b2b: row.original_price_b2b,
+        final_price_b2b: row.final_price_b2b,
+        on_hand: row.on_hand,
+        reserved: row.reserved,
+        available_qty: row.available_qty,
+        in_stock: row.in_stock,
+        image_url: row.image_url,
+        front_image_url: row.front_image_url,
+        back_image_url: row.back_image_url,
+        main_image_url: row.main_image_url,
+        images: normalizeImages(row.images)
+      })
+    }
+
+    group._rows.push(row)
+  }
+
+  const out = []
+
+  for (const group of groups.values()) {
+    group.variants.sort((a, b) => {
+      const sizeCompare = String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
+      if (sizeCompare !== 0) return sizeCompare
+      return String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+    })
+
+    const rowsSorted = group._rows.slice().sort((a, b) => {
+      const aq = toNumber(a.available_qty)
+      const bq = toNumber(b.available_qty)
+      if (bq !== aq) return bq - aq
+      return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
+    })
+
+    const selected = rowsSorted[0] || group._rows[0] || {}
+    const imageRow = group._rows.find(r => r.image_url) || selected
+    const sizes = sortVariantValues(group.variants.map(v => v.size))
+    const colours = sortVariantValues(group.variants.map(v => v.colour))
+    const barcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
+    const totalOnHand = group.variants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
+    const totalReserved = group.variants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
+    const totalAvailable = group.variants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+
+    out.push({
+      id: group.product_id,
+      product_id: group.product_id,
+      primary_variant_id: selected.variant_id,
+      variant_id: selected.variant_id,
+      product_name: group.product_name,
+      name: group.product_name,
+      brand_name: group.brand_name,
+      brand: group.brand_name,
+      pattern_code: group.pattern_code,
+      fit_type: group.fit_type,
+      mark_code: group.mark_code,
+      gender: group.gender,
+      category: group.gender,
+      size: sizes.join(', '),
+      colour: colours.join(', '),
+      color: colours.join(', '),
+      sizes,
+      colours,
+      colors: colours,
+      barcodes,
+      ean_codes: barcodes,
+      barcode: selected.barcode || '',
+      ean_code: selected.ean_code || selected.barcode || '',
+      mrp: selected.mrp,
+      base_sale_price: selected.base_sale_price,
+      original_sale_price: selected.original_sale_price,
+      sale_price: selected.sale_price,
+      price: selected.price,
+      selling_price: selected.selling_price,
+      discounted_price: selected.discounted_price,
+      mahaveer_price: selected.mahaveer_price,
+      cost_price: selected.cost_price,
+      b2c_discount_pct: selected.b2c_discount_pct,
+      b2b_discount_pct: selected.b2b_discount_pct,
+      original_price_b2c: selected.original_price_b2c,
+      final_price_b2c: selected.final_price_b2c,
+      original_price_b2b: selected.original_price_b2b,
+      final_price_b2b: selected.final_price_b2b,
+      on_hand: totalOnHand,
+      reserved: totalReserved,
+      available_qty: totalAvailable,
+      total_count: totalOnHand,
+      in_stock: totalAvailable > 0,
+      image_url: imageRow.image_url,
+      front_image_url: imageRow.front_image_url || '',
+      back_image_url: imageRow.back_image_url || '',
+      main_image_url: imageRow.main_image_url || '',
+      images: normalizeImages(imageRow.images),
+      variant_count: group.variants.length,
+      variants: group.variants
+    })
+  }
+
+  return out
+}
+
 router.get('/:branchId/import-jobs', async (req, res) => {
   const branchId = parseBranchId(req)
   if (!branchId) return res.status(400).json({ message: 'Invalid branchId' })
@@ -956,7 +1142,7 @@ router.get('/:branchId/stock', async (req, res) => {
       params
     )
 
-    res.json(rows)
+    res.json(groupStockRows(rows))
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' })
   }
