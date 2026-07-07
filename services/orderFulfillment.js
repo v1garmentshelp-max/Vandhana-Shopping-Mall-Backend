@@ -1,5 +1,12 @@
 const { randomUUID } = require('crypto')
 const Shiprocket = require('./shiprocketService')
+const {
+  bestOrderStatus,
+  collectStatusValues,
+  extractShipmentInfo,
+  syncSaleStatus,
+  syncShipmentByIdentifiers
+} = require('./orderStatusSync')
 
 const FORCE_BRANCH_ID =
   process.env.SHIPROCKET_FORCE_BRANCH_ID != null && String(process.env.SHIPROCKET_FORCE_BRANCH_ID).trim() !== ''
@@ -24,12 +31,15 @@ async function customerLocFromSale(sale, db) {
       lng: Number(sale.shipping_address.lng)
     }
   }
+
   const pc = sale.shipping_address?.pincode || sale.pincode || null
   if (!pc) return { lat: null, lng: null }
+
   const { rows } = await db.query(
     'SELECT AVG(latitude)::float lat, AVG(longitude)::float lng FROM branches WHERE pincode=$1',
     [pc]
   )
+
   return { lat: rows[0]?.lat || null, lng: rows[0]?.lng || null }
 }
 
@@ -49,6 +59,7 @@ async function candidateBranches(db, variantId, qty) {
        AND EXISTS (SELECT 1 FROM shiprocket_warehouses w WHERE w.branch_id = b.id)`,
     [variantId, qty]
   )
+
   return rows
 }
 
@@ -77,6 +88,7 @@ function pickBestBranch(rows, sale, customerLoc) {
         d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
       }))
       .sort((a, b) => a.d - b.d)
+
     return sorted[0].r.id
   }
 
@@ -86,6 +98,7 @@ function pickBestBranch(rows, sale, customerLoc) {
 function normalizeShipItem(it) {
   const variantId = Number(it.variant_id ?? it.product_id)
   const qty = Number(it.qty ?? it.quantity ?? 1)
+
   return {
     variant_id: variantId,
     qty,
@@ -102,6 +115,7 @@ function normalizeShipItem(it) {
 async function planShipmentsAndDecrementStock(sale, pool) {
   const client = await pool.connect()
   const decremented = []
+
   try {
     await client.query('BEGIN')
 
@@ -117,6 +131,7 @@ async function planShipmentsAndDecrementStock(sale, pool) {
 
       const rows = await candidateBranches(client, variantId, qty)
       const branchId = pickBestBranch(rows, sale, loc)
+
       if (!branchId) throw new Error(`Out of stock for variant ${variantId}`)
 
       const stockQ = await client.query(
@@ -126,10 +141,12 @@ async function planShipmentsAndDecrementStock(sale, pool) {
          FOR UPDATE`,
         [branchId, variantId]
       )
+
       if (!stockQ.rowCount) throw new Error(`Stock row missing for variant ${variantId} in branch ${branchId}`)
 
       const onHand = Number(stockQ.rows[0].on_hand || 0)
       const reserved = Number(stockQ.rows[0].reserved || 0)
+
       if (onHand - reserved < qty) throw new Error(`Out of stock for variant ${variantId}`)
 
       await client.query(
@@ -158,6 +175,7 @@ async function planShipmentsAndDecrementStock(sale, pool) {
     try {
       await client.query('ROLLBACK')
     } catch {}
+
     throw e
   } finally {
     try {
@@ -168,9 +186,12 @@ async function planShipmentsAndDecrementStock(sale, pool) {
 
 async function restoreStock(pool, decremented) {
   if (!Array.isArray(decremented) || !decremented.length) return
+
   const client = await pool.connect()
+
   try {
     await client.query('BEGIN')
+
     for (const d of decremented) {
       await client.query(
         `UPDATE branch_variant_stock
@@ -179,11 +200,13 @@ async function restoreStock(pool, decremented) {
         [Number(d.branch_id), Number(d.variant_id), Number(d.qty)]
       )
     }
+
     await client.query('COMMIT')
   } catch (e) {
     try {
       await client.query('ROLLBACK')
     } catch {}
+
     throw e
   } finally {
     try {
@@ -196,10 +219,10 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   const sr = new Shiprocket({ pool })
   await sr.init()
 
-  let planned = null
   let decremented = []
+
   try {
-    planned = await planShipmentsAndDecrementStock(sale, pool)
+    const planned = await planShipmentsAndDecrementStock(sale, pool)
     decremented = planned.decremented || []
 
     const groups = planned.groups || []
@@ -230,8 +253,8 @@ async function fulfillOrderWithShiprocket(sale, pool) {
           email: sale.customer_email || null,
           phone: sale.customer_mobile || null,
           address: {
-            line1: sale.shipping_address?.line1 || sale.shipping_address || '',
-            line2: sale.shipping_address?.line2 || '',
+            line1: sale.shipping_address?.line1 || sale.shipping_address?.address_line1 || sale.shipping_address || '',
+            line2: sale.shipping_address?.line2 || sale.shipping_address?.address_line2 || '',
             city: sale.shipping_address?.city || '',
             state: sale.shipping_address?.state || '',
             pincode: sale.shipping_address?.pincode || sale.pincode || ''
@@ -239,21 +262,32 @@ async function fulfillOrderWithShiprocket(sale, pool) {
         }
       })
 
-      const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || null
+      const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || data?.data?.shipment_id || null
+      const orderId = data?.order_id || data?.data?.order_id || null
 
       let awb = null
       let labelUrl = null
+      let trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
+      let rawStatus = 'CONFIRMED'
+      let shipmentStatus = 'CONFIRMED'
 
       if (shipmentId) {
         try {
-          const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
-          awb = res.awb?.response?.data?.awb_code || null
-          labelUrl = res.label?.label_url || null
+          const assignResult = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
+          const info = extractShipmentInfo(assignResult, 'PACKED')
+          awb = info.awb || null
+          labelUrl = info.label_url || null
+          trackingUrl = info.tracking_url || trackingUrl || null
+          rawStatus = info.raw_status || 'PACKED'
+          shipmentStatus = info.status || 'PACKED'
           manifestShipmentIds.push(shipmentId)
-          await sr.requestPickup({ shipment_id: shipmentId })
+
+          try {
+            await sr.requestPickup({ shipment_id: shipmentId })
+          } catch {}
         } catch {
-          awb = null
-          labelUrl = null
+          rawStatus = 'CONFIRMED'
+          shipmentStatus = 'CONFIRMED'
         }
       }
 
@@ -269,22 +303,63 @@ async function fulfillOrderWithShiprocket(sale, pool) {
            awb,
            label_url,
            tracking_url,
-           status
+           current_location,
+           status,
+           raw_status,
+           status_synced_at,
+           last_tracking_payload,
+           awb_assigned_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [sid, sale.id, group.branch_id, data?.order_id || null, shipmentId, awb, labelUrl, data?.tracking_url || null, 'CREATED']
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6 IS NOT NULL THEN now() ELSE NULL END)`,
+        [
+          sid,
+          sale.id,
+          group.branch_id,
+          orderId,
+          shipmentId,
+          awb,
+          labelUrl,
+          trackingUrl,
+          null,
+          shipmentStatus,
+          rawStatus,
+          JSON.stringify(data || {})
+        ]
       )
+
+      if (shipmentId || orderId || awb) {
+        await syncShipmentByIdentifiers(
+          pool,
+          {
+            sale_id: sale.id,
+            shiprocket_order_id: orderId,
+            shiprocket_shipment_id: shipmentId,
+            awb
+          },
+          data,
+          shipmentStatus
+        )
+      }
+
+      await syncSaleStatus(pool, sale.id, shipmentStatus)
 
       created.push({
         branch_id: group.branch_id,
+        order_id: orderId,
         shipment_id: shipmentId,
         awb,
-        label_url: labelUrl
+        label_url: labelUrl,
+        tracking_url: trackingUrl,
+        status: shipmentStatus
       })
     }
 
     if (manifestShipmentIds.length) {
-      await sr.generateManifest({ shipment_ids: manifestShipmentIds })
+      try {
+        const manifest = await sr.generateManifest({ shipment_ids: manifestShipmentIds })
+        const manifestStatus = bestOrderStatus(collectStatusValues(manifest), 'PACKED')
+        await syncSaleStatus(pool, sale.id, manifestStatus)
+      } catch {}
     }
 
     return created
@@ -292,6 +367,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
     try {
       await restoreStock(pool, decremented)
     } catch {}
+
     throw e
   }
 }

@@ -4,6 +4,13 @@ const pool = require('../db')
 const { requireAuth } = require('../middleware/auth')
 const { getTracking } = require('../controllers/orderController')
 const Shiprocket = require('../services/shiprocketService')
+const {
+  bestOrderStatus,
+  collectStatusValues,
+  extractShipmentInfo,
+  syncSaleStatus,
+  syncShipmentByIdentifiers
+} = require('../services/orderStatusSync')
 
 const toNumber = (value) => {
   const n = Number(value)
@@ -102,35 +109,75 @@ const createShiprocketOrder = async ({
     }
   })
 
-  const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || null
+  const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || data?.data?.shipment_id || null
   const shiprocketOrderId = data?.order_id || data?.data?.order_id || null
-  const trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
+  let trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
+  let awb = null
+  let labelUrl = null
+  let rawStatus = 'CONFIRMED'
+  let status = 'CONFIRMED'
+  let assignRaw = null
+
+  if (shipmentId) {
+    try {
+      assignRaw = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
+      const info = extractShipmentInfo(assignRaw, 'PACKED')
+      awb = info.awb || null
+      labelUrl = info.label_url || null
+      trackingUrl = info.tracking_url || trackingUrl || null
+      rawStatus = info.raw_status || 'PACKED'
+      status = info.status || 'PACKED'
+    } catch {
+      rawStatus = 'CONFIRMED'
+      status = 'CONFIRMED'
+    }
+  }
 
   await pool.query(
     `INSERT INTO shipments
-       (id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, status)
+       (id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, current_location, status, raw_status, status_synced_at, last_tracking_payload, awb_assigned_at)
      VALUES
-       ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6 IS NOT NULL THEN now() ELSE NULL END)`,
     [
       uuid(),
       saleId,
       branchId,
       shiprocketOrderId,
       shipmentId,
-      null,
-      null,
+      awb,
+      labelUrl,
       trackingUrl,
-      'CREATED'
+      null,
+      status,
+      rawStatus,
+      JSON.stringify(assignRaw || data || {})
     ]
   )
+
+  await syncShipmentByIdentifiers(
+    pool,
+    {
+      sale_id: saleId,
+      shiprocket_order_id: shiprocketOrderId,
+      shiprocket_shipment_id: shipmentId,
+      awb
+    },
+    assignRaw || data,
+    status
+  )
+
+  await syncSaleStatus(pool, saleId, status)
 
   return {
     order_id: shiprocketOrderId,
     shipment_id: shipmentId,
+    awb,
+    label_url: labelUrl,
     tracking_url: trackingUrl,
     pickup_location: warehouse.name,
-    status: 'CREATED',
-    raw: data
+    status,
+    raw: data,
+    awb_raw: assignRaw
   }
 }
 
@@ -323,6 +370,7 @@ router.post('/web/place', async (req, res) => {
 
   let shiprocket = null
   let shiprocket_error = null
+  let finalStatus = 'PLACED'
 
   try {
     shiprocket = await createShiprocketOrder({
@@ -336,13 +384,16 @@ router.post('/web/place', async (req, res) => {
       paymentStatus: payment_status,
       items: normalizedItems
     })
+
+    finalStatus = bestOrderStatus([shiprocket.status, ...collectStatusValues(shiprocket)], 'CONFIRMED')
+    await syncSaleStatus(pool, saleId, finalStatus)
   } catch (e) {
     shiprocket_error = e?.message || String(e)
   }
 
   return res.json({
     id: saleId,
-    status: 'PLACED',
+    status: finalStatus,
     payment_status,
     branch_id: chosenBranchId,
     shiprocket,
@@ -469,8 +520,8 @@ router.post('/cancel', async (req, res) => {
 
     shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean)
 
-    await client.query(`UPDATE sales SET status = 'CANCELLED' WHERE id = $1::uuid`, [sale_id])
-    await client.query(`UPDATE shipments SET status = 'CANCELLED' WHERE sale_id = $1`, [sale_id])
+    await client.query(`UPDATE sales SET status = 'CANCELLED', updated_at = now() WHERE id = $1::uuid`, [sale_id])
+    await client.query(`UPDATE shipments SET status = 'CANCELLED', raw_status = 'CANCELLED', status_synced_at = now(), updated_at = now() WHERE sale_id = $1`, [sale_id])
 
     await client.query(
       `INSERT INTO order_cancellations (sale_id, payment_type, reason, cancellation_source, created_at)
