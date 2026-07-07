@@ -102,6 +102,51 @@ const SYNONYMS = {
   legging: ['leggings', 'tights']
 }
 
+const toNumber = v => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const clampDiscount = v => {
+  const n = toNumber(v)
+  if (n < 0) return 0
+  if (n > 100) return 100
+  return n
+}
+
+const calcDiscountedPrice = (price, discount) => {
+  const p = toNumber(price)
+  const d = clampDiscount(discount)
+  return Number((p - (p * d) / 100).toFixed(2))
+}
+
+const uniqueValues = arr => {
+  const seen = new Set()
+  const out = []
+
+  for (const item of arr) {
+    const value = String(item || '').trim()
+    if (!value) continue
+    const key = value.toLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push(value)
+    }
+  }
+
+  return out
+}
+
+const sortVariantValues = arr => {
+  return uniqueValues(arr).sort((a, b) => {
+    const na = parseFloat(String(a).replace(/[^\d.]/g, ''))
+    const nb = parseFloat(String(b).replace(/[^\d.]/g, ''))
+
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb
+    return String(a).localeCompare(String(b), undefined, { numeric: true })
+  })
+}
+
 const parsePriceRangeFromQuery = raw => {
   const original = String(raw || '')
   const s = original.toLowerCase()
@@ -233,51 +278,12 @@ const getBranchIdFromReq = req => {
   return branchId
 }
 
-const toNumber = v => {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : 0
-}
-
-const uniqueValues = arr => {
-  const seen = new Set()
-  const out = []
-
-  for (const item of arr) {
-    const value = String(item || '').trim()
-    if (!value) continue
-    const key = value.toLowerCase()
-    if (!seen.has(key)) {
-      seen.add(key)
-      out.push(value)
-    }
-  }
-
-  return out
-}
-
-const sortVariantValues = arr => {
-  return uniqueValues(arr).sort((a, b) => {
-    const na = parseFloat(String(a).replace(/[^\d.]/g, ''))
-    const nb = parseFloat(String(b).replace(/[^\d.]/g, ''))
-
-    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb
-    return String(a).localeCompare(String(b), undefined, { numeric: true })
-  })
-}
-
 const offerPriceSql = () => `
-  COALESCE(
-    NULLIF(
-      CASE
-        WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-          THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-        ELSE NULL
-      END,
-      0
-    ),
-    NULLIF(v.sale_price::numeric, 0),
-    v.mrp::numeric
-  )
+  CASE
+    WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+      THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+    ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
+  END
 `
 
 const productWhere = (extra = '') => {
@@ -304,9 +310,11 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
   SELECT
     p.id AS product_id,
     p.name AS product_name,
+    p.name AS name,
     p.brand_name AS brand,
     p.brand_name AS brand_name,
     p.gender,
+    p.gender AS category,
     p.pattern_code,
     p.fit_type,
     p.mark_code,
@@ -315,52 +323,74 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     v.size,
     v.colour AS color,
     v.colour,
-    v.mrp::numeric AS mrp,
-    v.sale_price::numeric AS base_sale_price,
-    v.sale_price::numeric AS original_sale_price,
-    COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+    COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric AS mrp,
+    COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric AS original_price,
+    COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric AS original_price_b2c,
+    COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric AS original_price_b2b,
+    COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric AS base_sale_price,
+    COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric AS original_sale_price,
+    COALESCE(NULLIF(v.cost_price, 0), 0)::numeric AS cost_price,
     COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
+    COALESCE(v.b2c_discount_pct, 0)::numeric AS discount_b2c,
+    COALESCE(v.b2c_discount_pct, 0)::numeric AS discount,
+    COALESCE(v.b2c_discount_pct, 0)::numeric AS discount_percentage,
+    COALESCE(v.b2c_discount_pct, 0)::numeric AS discount_percent,
     COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
-    v.mrp::numeric AS original_price_b2c,
+    COALESCE(v.b2b_discount_pct, 0)::numeric AS discount_b2b,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS final_price_b2c,
-    v.mrp::numeric AS original_price_b2b,
-    CASE
-      WHEN COALESCE(v.b2b_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), v.mrp)::numeric
-    END AS final_price_b2b,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
+    END AS b2c_final_price,
+    CASE
+      WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS sale_price,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS price,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS selling_price,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
+    END AS final_price,
+    CASE
+      WHEN COALESCE(v.b2c_discount_pct, 0) > 0
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS discounted_price,
     CASE
       WHEN COALESCE(v.b2c_discount_pct, 0) > 0
-        THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
-      ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric
+        THEN ROUND(COALESCE(NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
     END AS mahaveer_price,
+    CASE
+      WHEN COALESCE(v.b2b_discount_pct, 0) > 0
+        THEN ROUND(COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
+    END AS final_price_b2b,
+    CASE
+      WHEN COALESCE(v.b2b_discount_pct, 0) > 0
+        THEN ROUND(COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.mrp, 0), NULLIF(v.sale_price, 0), 0)::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2)
+      ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), NULLIF(v.mrp, 0), 0)::numeric
+    END AS b2b_final_price,
     COALESCE(bvs.on_hand, 0)::int AS on_hand,
     COALESCE(bvs.reserved, 0)::int AS reserved,
     GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+    COALESCE(bvs.on_hand, 0)::int AS total_count,
     CASE
       WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
       ELSE FALSE
@@ -445,23 +475,33 @@ const groupProductRows = rows => {
         barcode: row.barcode || '',
         ean_code: row.ean_code || row.barcode || '',
         mrp: row.mrp,
+        original_price: row.original_price,
+        original_price_b2c: row.original_price_b2c,
+        original_price_b2b: row.original_price_b2b,
         base_sale_price: row.base_sale_price,
         original_sale_price: row.original_sale_price,
         sale_price: row.sale_price,
         price: row.price,
         selling_price: row.selling_price,
+        final_price: row.final_price,
         discounted_price: row.discounted_price,
         mahaveer_price: row.mahaveer_price,
         cost_price: row.cost_price,
         b2c_discount_pct: row.b2c_discount_pct,
         b2b_discount_pct: row.b2b_discount_pct,
-        original_price_b2c: row.original_price_b2c,
+        discount_b2c: row.discount_b2c,
+        discount_b2b: row.discount_b2b,
+        discount: row.discount,
+        discount_percentage: row.discount_percentage,
+        discount_percent: row.discount_percent,
         final_price_b2c: row.final_price_b2c,
-        original_price_b2b: row.original_price_b2b,
         final_price_b2b: row.final_price_b2b,
+        b2c_final_price: row.b2c_final_price,
+        b2b_final_price: row.b2b_final_price,
         on_hand: row.on_hand,
         reserved: row.reserved,
         available_qty: row.available_qty,
+        total_count: row.total_count,
         in_stock: row.in_stock,
         image_url: row.image_url
       })
@@ -526,20 +566,29 @@ const groupProductRows = rows => {
       barcode: selectedVariant.barcode || '',
       ean_code: selectedVariant.ean_code || selectedVariant.barcode || '',
       mrp: selectedVariant.mrp,
+      original_price: selectedVariant.original_price,
+      original_price_b2c: selectedVariant.original_price_b2c,
+      original_price_b2b: selectedVariant.original_price_b2b,
       base_sale_price: selectedVariant.base_sale_price,
       original_sale_price: selectedVariant.original_sale_price,
       sale_price: selectedVariant.sale_price,
       price: selectedVariant.price,
       selling_price: selectedVariant.selling_price,
+      final_price: selectedVariant.final_price,
       discounted_price: selectedVariant.discounted_price,
       mahaveer_price: selectedVariant.mahaveer_price,
       cost_price: selectedVariant.cost_price,
       b2c_discount_pct: selectedVariant.b2c_discount_pct,
       b2b_discount_pct: selectedVariant.b2b_discount_pct,
-      original_price_b2c: selectedVariant.original_price_b2c,
+      discount_b2c: selectedVariant.discount_b2c,
+      discount_b2b: selectedVariant.discount_b2b,
+      discount: selectedVariant.discount,
+      discount_percentage: selectedVariant.discount_percentage,
+      discount_percent: selectedVariant.discount_percent,
       final_price_b2c: selectedVariant.final_price_b2c,
-      original_price_b2b: selectedVariant.original_price_b2b,
       final_price_b2b: selectedVariant.final_price_b2b,
+      b2c_final_price: selectedVariant.b2c_final_price,
+      b2b_final_price: selectedVariant.b2b_final_price,
       on_hand: totalOnHand,
       reserved: totalReserved,
       available_qty: totalAvailable,
@@ -622,7 +671,12 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   params.push(cloud)
   const cloudIdx = params.length
 
-  const safeLimit = Math.max(1, Math.min(50000, parseInt(limit || '200', 10)))
+  const requestedLimit =
+    String(req.query.all || '').toLowerCase() === 'true'
+      ? '50000'
+      : String(limit || '200')
+
+  const safeLimit = Math.max(1, Math.min(50000, parseInt(requestedLimit, 10)))
   const safeOffset = Math.max(0, parseInt(offset || '0', 10))
   const orderBy = random ? 'ORDER BY RANDOM()' : 'ORDER BY p.id DESC, v.id ASC'
 
@@ -716,10 +770,25 @@ const buildExpandedCandidatesFromRow = r => {
   return Array.from(out).map(x => x.split('||')[1])
 }
 
-const resolveVariantForWrite = async (client, id, variantIdFromBody) => {
-  let variantId = parseInt(variantIdFromBody || id, 10)
+const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'auto') => {
+  const numericId = parseInt(id, 10)
+  const bodyVariantId = parseInt(variantIdFromBody || '', 10)
 
-  if (Number.isFinite(variantId) && variantId > 0) {
+  if (Number.isFinite(bodyVariantId) && bodyVariantId > 0) {
+    const byBodyVariant = await client.query(
+      `
+      SELECT v.id AS variant_id, v.product_id
+      FROM product_variants v
+      WHERE v.id = $1
+      LIMIT 1
+      `,
+      [bodyVariantId]
+    )
+
+    if (byBodyVariant.rows.length) return byBodyVariant.rows[0]
+  }
+
+  if (mode === 'variant') {
     const byVariant = await client.query(
       `
       SELECT v.id AS variant_id, v.product_id
@@ -727,47 +796,53 @@ const resolveVariantForWrite = async (client, id, variantIdFromBody) => {
       WHERE v.id = $1
       LIMIT 1
       `,
-      [variantId]
+      [numericId]
     )
 
     if (byVariant.rows.length) return byVariant.rows[0]
   }
 
-  const byProduct = await client.query(
-    `
-    SELECT v.id AS variant_id, v.product_id
-    FROM product_variants v
-    WHERE v.product_id = $1
-      AND v.is_active = TRUE
-    ORDER BY v.id ASC
-    LIMIT 1
-    `,
-    [id]
-  )
+  if (mode === 'product' || mode === 'auto') {
+    const byProduct = await client.query(
+      `
+      SELECT v.id AS variant_id, v.product_id
+      FROM product_variants v
+      WHERE v.product_id = $1
+        AND v.is_active = TRUE
+      ORDER BY v.id ASC
+      LIMIT 1
+      `,
+      [numericId]
+    )
 
-  if (byProduct.rows.length) return byProduct.rows[0]
+    if (byProduct.rows.length) return byProduct.rows[0]
+  }
+
+  if (mode === 'auto') {
+    const byVariant = await client.query(
+      `
+      SELECT v.id AS variant_id, v.product_id
+      FROM product_variants v
+      WHERE v.id = $1
+      LIMIT 1
+      `,
+      [numericId]
+    )
+
+    if (byVariant.rows.length) return byVariant.rows[0]
+  }
 
   return null
 }
 
-const updateVariantRecord = async ({ client, req, id, body }) => {
-  const {
-    variant_id,
-    category,
-    brand,
-    product_name,
-    color,
-    colour,
-    size,
-    original_price_b2b,
-    discount_b2b,
-    original_price_b2c,
-    discount_b2c,
-    total_count,
-    image_url
-  } = body || {}
+const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => {
+  const nextCategory = body?.category || body?.gender
+  const nextBrand = cleanValue(body?.brand || body?.brand_name)
+  const nextName = cleanValue(body?.product_name || body?.name || body?.title)
+  const nextColor = cleanValue(body?.color || body?.colour)
+  const nextSize = cleanValue(body?.size)
 
-  const resolved = await resolveVariantForWrite(client, id, variant_id)
+  const resolved = await resolveVariantForWrite(client, id, body?.variant_id, mode)
 
   if (!resolved) {
     return { status: 404, payload: { message: 'Product not found' } }
@@ -775,11 +850,7 @@ const updateVariantRecord = async ({ client, req, id, body }) => {
 
   const productId = resolved.product_id
   const variantId = resolved.variant_id
-  const gender = toGender(category)
-  const nextSize = cleanValue(size)
-  const nextColor = cleanValue(color || colour)
-  const nextName = cleanValue(product_name)
-  const nextBrand = cleanValue(brand)
+  const gender = toGender(nextCategory)
 
   if (!gender) {
     return { status: 400, payload: { message: 'Invalid category. Use Men, Women, or Kids' } }
@@ -793,10 +864,39 @@ const updateVariantRecord = async ({ client, req, id, body }) => {
     return { status: 400, payload: { message: 'Size and color must be one value only. Do not send grouped summary values.' } }
   }
 
-  const mrp = Number.isFinite(Number(original_price_b2c)) ? Number(original_price_b2c) : Number(original_price_b2b)
-  const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0
-  const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0
-  const stockCount = Math.max(0, parseInt(total_count, 10) || 0)
+  const originalB2C = toNumber(
+    body?.original_price_b2c ??
+      body?.b2c_original_price ??
+      body?.original_price ??
+      body?.mrp ??
+      body?.price
+  )
+
+  const originalB2B = toNumber(
+    body?.original_price_b2b ??
+      body?.b2b_original_price ??
+      body?.cost_price ??
+      originalB2C
+  )
+
+  const b2cDiscount = clampDiscount(
+    body?.discount_b2c ??
+      body?.b2c_discount ??
+      body?.discount_percentage ??
+      body?.discount_percent ??
+      body?.discount
+  )
+
+  const b2bDiscount = clampDiscount(
+    body?.discount_b2b ??
+      body?.b2b_discount ??
+      body?.discount_percentage_b2b
+  )
+
+  const finalB2C = calcDiscountedPrice(originalB2C, b2cDiscount)
+  const finalB2B = calcDiscountedPrice(originalB2B, b2bDiscount)
+  const stockCount = Math.max(0, parseInt(body?.total_count ?? body?.stock ?? body?.quantity ?? 0, 10) || 0)
+  const imageUrl = cleanValue(body?.image_url || body?.image || body?.imageUrl) || null
 
   await client.query(
     `
@@ -815,13 +915,25 @@ const updateVariantRecord = async ({ client, req, id, body }) => {
     SET colour = $1,
         size = $2,
         mrp = $3,
-        b2b_discount_pct = $4,
-        b2c_discount_pct = $5,
-        image_url = $6,
+        sale_price = $4,
+        cost_price = $5,
+        b2b_discount_pct = $6,
+        b2c_discount_pct = $7,
+        image_url = $8,
         is_active = TRUE
-    WHERE id = $7
+    WHERE id = $9
     `,
-    [nextColor, nextSize, Number.isFinite(mrp) ? mrp : 0, b2bDiscount, b2cDiscount, cleanValue(image_url) || null, variantId]
+    [
+      nextColor,
+      nextSize,
+      originalB2C,
+      finalB2C,
+      originalB2B,
+      b2bDiscount,
+      b2cDiscount,
+      imageUrl,
+      variantId
+    ]
   )
 
   const branchId = getBranchIdFromReq(req)
@@ -849,6 +961,7 @@ const updateVariantRecord = async ({ client, req, id, body }) => {
       product_id: productId,
       variant_id: variantId,
       category: gender,
+      gender,
       brand: nextBrand,
       brand_name: nextBrand,
       product_name: nextName,
@@ -856,12 +969,29 @@ const updateVariantRecord = async ({ client, req, id, body }) => {
       color: nextColor,
       colour: nextColor,
       size: nextSize,
-      original_price_b2b,
-      discount_b2b,
-      original_price_b2c,
-      discount_b2c,
+      mrp: originalB2C,
+      original_price: originalB2C,
+      original_price_b2c: originalB2C,
+      original_price_b2b: originalB2B,
+      cost_price: originalB2B,
+      sale_price: finalB2C,
+      price: finalB2C,
+      selling_price: finalB2C,
+      final_price: finalB2C,
+      final_price_b2c: finalB2C,
+      final_price_b2b: finalB2B,
+      discounted_price: finalB2C,
+      mahaveer_price: finalB2C,
+      discount: b2cDiscount,
+      discount_percentage: b2cDiscount,
+      discount_percent: b2cDiscount,
+      discount_b2c: b2cDiscount,
+      discount_b2b: b2bDiscount,
+      b2c_discount_pct: b2cDiscount,
+      b2b_discount_pct: b2bDiscount,
       total_count: stockCount,
-      image_url
+      available_qty: stockCount,
+      image_url: imageUrl
     }
   }
 }
@@ -952,15 +1082,23 @@ const deleteVariantById = async ({ client, req, variantId }) => {
   }
 }
 
+const noStore = res => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
+}
+
 router.get('/', async (req, res) => {
   try {
+    noStore(res)
+
     const rows = await fetchProducts({
       req,
       gender: req.query.gender,
       category: req.query.category,
       brand: req.query.brand,
       q: req.query.q,
-      limit: req.query.limit || '200',
+      limit: req.query.all === 'true' ? '50000' : req.query.limit || '200',
       offset: req.query.offset || '0',
       random: String(req.query.random || '').trim() === '1',
       hasImage: String(req.query.hasImage || '').toLowerCase() === 'true'
@@ -974,6 +1112,8 @@ router.get('/', async (req, res) => {
 
 router.get('/suggest', async (req, res) => {
   try {
+    noStore(res)
+
     const qRaw = String(req.query.q || '').trim()
     if (!qRaw || qRaw.length < 1) return res.json([])
 
@@ -1031,6 +1171,8 @@ router.get('/suggest', async (req, res) => {
 
 router.get('/category/:category', async (req, res) => {
   try {
+    noStore(res)
+
     const rows = await fetchProducts({
       req,
       category: req.params.category,
@@ -1048,6 +1190,8 @@ router.get('/category/:category', async (req, res) => {
 
 router.get('/gender/:gender', async (req, res) => {
   try {
+    noStore(res)
+
     const rows = await fetchProducts({
       req,
       gender: req.params.gender,
@@ -1065,6 +1209,8 @@ router.get('/gender/:gender', async (req, res) => {
 
 router.get('/search', async (req, res) => {
   try {
+    noStore(res)
+
     const queryRaw = req.query.q || req.query.query
 
     if (!queryRaw || !String(queryRaw).trim()) {
@@ -1090,6 +1236,8 @@ router.get('/search', async (req, res) => {
 
 router.get('/hero-images', async (req, res) => {
   try {
+    noStore(res)
+
     const rows = await fetchProducts({
       req,
       limit: req.query.limit || '60',
@@ -1106,6 +1254,8 @@ router.get('/hero-images', async (req, res) => {
 
 router.get('/section-images', async (req, res) => {
   try {
+    noStore(res)
+
     const limitHero = Math.max(1, Math.min(120, parseInt(req.query.limitHero || '30', 10)))
     const limitGender = Math.max(1, Math.min(80, parseInt(req.query.limitGender || '40', 10)))
 
@@ -1124,6 +1274,8 @@ router.delete('/variant/:variantId(\\d+)', async (req, res) => {
   const client = await pool.connect()
 
   try {
+    noStore(res)
+
     const variantId = parseInt(req.params.variantId, 10)
 
     if (!Number.isFinite(variantId) || variantId <= 0) {
@@ -1151,10 +1303,12 @@ router.delete('/variant/:variantId(\\d+)', async (req, res) => {
   }
 })
 
-router.put('/variant/:variantId(\\d+)', async (req, res) => {
+const updateVariantHandler = async (req, res) => {
   const client = await pool.connect()
 
   try {
+    noStore(res)
+
     const variantId = parseInt(req.params.variantId, 10)
 
     if (!Number.isFinite(variantId) || variantId <= 0) {
@@ -1167,7 +1321,8 @@ router.put('/variant/:variantId(\\d+)', async (req, res) => {
       client,
       req,
       id: variantId,
-      body: { ...(req.body || {}), variant_id: variantId }
+      body: { ...(req.body || {}), variant_id: variantId },
+      mode: 'variant'
     })
 
     if (result.status !== 200) {
@@ -1180,6 +1335,7 @@ router.put('/variant/:variantId(\\d+)', async (req, res) => {
     const rows = await fetchProducts({
       req,
       productId: result.productId,
+      variantId: result.variantId,
       limit: '500',
       offset: '0',
       random: false,
@@ -1196,10 +1352,15 @@ router.put('/variant/:variantId(\\d+)', async (req, res) => {
   } finally {
     client.release()
   }
-})
+}
+
+router.put('/variant/:variantId(\\d+)', updateVariantHandler)
+router.patch('/variant/:variantId(\\d+)', updateVariantHandler)
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
+    noStore(res)
+
     const rows = await fetchProducts({
       req,
       id: req.params.id,
@@ -1217,10 +1378,12 @@ router.get('/:id(\\d+)', async (req, res) => {
   }
 })
 
-router.put('/:id(\\d+)', async (req, res) => {
+const updateProductHandler = async (req, res) => {
   const client = await pool.connect()
 
   try {
+    noStore(res)
+
     const id = parseInt(req.params.id, 10)
 
     if (!Number.isFinite(id) || id <= 0) {
@@ -1233,7 +1396,8 @@ router.put('/:id(\\d+)', async (req, res) => {
       client,
       req,
       id,
-      body: req.body || {}
+      body: req.body || {},
+      mode: 'product'
     })
 
     if (result.status !== 200) {
@@ -1246,6 +1410,7 @@ router.put('/:id(\\d+)', async (req, res) => {
     const rows = await fetchProducts({
       req,
       productId: result.productId,
+      variantId: result.variantId,
       limit: '500',
       offset: '0',
       random: false,
@@ -1262,12 +1427,17 @@ router.put('/:id(\\d+)', async (req, res) => {
   } finally {
     client.release()
   }
-})
+}
+
+router.put('/:id(\\d+)', updateProductHandler)
+router.patch('/:id(\\d+)', updateProductHandler)
 
 router.delete('/:id(\\d+)', async (req, res) => {
   const client = await pool.connect()
 
   try {
+    noStore(res)
+
     const id = parseInt(req.params.id, 10)
 
     if (!Number.isFinite(id) || id <= 0) {
