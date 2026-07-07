@@ -21,6 +21,200 @@ const getUserRole = (req) => {
   return String(req.user?.role_enum || req.user?.role || '').toUpperCase()
 }
 
+const toArray = (x) => {
+  if (Array.isArray(x)) return x
+  if (Array.isArray(x?.data)) return x.data
+  if (Array.isArray(x?.rows)) return x.rows
+  if (Array.isArray(x?.items)) return x.items
+  if (Array.isArray(x?.shipments)) return x.shipments
+  if (Array.isArray(x?.result)) return x.result
+  return []
+}
+
+const statusText = (s) => String(s || '').trim().toUpperCase()
+
+const normalizeOrderStatus = (value) => {
+  const s = statusText(value)
+
+  if (!s) return ''
+  if (s.includes('CANCEL')) return 'CANCELLED'
+  if (s.includes('DELIVERED') || s.includes('DELIVERED TO') || s.includes('DELIVER')) return 'DELIVERED'
+  if (s.includes('OUT FOR DELIVERY') || s.includes('OUT_FOR_DELIVERY')) return 'SHIPPED'
+  if (s.includes('IN TRANSIT') || s.includes('TRANSIT') || s.includes('DISPATCH') || s.includes('DISPATCHED') || s.includes('SHIPPED') || s.includes('PICKED') || s.includes('PICKUP')) return 'SHIPPED'
+  if (s.includes('PACKED') || s.includes('MANIFEST') || s.includes('AWB') || s.includes('READY TO SHIP') || s.includes('READY_TO_SHIP')) return 'PACKED'
+  if (s.includes('CONFIRMED') || s.includes('PROCESSING') || s.includes('ACCEPTED') || s.includes('CREATED')) return 'CONFIRMED'
+  if (s.includes('PLACED') || s.includes('NEW')) return 'PLACED'
+
+  return s
+}
+
+const statusRank = (status) => {
+  const s = normalizeOrderStatus(status)
+  if (s === 'PLACED') return 0
+  if (s === 'CONFIRMED') return 1
+  if (s === 'PACKED') return 2
+  if (s === 'SHIPPED') return 3
+  if (s === 'DELIVERED') return 4
+  return -1
+}
+
+const collectStatusValues = (input, depth = 0, out = []) => {
+  if (!input || depth > 6 || out.length > 120) return out
+
+  if (typeof input === 'string' || typeof input === 'number') {
+    const v = String(input).trim()
+    if (v && v.length <= 200) out.push(v)
+    return out
+  }
+
+  if (Array.isArray(input)) {
+    for (const item of input) collectStatusValues(item, depth + 1, out)
+    return out
+  }
+
+  if (typeof input === 'object') {
+    for (const [key, value] of Object.entries(input)) {
+      const k = String(key || '').toLowerCase()
+      if (
+        k.includes('status') ||
+        k.includes('activity') ||
+        k.includes('remark') ||
+        k.includes('description') ||
+        k.includes('event') ||
+        k.includes('scan')
+      ) {
+        if (typeof value === 'string' || typeof value === 'number') out.push(String(value))
+        else collectStatusValues(value, depth + 1, out)
+      } else if (typeof value === 'object') {
+        collectStatusValues(value, depth + 1, out)
+      }
+    }
+  }
+
+  return out
+}
+
+const bestOrderStatus = (values, fallback = 'PLACED') => {
+  const list = Array.isArray(values) ? values : [values]
+  let best = normalizeOrderStatus(fallback) || 'PLACED'
+  let bestRank = statusRank(best)
+
+  for (const value of list) {
+    const next = normalizeOrderStatus(value)
+    if (!next) continue
+
+    if (next === 'CANCELLED') return 'CANCELLED'
+
+    const rank = statusRank(next)
+    if (rank > bestRank) {
+      best = next
+      bestRank = rank
+    }
+  }
+
+  return best
+}
+
+const shouldUpdateSaleStatus = (current, next) => {
+  const currentStatus = normalizeOrderStatus(current)
+  const nextStatus = normalizeOrderStatus(next)
+
+  if (!nextStatus) return false
+  if (currentStatus === 'CANCELLED') return false
+  if (nextStatus === 'CANCELLED') return currentStatus !== 'CANCELLED'
+
+  return statusRank(nextStatus) > statusRank(currentStatus)
+}
+
+const syncSaleStatus = async (saleId, candidateStatus, db = pool) => {
+  const nextStatus = normalizeOrderStatus(candidateStatus)
+  if (!saleId || !nextStatus) return null
+
+  const q = await db.query('SELECT id, status FROM sales WHERE id=$1::uuid LIMIT 1', [saleId])
+  if (!q.rowCount) return null
+
+  const currentStatus = q.rows[0].status
+  const finalStatus = bestOrderStatus([currentStatus, nextStatus], currentStatus || 'PLACED')
+
+  if (shouldUpdateSaleStatus(currentStatus, finalStatus)) {
+    const upd = await db.query(
+      'UPDATE sales SET status=$2, updated_at=now() WHERE id=$1::uuid RETURNING status',
+      [saleId, finalStatus]
+    )
+    return upd.rows[0]?.status || finalStatus
+  }
+
+  return normalizeOrderStatus(currentStatus) || currentStatus
+}
+
+const getLatestShipment = (shipments) => {
+  const list = toArray(shipments)
+  if (!list.length) return null
+
+  return [...list].sort((a, b) => {
+    const at = new Date(a?.updated_at || a?.created_at || 0).getTime()
+    const bt = new Date(b?.updated_at || b?.created_at || 0).getTime()
+    return bt - at
+  })[0]
+}
+
+const applyEffectiveStatus = (sale, shipments = []) => {
+  const latestShipment = getLatestShipment(shipments)
+  const shipmentStatuses = toArray(shipments).flatMap((s) => collectStatusValues(s))
+  const effectiveStatus = bestOrderStatus(
+    [
+      sale?.status,
+      sale?.shipment_status,
+      sale?.shipping_status,
+      sale?.shiprocket_status,
+      sale?.tracking_status,
+      sale?.current_status,
+      latestShipment?.status,
+      latestShipment?.current_status,
+      latestShipment?.shipment_status,
+      latestShipment?.shiprocket_status,
+      latestShipment?.awb ? 'PACKED' : '',
+      ...shipmentStatuses
+    ],
+    sale?.status || 'PLACED'
+  )
+
+  return {
+    ...sale,
+    stored_status: sale?.status || null,
+    status: effectiveStatus,
+    effective_status: effectiveStatus,
+    latest_shipment: latestShipment || null,
+    shipment_status: latestShipment?.status || null,
+    awb: latestShipment?.awb || null,
+    shiprocket_order_id: latestShipment?.shiprocket_order_id || null,
+    shiprocket_shipment_id: latestShipment?.shiprocket_shipment_id || null
+  }
+}
+
+const enrichSalesWithShipments = async (rows) => {
+  const list = Array.isArray(rows) ? rows : []
+  if (!list.length) return []
+
+  const ids = list.map((r) => r.id).filter(Boolean)
+  if (!ids.length) return list.map((row) => applyEffectiveStatus(row, []))
+
+  const shipmentsQ = await pool.query(
+    'SELECT * FROM shipments WHERE sale_id = ANY($1::uuid[]) ORDER BY created_at ASC',
+    [ids]
+  )
+
+  const bySale = new Map()
+
+  for (const sh of shipmentsQ.rows) {
+    const key = String(sh.sale_id)
+    if (!bySale.has(key)) bySale.set(key, [])
+    bySale.get(key).push(sh)
+  }
+
+  return list.map((row) => applyEffectiveStatus(row, bySale.get(String(row.id)) || []))
+}
+
 const orderItemsSelectForSingleSale = `
   SELECT
     si.variant_id,
@@ -338,6 +532,7 @@ router.post('/web/place', async (req, res) => {
 
   let shiprocket = null
   let shiprocket_error = null
+  let finalOrderStatus = 'PLACED'
 
   const canFulfill = finalPaymentStatus === 'PAID' || finalPaymentStatus === 'COD'
 
@@ -367,6 +562,8 @@ router.post('/web/place', async (req, res) => {
 
     try {
       shiprocket = await fulfillOrderWithShiprocket(saleForShiprocket, pool)
+      finalOrderStatus = bestOrderStatus(collectStatusValues(shiprocket), 'CONFIRMED')
+      await syncSaleStatus(saleId, finalOrderStatus)
     } catch (err) {
       shiprocket_error = err?.response?.data || err?.message || String(err)
     }
@@ -374,7 +571,7 @@ router.post('/web/place', async (req, res) => {
 
   return res.json({
     id: saleId,
-    status: 'PLACED',
+    status: finalOrderStatus,
     payment_status: finalPaymentStatus,
     totals: responseTotals,
     branch_id: resolvedBranchId,
@@ -528,11 +725,13 @@ router.get('/web', async (_req, res) => {
        LIMIT 200`
     )
 
+    const rows = await enrichSalesWithShipments(list.rows)
+
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
     res.set('Expires', '0')
 
-    return res.json(list.rows)
+    return res.json(rows)
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
@@ -590,14 +789,15 @@ router.get('/web/by-user', async (req, res) => {
 
     if (salesQ.rowCount === 0) return res.json([])
 
-    const ids = salesQ.rows.map(r => r.id)
+    const enrichedSales = await enrichSalesWithShipments(salesQ.rows)
+    const ids = enrichedSales.map(r => r.id)
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
 
     const itemsQ = await pool.query(orderItemsSelectForMultipleSales, [ids, cloud])
 
     const bySale = new Map()
 
-    for (const s of salesQ.rows) {
+    for (const s of enrichedSales) {
       bySale.set(s.id, { ...s, items: [] })
     }
 
@@ -646,8 +846,9 @@ router.get('/web/:id', async (req, res) => {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
     const itemsQ = await pool.query(orderItemsSelectForSingleSale, [id, cloud])
     const items = itemsQ.rows.map(mapSaleItem)
+    const enriched = await enrichSalesWithShipments(s.rows)
 
-    return res.json({ sale: s.rows[0], items })
+    return res.json({ sale: enriched[0], items })
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
@@ -686,11 +887,13 @@ router.get('/admin', requireAuth, async (req, res) => {
       params
     )
 
+    const rows = await enrichSalesWithShipments(list.rows)
+
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
     res.set('Expires', '0')
 
-    return res.json(list.rows)
+    return res.json(rows)
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
@@ -743,8 +946,9 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
     const itemsQ = await pool.query(orderItemsSelectForSingleSale, [id, cloud])
     const items = itemsQ.rows.map(mapSaleItem)
+    const enriched = await enrichSalesWithShipments(s.rows)
 
-    return res.json({ sale: s.rows[0], items })
+    return res.json({ sale: enriched[0], items })
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
