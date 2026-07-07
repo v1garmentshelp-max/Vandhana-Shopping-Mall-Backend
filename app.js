@@ -38,11 +38,12 @@ const corsOptions = {
     return cb(new Error('Not allowed by CORS'))
   },
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['authorization', 'content-type'],
+  allowedHeaders: ['authorization', 'content-type', 'x-api-key'],
   credentials: true
 }
 
 const shiprocketPublicRoutes = require('./routes/shiprocketPublicRoutes')
+const transactionRoutes = require('./routes/transactionRoutes')
 
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
@@ -53,7 +54,8 @@ app.use((req, res, next) => {
 
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 app.use('/api', shiprocketPublicRoutes)
 app.use('/api/upload', require('./routes/uploadRoutes'))
@@ -71,6 +73,7 @@ app.use('/api/barcodes', require('./routes/barcodeRoutes'))
 app.use('/api/branch', require('./routes/branchInventoryRoutes'))
 app.use('/api/inventory', require('./routes/inventoryRoutes'))
 app.use('/api/sales', require('./routes/salesRoutes'))
+app.use('/api/transactions', transactionRoutes)
 app.use('/api', require('./routes/shiprocketRoutes'))
 app.use('/api', require('./routes/shipmentRoutes'))
 app.use('/api', require('./routes/returnsRoutes'))
@@ -78,6 +81,7 @@ app.use('/api/razorpay', require('./routes/razorpayRoutes'))
 app.use('/api/homepage-images', require('./routes/homepageImageRoutes'))
 
 app.get('/', (req, res) => res.status(200).send('Vandana Shopping Mall API is running'))
+
 app.get('/healthz', (req, res) => res.status(200).send('ok'))
 
 app.get('/api/debug/jwt', (req, res) => {
@@ -120,7 +124,12 @@ app.use((err, req, res, next) => {
   if (err && err.message === 'Not allowed by CORS') {
     return res.status(403).json({ message: 'CORS blocked' })
   }
-  return next(err)
+
+  const status = err.status || err.statusCode || 500
+
+  return res.status(status).json({
+    message: process.env.DEBUG_ERRORS === '1' ? err.message || 'Server error' : 'Server error'
+  })
 })
 
 app.use((req, res) => res.status(404).json({ message: 'Not found' }))
