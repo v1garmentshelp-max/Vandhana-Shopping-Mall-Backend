@@ -18,6 +18,17 @@ const toGender = v => {
 
 const GENDER_LABELS = { WOMEN: 'Women', MEN: 'Men', KIDS: 'Kids' }
 
+const cleanValue = v =>
+  String(v ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const hasGroupedVariantValue = v => {
+  const s = cleanValue(v)
+  if (!s) return false
+  return s.includes(',')
+}
+
 const normalizeText = str =>
   String(str || '')
     .toLowerCase()
@@ -79,7 +90,7 @@ const SYNONYMS = {
   chudidar: ['chudi', 'chudidhar', 'chudithar', 'chudidars', 'churidar'],
   chudidhar: ['chudi', 'chudidar', 'chudithar', 'chudidars', 'churidar'],
   chudithar: ['chudi', 'chudidar', 'chudidhar', 'chudidars', 'churidar'],
-  chudidars: ['chudi', 'chudidar', 'chudidhar', 'chudithar', 'churidar'],
+  chudidars: ['chudi', 'chudidar', 'chudithar', 'churidar'],
   churidar: ['chudi', 'chudidar', 'chudidhar', 'chudithar', 'chudidars'],
   pants: ['pant', 'trouser', 'trousers', 'bottom', 'bottoms'],
   pant: ['pants', 'trouser', 'trousers', 'bottom', 'bottoms'],
@@ -270,7 +281,13 @@ const offerPriceSql = () => `
 `
 
 const productWhere = (extra = '') => {
-  const base = `v.is_active = TRUE AND COALESCE(bvs.is_active, FALSE) = TRUE AND COALESCE(bvs.on_hand, 0) > 0`
+  const base = `
+    v.is_active = TRUE
+    AND COALESCE(bvs.is_active, FALSE) = TRUE
+    AND COALESCE(bvs.on_hand, 0) > 0
+    AND COALESCE(v.size, '') NOT LIKE '%,%'
+    AND COALESCE(v.colour, '') NOT LIKE '%,%'
+  `
   return extra ? `${base} AND ${extra}` : base
 }
 
@@ -396,6 +413,8 @@ const groupProductRows = rows => {
   const groups = new Map()
 
   for (const row of Array.isArray(rows) ? rows : []) {
+    if (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour)) continue
+
     const key = String(row.product_id)
 
     if (!groups.has(key)) {
@@ -420,9 +439,9 @@ const groupProductRows = rows => {
         id: row.variant_id,
         variant_id: row.variant_id,
         product_id: row.product_id,
-        size: row.size || '',
-        color: row.color || row.colour || '',
-        colour: row.colour || row.color || '',
+        size: cleanValue(row.size),
+        color: cleanValue(row.color || row.colour),
+        colour: cleanValue(row.colour || row.color),
         barcode: row.barcode || '',
         ean_code: row.ean_code || row.barcode || '',
         mrp: row.mrp,
@@ -455,9 +474,9 @@ const groupProductRows = rows => {
 
   for (const group of groups.values()) {
     group.variants.sort((a, b) => {
-      const sizeCompare = String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
-      if (sizeCompare !== 0) return sizeCompare
-      return String(a.color || '').localeCompare(String(b.color || ''), undefined, { numeric: true })
+      const colorCompare = String(a.color || '').localeCompare(String(b.color || ''), undefined, { numeric: true })
+      if (colorCompare !== 0) return colorCompare
+      return String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
     })
 
     const rowsSorted = group._rows.slice().sort((a, b) => {
@@ -475,12 +494,13 @@ const groupProductRows = rows => {
     const totalOnHand = group.variants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
     const totalReserved = group.variants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
     const totalAvailable = group.variants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+    const selectedVariant = group.variants.find(v => String(v.variant_id) === String(selected.variant_id)) || group.variants[0] || {}
 
     out.push({
       id: group.product_id,
       product_id: group.product_id,
-      primary_variant_id: selected.variant_id,
-      variant_id: selected.variant_id,
+      primary_variant_id: selectedVariant.variant_id,
+      variant_id: selectedVariant.variant_id,
       product_name: group.product_name,
       name: group.product_name,
       brand: group.brand,
@@ -490,31 +510,36 @@ const groupProductRows = rows => {
       pattern_code: group.pattern_code,
       fit_type: group.fit_type,
       mark_code: group.mark_code,
-      size: sizes.join(', '),
-      color: colors.join(', '),
-      colour: colors.join(', '),
+      size: selectedVariant.size || '',
+      color: selectedVariant.color || '',
+      colour: selectedVariant.color || '',
+      size_summary: sizes.join(', '),
+      color_summary: colors.join(', '),
+      colour_summary: colors.join(', '),
+      display_size: sizes.join(', '),
+      display_color: colors.join(', '),
       sizes,
       colors,
       colours: colors,
       barcodes,
       ean_codes: barcodes,
-      barcode: selected.barcode || '',
-      ean_code: selected.ean_code || selected.barcode || '',
-      mrp: selected.mrp,
-      base_sale_price: selected.base_sale_price,
-      original_sale_price: selected.original_sale_price,
-      sale_price: selected.sale_price,
-      price: selected.price,
-      selling_price: selected.selling_price,
-      discounted_price: selected.discounted_price,
-      mahaveer_price: selected.mahaveer_price,
-      cost_price: selected.cost_price,
-      b2c_discount_pct: selected.b2c_discount_pct,
-      b2b_discount_pct: selected.b2b_discount_pct,
-      original_price_b2c: selected.original_price_b2c,
-      final_price_b2c: selected.final_price_b2c,
-      original_price_b2b: selected.original_price_b2b,
-      final_price_b2b: selected.final_price_b2b,
+      barcode: selectedVariant.barcode || '',
+      ean_code: selectedVariant.ean_code || selectedVariant.barcode || '',
+      mrp: selectedVariant.mrp,
+      base_sale_price: selectedVariant.base_sale_price,
+      original_sale_price: selectedVariant.original_sale_price,
+      sale_price: selectedVariant.sale_price,
+      price: selectedVariant.price,
+      selling_price: selectedVariant.selling_price,
+      discounted_price: selectedVariant.discounted_price,
+      mahaveer_price: selectedVariant.mahaveer_price,
+      cost_price: selectedVariant.cost_price,
+      b2c_discount_pct: selectedVariant.b2c_discount_pct,
+      b2b_discount_pct: selectedVariant.b2b_discount_pct,
+      original_price_b2c: selectedVariant.original_price_b2c,
+      final_price_b2c: selectedVariant.final_price_b2c,
+      original_price_b2b: selectedVariant.original_price_b2b,
+      final_price_b2b: selectedVariant.final_price_b2b,
       on_hand: totalOnHand,
       reserved: totalReserved,
       available_qty: totalAvailable,
@@ -529,7 +554,7 @@ const groupProductRows = rows => {
   return out
 }
 
-const fetchProducts = async ({ req, gender, category, brand, q, id, productId, limit, offset, random, hasImage }) => {
+const fetchProducts = async ({ req, gender, category, brand, q, id, productId, variantId, limit, offset, random, hasImage }) => {
   const params = []
   let where = productWhere()
 
@@ -553,6 +578,11 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, l
   if (productId) {
     params.push(productId)
     where += ` AND p.id = $${params.length}`
+  }
+
+  if (variantId) {
+    params.push(variantId)
+    where += ` AND v.id = $${params.length}`
   }
 
   const qRaw = String(q || '').trim()
@@ -684,6 +714,242 @@ const buildExpandedCandidatesFromRow = r => {
   }
 
   return Array.from(out).map(x => x.split('||')[1])
+}
+
+const resolveVariantForWrite = async (client, id, variantIdFromBody) => {
+  let variantId = parseInt(variantIdFromBody || id, 10)
+
+  if (Number.isFinite(variantId) && variantId > 0) {
+    const byVariant = await client.query(
+      `
+      SELECT v.id AS variant_id, v.product_id
+      FROM product_variants v
+      WHERE v.id = $1
+      LIMIT 1
+      `,
+      [variantId]
+    )
+
+    if (byVariant.rows.length) return byVariant.rows[0]
+  }
+
+  const byProduct = await client.query(
+    `
+    SELECT v.id AS variant_id, v.product_id
+    FROM product_variants v
+    WHERE v.product_id = $1
+      AND v.is_active = TRUE
+    ORDER BY v.id ASC
+    LIMIT 1
+    `,
+    [id]
+  )
+
+  if (byProduct.rows.length) return byProduct.rows[0]
+
+  return null
+}
+
+const updateVariantRecord = async ({ client, req, id, body }) => {
+  const {
+    variant_id,
+    category,
+    brand,
+    product_name,
+    color,
+    colour,
+    size,
+    original_price_b2b,
+    discount_b2b,
+    original_price_b2c,
+    discount_b2c,
+    total_count,
+    image_url
+  } = body || {}
+
+  const resolved = await resolveVariantForWrite(client, id, variant_id)
+
+  if (!resolved) {
+    return { status: 404, payload: { message: 'Product not found' } }
+  }
+
+  const productId = resolved.product_id
+  const variantId = resolved.variant_id
+  const gender = toGender(category)
+  const nextSize = cleanValue(size)
+  const nextColor = cleanValue(color || colour)
+  const nextName = cleanValue(product_name)
+  const nextBrand = cleanValue(brand)
+
+  if (!gender) {
+    return { status: 400, payload: { message: 'Invalid category. Use Men, Women, or Kids' } }
+  }
+
+  if (!nextName || !nextBrand || !nextSize || !nextColor) {
+    return { status: 400, payload: { message: 'Product name, brand, color and size are required' } }
+  }
+
+  if (hasGroupedVariantValue(nextSize) || hasGroupedVariantValue(nextColor)) {
+    return { status: 400, payload: { message: 'Size and color must be one value only. Do not send grouped summary values.' } }
+  }
+
+  const mrp = Number.isFinite(Number(original_price_b2c)) ? Number(original_price_b2c) : Number(original_price_b2b)
+  const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0
+  const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0
+  const stockCount = Math.max(0, parseInt(total_count, 10) || 0)
+
+  await client.query(
+    `
+    UPDATE products
+    SET name = $1,
+        brand_name = $2,
+        gender = $3
+    WHERE id = $4
+    `,
+    [nextName, nextBrand, gender, productId]
+  )
+
+  await client.query(
+    `
+    UPDATE product_variants
+    SET colour = $1,
+        size = $2,
+        mrp = $3,
+        b2b_discount_pct = $4,
+        b2c_discount_pct = $5,
+        image_url = $6,
+        is_active = TRUE
+    WHERE id = $7
+    `,
+    [nextColor, nextSize, Number.isFinite(mrp) ? mrp : 0, b2bDiscount, b2cDiscount, cleanValue(image_url) || null, variantId]
+  )
+
+  const branchId = getBranchIdFromReq(req)
+
+  if (branchId) {
+    await client.query(
+      `
+      INSERT INTO branch_variant_stock (variant_id, branch_id, on_hand, reserved, is_active)
+      VALUES ($1, $2, $3, 0, TRUE)
+      ON CONFLICT (branch_id, variant_id)
+      DO UPDATE SET on_hand = EXCLUDED.on_hand,
+                    is_active = TRUE,
+                    updated_at = NOW()
+      `,
+      [variantId, branchId, stockCount]
+    )
+  }
+
+  return {
+    status: 200,
+    productId,
+    variantId,
+    fallback: {
+      id: productId,
+      product_id: productId,
+      variant_id: variantId,
+      category: gender,
+      brand: nextBrand,
+      brand_name: nextBrand,
+      product_name: nextName,
+      name: nextName,
+      color: nextColor,
+      colour: nextColor,
+      size: nextSize,
+      original_price_b2b,
+      discount_b2b,
+      original_price_b2c,
+      discount_b2c,
+      total_count: stockCount,
+      image_url
+    }
+  }
+}
+
+const deleteVariantById = async ({ client, req, variantId }) => {
+  const branchId = getBranchIdFromReq(req)
+
+  const existingVariant = await client.query(
+    `
+    SELECT id, product_id, size, colour
+    FROM product_variants
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [variantId]
+  )
+
+  if (!existingVariant.rows.length) {
+    return { status: 404, payload: { message: 'Variant not found' } }
+  }
+
+  if (branchId) {
+    await client.query(
+      `
+      UPDATE branch_variant_stock
+      SET is_active = FALSE,
+          on_hand = 0,
+          updated_at = NOW()
+      WHERE variant_id = $1
+        AND branch_id = $2
+      `,
+      [variantId, branchId]
+    )
+
+    const activeStock = await client.query(
+      `
+      SELECT 1
+      FROM branch_variant_stock
+      WHERE variant_id = $1
+        AND is_active = TRUE
+        AND on_hand > 0
+      LIMIT 1
+      `,
+      [variantId]
+    )
+
+    if (!activeStock.rows.length) {
+      await client.query(
+        `
+        UPDATE product_variants
+        SET is_active = FALSE
+        WHERE id = $1
+        `,
+        [variantId]
+      )
+    }
+  } else {
+    await client.query(
+      `
+      UPDATE product_variants
+      SET is_active = FALSE
+      WHERE id = $1
+      `,
+      [variantId]
+    )
+
+    await client.query(
+      `
+      UPDATE branch_variant_stock
+      SET is_active = FALSE,
+          on_hand = 0,
+          updated_at = NOW()
+      WHERE variant_id = $1
+      `,
+      [variantId]
+    )
+  }
+
+  return {
+    status: 200,
+    payload: {
+      message: 'Variant deleted successfully',
+      variant_id: variantId,
+      product_id: existingVariant.rows[0].product_id,
+      size: existingVariant.rows[0].size,
+      colour: existingVariant.rows[0].colour
+    }
+  }
 }
 
 router.get('/', async (req, res) => {
@@ -854,6 +1120,84 @@ router.get('/section-images', async (req, res) => {
   }
 })
 
+router.delete('/variant/:variantId(\\d+)', async (req, res) => {
+  const client = await pool.connect()
+
+  try {
+    const variantId = parseInt(req.params.variantId, 10)
+
+    if (!Number.isFinite(variantId) || variantId <= 0) {
+      return res.status(400).json({ message: 'Invalid variant id' })
+    }
+
+    await client.query('BEGIN')
+    const result = await deleteVariantById({ client, req, variantId })
+
+    if (result.status !== 200) {
+      await client.query('ROLLBACK')
+      return res.status(result.status).json(result.payload)
+    }
+
+    await client.query('COMMIT')
+    return res.json(result.payload)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({
+      message: 'Error deleting variant',
+      error: err.message
+    })
+  } finally {
+    client.release()
+  }
+})
+
+router.put('/variant/:variantId(\\d+)', async (req, res) => {
+  const client = await pool.connect()
+
+  try {
+    const variantId = parseInt(req.params.variantId, 10)
+
+    if (!Number.isFinite(variantId) || variantId <= 0) {
+      return res.status(400).json({ message: 'Invalid variant id' })
+    }
+
+    await client.query('BEGIN')
+
+    const result = await updateVariantRecord({
+      client,
+      req,
+      id: variantId,
+      body: { ...(req.body || {}), variant_id: variantId }
+    })
+
+    if (result.status !== 200) {
+      await client.query('ROLLBACK')
+      return res.status(result.status).json(result.payload)
+    }
+
+    await client.query('COMMIT')
+
+    const rows = await fetchProducts({
+      req,
+      productId: result.productId,
+      limit: '500',
+      offset: '0',
+      random: false,
+      hasImage: false
+    })
+
+    return res.json(rows[0] || result.fallback)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({
+      message: 'Error updating variant',
+      error: err.message
+    })
+  } finally {
+    client.release()
+  }
+})
+
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     const rows = await fetchProducts({
@@ -883,158 +1227,32 @@ router.put('/:id(\\d+)', async (req, res) => {
       return res.status(400).json({ message: 'Invalid product id' })
     }
 
-    const {
-      variant_id,
-      category,
-      brand,
-      product_name,
-      color,
-      colour,
-      size,
-      original_price_b2b,
-      discount_b2b,
-      final_price_b2b,
-      original_price_b2c,
-      discount_b2c,
-      final_price_b2c,
-      total_count,
-      image_url
-    } = req.body || {}
-
     await client.query('BEGIN')
 
-    let variantId = parseInt(variant_id || id, 10)
+    const result = await updateVariantRecord({
+      client,
+      req,
+      id,
+      body: req.body || {}
+    })
 
-    const byVariant = await client.query(
-      `
-      SELECT v.id AS variant_id, v.product_id
-      FROM product_variants v
-      WHERE v.id = $1
-      LIMIT 1
-      `,
-      [variantId]
-    )
-
-    if (!byVariant.rows.length) {
-      const byProduct = await client.query(
-        `
-        SELECT v.id AS variant_id, v.product_id
-        FROM product_variants v
-        WHERE v.product_id = $1
-        ORDER BY v.id ASC
-        LIMIT 1
-        `,
-        [id]
-      )
-
-      if (!byProduct.rows.length) {
-        await client.query('ROLLBACK')
-        return res.status(404).json({ message: 'Product not found' })
-      }
-
-      variantId = byProduct.rows[0].variant_id
-    }
-
-    const existingVariant = await client.query(
-      `
-      SELECT v.id AS variant_id, v.product_id
-      FROM product_variants v
-      JOIN products p ON p.id = v.product_id
-      WHERE v.id = $1
-      LIMIT 1
-      `,
-      [variantId]
-    )
-
-    if (!existingVariant.rows.length) {
+    if (result.status !== 200) {
       await client.query('ROLLBACK')
-      return res.status(404).json({ message: 'Product not found' })
-    }
-
-    const productId = existingVariant.rows[0].product_id
-    const gender = toGender(category)
-
-    if (!gender) {
-      await client.query('ROLLBACK')
-      return res.status(400).json({ message: 'Invalid category. Use Men, Women, or Kids' })
-    }
-
-    const mrp = Number.isFinite(Number(original_price_b2c)) ? Number(original_price_b2c) : Number(original_price_b2b)
-    const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0
-    const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0
-    const stockCount = Math.max(0, parseInt(total_count, 10) || 0)
-
-    await client.query(
-      `
-      UPDATE products
-      SET name = $1,
-          brand_name = $2,
-          gender = $3
-      WHERE id = $4
-      `,
-      [product_name, brand, gender, productId]
-    )
-
-    await client.query(
-      `
-      UPDATE product_variants
-      SET colour = $1,
-          size = $2,
-          mrp = $3,
-          b2b_discount_pct = $4,
-          b2c_discount_pct = $5,
-          image_url = $6,
-          is_active = TRUE
-      WHERE id = $7
-      `,
-      [color || colour || '', size || '', mrp, b2bDiscount, b2cDiscount, image_url || null, variantId]
-    )
-
-    const branchId = getBranchIdFromReq(req)
-
-    if (branchId) {
-      await client.query(
-        `
-        INSERT INTO branch_variant_stock (variant_id, branch_id, on_hand, reserved, is_active)
-        VALUES ($1, $2, $3, 0, TRUE)
-        ON CONFLICT (branch_id, variant_id)
-        DO UPDATE SET on_hand = EXCLUDED.on_hand,
-                      is_active = TRUE,
-                      updated_at = NOW()
-        `,
-        [variantId, branchId, stockCount]
-      )
+      return res.status(result.status).json(result.payload)
     }
 
     await client.query('COMMIT')
 
     const rows = await fetchProducts({
       req,
-      productId,
+      productId: result.productId,
       limit: '500',
       offset: '0',
       random: false,
       hasImage: false
     })
 
-    return res.json(rows[0] || {
-      id: productId,
-      product_id: productId,
-      variant_id: variantId,
-      category,
-      brand,
-      product_name,
-      color,
-      size,
-      original_price_b2b,
-      discount_b2b,
-      final_price_b2b,
-      original_price_b2c,
-      discount_b2c,
-      final_price_b2c,
-      total_count: stockCount,
-      image_url
-    })
+    return res.json(rows[0] || result.fallback)
   } catch (err) {
     await client.query('ROLLBACK')
     return res.status(500).json({
@@ -1056,7 +1274,21 @@ router.delete('/:id(\\d+)', async (req, res) => {
       return res.status(400).json({ message: 'Invalid product id' })
     }
 
+    const scope = String(req.query.scope || req.query.type || '').trim().toLowerCase()
+
     await client.query('BEGIN')
+
+    if (scope === 'variant') {
+      const result = await deleteVariantById({ client, req, variantId: id })
+
+      if (result.status !== 200) {
+        await client.query('ROLLBACK')
+        return res.status(result.status).json(result.payload)
+      }
+
+      await client.query('COMMIT')
+      return res.json(result.payload)
+    }
 
     const product = await client.query(
       `
@@ -1112,49 +1344,15 @@ router.delete('/:id(\\d+)', async (req, res) => {
       })
     }
 
-    const existingVariant = await client.query(
-      `
-      SELECT id, product_id
-      FROM product_variants
-      WHERE id = $1
-      LIMIT 1
-      `,
-      [id]
-    )
+    const result = await deleteVariantById({ client, req, variantId: id })
 
-    if (!existingVariant.rows.length) {
+    if (result.status !== 200) {
       await client.query('ROLLBACK')
-      return res.status(404).json({ message: 'Product not found' })
+      return res.status(result.status).json({ message: 'Product not found' })
     }
 
-    await client.query(
-      `
-      UPDATE product_variants
-      SET is_active = FALSE
-      WHERE id = $1
-      `,
-      [id]
-    )
-
-    await client.query(
-      `
-      UPDATE branch_variant_stock
-      SET is_active = FALSE,
-          on_hand = 0,
-          updated_at = NOW()
-      WHERE variant_id = $1
-      `,
-      [id]
-    )
-
     await client.query('COMMIT')
-
-    return res.json({
-      message: 'Product deleted successfully',
-      id,
-      variant_id: id,
-      product_id: existingVariant.rows[0].product_id
-    })
+    return res.json(result.payload)
   } catch (err) {
     await client.query('ROLLBACK')
     return res.status(500).json({
