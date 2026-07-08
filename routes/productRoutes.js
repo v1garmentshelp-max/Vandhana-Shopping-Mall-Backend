@@ -301,12 +301,46 @@ const addHasImageWhere = whereSql => `
   (${whereSql})
   AND (
     (NULLIF(v.image_url,'') IS NOT NULL AND v.image_url NOT LIKE '/images/%')
-    OR (NULLIF(pi.image_url,'') IS NOT NULL AND pi.image_url NOT LIKE '/images/%')
+    OR (NULLIF(pi_front.image_url,'') IS NOT NULL AND pi_front.image_url NOT LIKE '/images/%')
+    OR (NULLIF(pi_back.image_url,'') IS NOT NULL AND pi_back.image_url NOT LIKE '/images/%')
     OR COALESCE(bc_self.ean_code, '') <> ''
   )
 `
 
-const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
+const fallbackImageSql = () => `
+  CASE
+    WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+    WHEN p.gender = 'MEN' THEN '/images/men/default.jpg'
+    WHEN p.gender = 'KIDS' THEN '/images/kids/default.jpg'
+    ELSE '/images/placeholder.jpg'
+  END
+`
+
+const generatedImageSql = cloudIdx => `
+  CASE
+    WHEN COALESCE(bc_self.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, ''))
+    ELSE NULL
+  END
+`
+
+const frontImageSql = cloudIdx => `
+  COALESCE(
+    NULLIF(v.image_url, ''),
+    NULLIF(pi_front.image_url, ''),
+    ${generatedImageSql(cloudIdx)},
+    ${fallbackImageSql()}
+  )
+`
+
+const backImageSql = () => `
+  COALESCE(NULLIF(pi_back.image_url, ''), '')
+`
+
+const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
+  const frontImage = frontImageSql(cloudIdx)
+  const backImage = backImageSql()
+
+  return `
   SELECT
     p.id AS product_id,
     p.name AS product_name,
@@ -397,20 +431,14 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     END AS in_stock,
     COALESCE(bc_self.ean_code, '') AS barcode,
     COALESCE(bc_self.ean_code, '') AS ean_code,
-    COALESCE(
-      NULLIF(v.image_url, ''),
-      NULLIF(pi.image_url, ''),
-      CASE
-        WHEN COALESCE(bc_self.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, ''))
-        ELSE NULL
-      END,
-      CASE
-        WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-        WHEN p.gender = 'MEN' THEN '/images/men/default.jpg'
-        WHEN p.gender = 'KIDS' THEN '/images/kids/default.jpg'
-        ELSE '/images/placeholder.jpg'
-      END
-    ) AS image_url
+    ${frontImage} AS image_url,
+    ${frontImage} AS front_image_url,
+    ${frontImage} AS "frontImageUrl",
+    ${backImage} AS back_image_url,
+    ${backImage} AS "backImageUrl",
+    ${frontImage} AS main_image_url,
+    ${frontImage} AS "mainImageUrl",
+    jsonb_build_array(${frontImage}, NULLIF(${backImage}, '')) AS images
   FROM products p
   JOIN product_variants v ON v.product_id = p.id
   LEFT JOIN LATERAL (
@@ -424,9 +452,28 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     SELECT image_url
     FROM product_images pi
     WHERE pi.ean_code = bc_self.ean_code
+      AND COALESCE(pi.image_url, '') <> ''
+      AND pi.image_url NOT ILIKE '%__back__%'
+      AND pi.image_url NOT ILIKE '%/back/%'
+      AND pi.image_url NOT ILIKE '%back_%'
+      AND pi.image_url NOT ILIKE '%back-%'
     ORDER BY uploaded_at DESC
     LIMIT 1
-  ) pi ON TRUE
+  ) pi_front ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT image_url
+    FROM product_images pi
+    WHERE pi.ean_code = bc_self.ean_code
+      AND COALESCE(pi.image_url, '') <> ''
+      AND (
+        pi.image_url ILIKE '%__back__%'
+        OR pi.image_url ILIKE '%/back/%'
+        OR pi.image_url ILIKE '%back_%'
+        OR pi.image_url ILIKE '%back-%'
+      )
+    ORDER BY uploaded_at DESC
+    LIMIT 1
+  ) pi_back ON TRUE
   LEFT JOIN LATERAL (
     SELECT
       SUM(on_hand) FILTER (WHERE is_active = TRUE) AS on_hand,
@@ -438,6 +485,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
   ) bvs ON TRUE
   WHERE ${where}
 `
+}
 
 const groupProductRows = rows => {
   const groups = new Map()
@@ -503,7 +551,15 @@ const groupProductRows = rows => {
         available_qty: row.available_qty,
         total_count: row.total_count,
         in_stock: row.in_stock,
-        image_url: row.image_url
+        image_url: row.image_url,
+        imageUrl: row.image_url,
+        front_image_url: row.front_image_url || row.image_url || '',
+        frontImageUrl: row.front_image_url || row.image_url || '',
+        back_image_url: row.back_image_url || '',
+        backImageUrl: row.back_image_url || '',
+        main_image_url: row.main_image_url || row.image_url || '',
+        mainImageUrl: row.main_image_url || row.image_url || '',
+        images: Array.isArray(row.images) ? row.images.filter(Boolean) : [row.front_image_url || row.image_url, row.back_image_url].filter(Boolean)
       })
     }
 
@@ -527,7 +583,7 @@ const groupProductRows = rows => {
     })
 
     const selected = rowsSorted[0] || group._rows[0] || {}
-    const imageRow = group._rows.find(r => r.image_url) || selected
+    const imageRow = selected || group._rows.find(r => r.image_url) || {}
     const sizes = sortVariantValues(group.variants.map(v => v.size))
     const colors = sortVariantValues(group.variants.map(v => v.color))
     const barcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
@@ -594,7 +650,15 @@ const groupProductRows = rows => {
       available_qty: totalAvailable,
       total_count: totalOnHand,
       in_stock: totalAvailable > 0,
-      image_url: imageRow.image_url,
+      image_url: selectedVariant.image_url || imageRow.image_url || '',
+      imageUrl: selectedVariant.image_url || imageRow.image_url || '',
+      front_image_url: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
+      frontImageUrl: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
+      back_image_url: selectedVariant.back_image_url || imageRow.back_image_url || '',
+      backImageUrl: selectedVariant.back_image_url || imageRow.back_image_url || '',
+      main_image_url: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
+      mainImageUrl: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
+      images: Array.isArray(selectedVariant.images) ? selectedVariant.images.filter(Boolean) : [selectedVariant.front_image_url || selectedVariant.image_url || imageRow.image_url, selectedVariant.back_image_url || imageRow.back_image_url].filter(Boolean),
       variant_count: group.variants.length,
       variants: group.variants
     })
@@ -835,6 +899,23 @@ const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'aut
   return null
 }
 
+const saveProductImage = async (client, eanCode, imageUrl) => {
+  const code = cleanValue(eanCode)
+  const url = cleanValue(imageUrl)
+
+  if (!code || !url || url.startsWith('/images/')) return
+
+  try {
+    await client.query(
+      `
+      INSERT INTO product_images (ean_code, image_url)
+      VALUES ($1, $2)
+      `,
+      [code, url]
+    )
+  } catch {}
+}
+
 const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => {
   const nextCategory = body?.category || body?.gender
   const nextBrand = cleanValue(body?.brand || body?.brand_name)
@@ -896,7 +977,21 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
   const finalB2C = calcDiscountedPrice(originalB2C, b2cDiscount)
   const finalB2B = calcDiscountedPrice(originalB2B, b2bDiscount)
   const stockCount = Math.max(0, parseInt(body?.total_count ?? body?.stock ?? body?.quantity ?? 0, 10) || 0)
-  const imageUrl = cleanValue(body?.image_url || body?.image || body?.imageUrl) || null
+  const imageUrl = cleanValue(body?.front_image_url || body?.frontImageUrl || body?.image_url || body?.image || body?.imageUrl) || null
+  const backImageUrl = cleanValue(body?.back_image_url || body?.backImageUrl) || null
+
+  const barcodeRow = await client.query(
+    `
+    SELECT ean_code
+    FROM barcodes
+    WHERE variant_id = $1
+    ORDER BY id ASC
+    LIMIT 1
+    `,
+    [variantId]
+  )
+
+  const eanCode = cleanValue(body?.ean_code || body?.barcode || barcodeRow.rows[0]?.ean_code || '')
 
   await client.query(
     `
@@ -952,6 +1047,9 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     )
   }
 
+  await saveProductImage(client, eanCode, imageUrl)
+  await saveProductImage(client, eanCode, backImageUrl)
+
   return {
     status: 200,
     productId,
@@ -991,7 +1089,15 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
       b2b_discount_pct: b2bDiscount,
       total_count: stockCount,
       available_qty: stockCount,
-      image_url: imageUrl
+      image_url: imageUrl,
+      imageUrl,
+      front_image_url: imageUrl,
+      frontImageUrl: imageUrl,
+      back_image_url: backImageUrl,
+      backImageUrl,
+      main_image_url: imageUrl,
+      mainImageUrl: imageUrl,
+      images: [imageUrl, backImageUrl].filter(Boolean)
     }
   }
 }
