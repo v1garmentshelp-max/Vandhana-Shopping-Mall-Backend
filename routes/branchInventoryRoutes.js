@@ -354,6 +354,56 @@ function normalizeGroupColour(v) {
   return String(v || '').trim().toUpperCase()
 }
 
+function normalizeGroupSize(v) {
+  return String(v || '').trim().toUpperCase()
+}
+
+function sortRowsForCardSets(rows) {
+  return rows.slice().sort((a, b) => {
+    const av = toNumber(a.variant_id)
+    const bv = toNumber(b.variant_id)
+    if (av !== bv) return av - bv
+    return String(a.ean_code || a.barcode || '').localeCompare(String(b.ean_code || b.barcode || ''), undefined, { numeric: true })
+  })
+}
+
+function splitColourRowsIntoCardSets(rows) {
+  const bySize = new Map()
+
+  for (const row of rows) {
+    const sizeKey = normalizeGroupSize(row.size) || 'NO_SIZE'
+    if (!bySize.has(sizeKey)) bySize.set(sizeKey, [])
+    bySize.get(sizeKey).push(row)
+  }
+
+  for (const [sizeKey, sizeRows] of bySize.entries()) {
+    bySize.set(sizeKey, sortRowsForCardSets(sizeRows))
+  }
+
+  let maxSetCount = 0
+  for (const sizeRows of bySize.values()) {
+    if (sizeRows.length > maxSetCount) maxSetCount = sizeRows.length
+  }
+
+  const sets = Array.from({ length: Math.max(maxSetCount, 1) }, () => [])
+
+  const orderedSizes = Array.from(bySize.keys()).sort((a, b) => {
+    const na = parseFloat(String(a).replace(/[^\d.]/g, ''))
+    const nb = parseFloat(String(b).replace(/[^\d.]/g, ''))
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb
+    return String(a).localeCompare(String(b), undefined, { numeric: true })
+  })
+
+  for (const sizeKey of orderedSizes) {
+    const sizeRows = bySize.get(sizeKey) || []
+    for (let i = 0; i < sizeRows.length; i += 1) {
+      sets[i].push(sizeRows[i])
+    }
+  }
+
+  return sets.filter(set => set.length)
+}
+
 function makeVariantPayload(row) {
   return {
     id: row.variant_id,
@@ -430,7 +480,9 @@ function groupStockRows(rows) {
     group.variants.sort((a, b) => {
       const colourCompare = String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
       if (colourCompare !== 0) return colourCompare
-      return String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
+      const sizeCompare = String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
+      if (sizeCompare !== 0) return sizeCompare
+      return String(a.variant_id || '').localeCompare(String(b.variant_id || ''), undefined, { numeric: true })
     })
 
     const allSizes = sortVariantValues(group.variants.map(v => v.size))
@@ -453,146 +505,152 @@ function groupStockRows(rows) {
     }
 
     for (const colourGroup of colourGroups.values()) {
-      const colourRows = colourGroup.rows.slice().sort((a, b) => {
-        const aq = toNumber(a.available_qty)
-        const bq = toNumber(b.available_qty)
-        if (bq !== aq) return bq - aq
-        return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
-      })
+      const cardSets = splitColourRowsIntoCardSets(colourGroup.rows)
 
-      const selected = colourRows[0] || {}
-      const imageRow = colourRows.find(r => r.front_image_url || r.main_image_url || r.image_url) || selected
-      const colourVariantIds = new Set(colourRows.map(r => String(r.variant_id)))
-      const colourVariants = group.variants.filter(v => colourVariantIds.has(String(v.variant_id)))
-      const colourSizes = sortVariantValues(colourVariants.map(v => v.size))
-      const colourBarcodes = uniqueValues(colourVariants.map(v => v.barcode || v.ean_code))
-      const totalOnHand = colourVariants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
-      const totalReserved = colourVariants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
-      const totalAvailable = colourVariants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
-      const selectedColour = colourGroup.colour || selected.colour || ''
-      const selectedImages = normalizeImages(imageRow.images)
+      for (let cardIndex = 0; cardIndex < cardSets.length; cardIndex += 1) {
+        const cardRows = cardSets[cardIndex].slice().sort((a, b) => {
+          const aq = toNumber(a.available_qty)
+          const bq = toNumber(b.available_qty)
+          if (bq !== aq) return bq - aq
+          return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
+        })
 
-      out.push({
-        id: selected.variant_id || group.product_id,
-        product_id: group.product_id,
-        productId: group.product_id,
-        primary_variant_id: selected.variant_id,
-        primaryVariantId: selected.variant_id,
-        variant_id: selected.variant_id,
-        variantId: selected.variant_id,
-        product_name: group.product_name,
-        productName: group.product_name,
-        name: group.product_name,
-        title: group.product_name,
-        brand_name: group.brand_name,
-        brandName: group.brand_name,
-        brand: group.brand_name,
-        pattern_code: group.pattern_code,
-        patternCode: group.pattern_code,
-        fit_type: group.fit_type,
-        fitType: group.fit_type,
-        mark_code: group.mark_code,
-        markCode: group.mark_code,
-        gender: group.gender,
-        category: group.gender,
-        size: colourSizes.join(', '),
-        size_summary: allSizes.join(', '),
-        sizeSummary: allSizes.join(', '),
-        display_size: colourSizes.join(', '),
-        displaySize: colourSizes.join(', '),
-        colour: selectedColour,
-        color: selectedColour,
-        selected_colour: selectedColour,
-        selectedColor: selectedColour,
-        colour_summary: allColours.join(', '),
-        color_summary: allColours.join(', '),
-        colourSummary: allColours.join(', '),
-        colorSummary: allColours.join(', '),
-        display_color: selectedColour,
-        displayColor: selectedColour,
-        sizes: colourSizes,
-        all_sizes: allSizes,
-        allSizes,
-        colours: allColours,
-        colors: allColours,
-        barcodes: colourBarcodes,
-        ean_codes: colourBarcodes,
-        all_barcodes: allBarcodes,
-        allBarcodes,
-        barcode: selected.barcode || '',
-        ean_code: selected.ean_code || selected.barcode || '',
-        eanCode: selected.ean_code || selected.barcode || '',
-        mrp: selected.mrp,
-        original_price: selected.original_price_b2c,
-        originalPrice: selected.original_price_b2c,
-        base_sale_price: selected.base_sale_price,
-        baseSalePrice: selected.base_sale_price,
-        original_sale_price: selected.original_sale_price,
-        originalSalePrice: selected.original_sale_price,
-        sale_price: selected.sale_price,
-        salePrice: selected.sale_price,
-        price: selected.price,
-        selling_price: selected.selling_price,
-        sellingPrice: selected.selling_price,
-        discounted_price: selected.discounted_price,
-        discountedPrice: selected.discounted_price,
-        mahaveer_price: selected.mahaveer_price,
-        mahaveerPrice: selected.mahaveer_price,
-        cost_price: selected.cost_price,
-        costPrice: selected.cost_price,
-        b2c_discount_pct: selected.b2c_discount_pct,
-        b2cDiscountPct: selected.b2c_discount_pct,
-        b2b_discount_pct: selected.b2b_discount_pct,
-        b2bDiscountPct: selected.b2b_discount_pct,
-        discount_b2c: selected.b2c_discount_pct,
-        discountB2c: selected.b2c_discount_pct,
-        discount_b2b: selected.b2b_discount_pct,
-        discountB2b: selected.b2b_discount_pct,
-        discount: selected.b2c_discount_pct,
-        discount_percentage: selected.b2c_discount_pct,
-        discountPercentage: selected.b2c_discount_pct,
-        discount_percent: selected.b2c_discount_pct,
-        discountPercent: selected.b2c_discount_pct,
-        original_price_b2c: selected.original_price_b2c,
-        originalPriceB2c: selected.original_price_b2c,
-        final_price_b2c: selected.final_price_b2c,
-        finalPriceB2c: selected.final_price_b2c,
-        original_price_b2b: selected.original_price_b2b,
-        originalPriceB2b: selected.original_price_b2b,
-        final_price_b2b: selected.final_price_b2b,
-        finalPriceB2b: selected.final_price_b2b,
-        b2c_final_price: selected.final_price_b2c,
-        b2cFinalPrice: selected.final_price_b2c,
-        b2b_final_price: selected.final_price_b2b,
-        b2bFinalPrice: selected.final_price_b2b,
-        final_price: selected.final_price_b2c,
-        finalPrice: selected.final_price_b2c,
-        on_hand: totalOnHand,
-        onHand: totalOnHand,
-        reserved: totalReserved,
-        available_qty: totalAvailable,
-        availableQty: totalAvailable,
-        total_count: totalOnHand,
-        totalCount: totalOnHand,
-        in_stock: totalAvailable > 0,
-        inStock: totalAvailable > 0,
-        image_url: imageRow.image_url || '',
-        imageUrl: imageRow.image_url || '',
-        front_image_url: imageRow.front_image_url || '',
-        frontImageUrl: imageRow.front_image_url || '',
-        back_image_url: imageRow.back_image_url || '',
-        backImageUrl: imageRow.back_image_url || '',
-        main_image_url: imageRow.main_image_url || '',
-        mainImageUrl: imageRow.main_image_url || '',
-        images: selectedImages,
-        variant_count: group.variants.length,
-        variantCount: group.variants.length,
-        color_variant_count: colourVariants.length,
-        colorVariantCount: colourVariants.length,
-        variants: group.variants,
-        color_variants: colourVariants,
-        colorVariants: colourVariants
-      })
+        const selected = cardRows[0] || {}
+        const imageRow = cardRows.find(r => r.front_image_url || r.main_image_url || r.image_url) || selected
+        const cardVariantIds = new Set(cardRows.map(r => String(r.variant_id)))
+        const cardVariants = group.variants.filter(v => cardVariantIds.has(String(v.variant_id)))
+        const cardSizes = sortVariantValues(cardVariants.map(v => v.size))
+        const cardBarcodes = uniqueValues(cardVariants.map(v => v.barcode || v.ean_code))
+        const totalOnHand = cardVariants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
+        const totalReserved = cardVariants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
+        const totalAvailable = cardVariants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+        const selectedColour = colourGroup.colour || selected.colour || ''
+        const selectedImages = normalizeImages(imageRow.images)
+
+        out.push({
+          id: selected.variant_id || group.product_id,
+          product_id: group.product_id,
+          productId: group.product_id,
+          primary_variant_id: selected.variant_id,
+          primaryVariantId: selected.variant_id,
+          variant_id: selected.variant_id,
+          variantId: selected.variant_id,
+          product_name: group.product_name,
+          productName: group.product_name,
+          name: group.product_name,
+          title: group.product_name,
+          brand_name: group.brand_name,
+          brandName: group.brand_name,
+          brand: group.brand_name,
+          pattern_code: group.pattern_code,
+          patternCode: group.pattern_code,
+          fit_type: group.fit_type,
+          fitType: group.fit_type,
+          mark_code: group.mark_code,
+          markCode: group.mark_code,
+          gender: group.gender,
+          category: group.gender,
+          size: cardSizes.join(', '),
+          size_summary: allSizes.join(', '),
+          sizeSummary: allSizes.join(', '),
+          display_size: cardSizes.join(', '),
+          displaySize: cardSizes.join(', '),
+          colour: selectedColour,
+          color: selectedColour,
+          selected_colour: selectedColour,
+          selectedColor: selectedColour,
+          colour_summary: allColours.join(', '),
+          color_summary: allColours.join(', '),
+          colourSummary: allColours.join(', '),
+          colorSummary: allColours.join(', '),
+          display_color: selectedColour,
+          displayColor: selectedColour,
+          sizes: cardSizes,
+          all_sizes: allSizes,
+          allSizes,
+          colours: allColours,
+          colors: allColours,
+          barcodes: cardBarcodes,
+          ean_codes: cardBarcodes,
+          all_barcodes: allBarcodes,
+          allBarcodes,
+          barcode: selected.barcode || '',
+          ean_code: selected.ean_code || selected.barcode || '',
+          eanCode: selected.ean_code || selected.barcode || '',
+          mrp: selected.mrp,
+          original_price: selected.original_price_b2c,
+          originalPrice: selected.original_price_b2c,
+          base_sale_price: selected.base_sale_price,
+          baseSalePrice: selected.base_sale_price,
+          original_sale_price: selected.original_sale_price,
+          originalSalePrice: selected.original_sale_price,
+          sale_price: selected.sale_price,
+          salePrice: selected.sale_price,
+          price: selected.price,
+          selling_price: selected.selling_price,
+          sellingPrice: selected.selling_price,
+          discounted_price: selected.discounted_price,
+          discountedPrice: selected.discounted_price,
+          mahaveer_price: selected.mahaveer_price,
+          mahaveerPrice: selected.mahaveer_price,
+          cost_price: selected.cost_price,
+          costPrice: selected.cost_price,
+          b2c_discount_pct: selected.b2c_discount_pct,
+          b2cDiscountPct: selected.b2c_discount_pct,
+          b2b_discount_pct: selected.b2b_discount_pct,
+          b2bDiscountPct: selected.b2b_discount_pct,
+          discount_b2c: selected.b2c_discount_pct,
+          discountB2c: selected.b2c_discount_pct,
+          discount_b2b: selected.b2b_discount_pct,
+          discountB2b: selected.b2b_discount_pct,
+          discount: selected.b2c_discount_pct,
+          discount_percentage: selected.b2c_discount_pct,
+          discountPercentage: selected.b2c_discount_pct,
+          discount_percent: selected.b2c_discount_pct,
+          discountPercent: selected.b2c_discount_pct,
+          original_price_b2c: selected.original_price_b2c,
+          originalPriceB2c: selected.original_price_b2c,
+          final_price_b2c: selected.final_price_b2c,
+          finalPriceB2c: selected.final_price_b2c,
+          original_price_b2b: selected.original_price_b2b,
+          originalPriceB2b: selected.original_price_b2b,
+          final_price_b2b: selected.final_price_b2b,
+          finalPriceB2b: selected.final_price_b2b,
+          b2c_final_price: selected.final_price_b2c,
+          b2cFinalPrice: selected.final_price_b2c,
+          b2b_final_price: selected.final_price_b2b,
+          b2bFinalPrice: selected.final_price_b2b,
+          final_price: selected.final_price_b2c,
+          finalPrice: selected.final_price_b2c,
+          on_hand: totalOnHand,
+          onHand: totalOnHand,
+          reserved: totalReserved,
+          available_qty: totalAvailable,
+          availableQty: totalAvailable,
+          total_count: totalOnHand,
+          totalCount: totalOnHand,
+          in_stock: totalAvailable > 0,
+          inStock: totalAvailable > 0,
+          image_url: imageRow.image_url || '',
+          imageUrl: imageRow.image_url || '',
+          front_image_url: imageRow.front_image_url || '',
+          frontImageUrl: imageRow.front_image_url || '',
+          back_image_url: imageRow.back_image_url || '',
+          backImageUrl: imageRow.back_image_url || '',
+          main_image_url: imageRow.main_image_url || '',
+          mainImageUrl: imageRow.main_image_url || '',
+          images: selectedImages,
+          variant_count: group.variants.length,
+          variantCount: group.variants.length,
+          color_variant_count: cardVariants.length,
+          colorVariantCount: cardVariants.length,
+          card_group_index: cardIndex,
+          cardGroupIndex: cardIndex,
+          variants: group.variants,
+          color_variants: cardVariants,
+          colorVariants: cardVariants
+        })
+      }
     }
   }
 
@@ -601,7 +659,11 @@ function groupStockRows(rows) {
     if (brandCompare !== 0) return brandCompare
     const nameCompare = String(a.product_name || '').localeCompare(String(b.product_name || ''), undefined, { numeric: true })
     if (nameCompare !== 0) return nameCompare
-    return String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+    const colourCompare = String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+    if (colourCompare !== 0) return colourCompare
+    const cardCompare = toNumber(a.card_group_index) - toNumber(b.card_group_index)
+    if (cardCompare !== 0) return cardCompare
+    return String(a.variant_id || '').localeCompare(String(b.variant_id || ''), undefined, { numeric: true })
   })
 
   return out
@@ -908,7 +970,8 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (name, brand_name, pattern_code, gender)
              DO UPDATE SET fit_type = EXCLUDED.fit_type,
-                           mark_code = EXCLUDED.mark_code
+                           mark_code = EXCLUDED.mark_code,
+                           updated_at = NOW()
              RETURNING id`,
             [prepared.ProductName, prepared.BrandName, prepared.PATTERN, prepared.FITT, prepared.MarkCode, gender || null]
           )
@@ -916,7 +979,7 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
           const productId = pRes.rows[0].id
 
           const existingBarcode = await client.query(
-            `SELECT variant_id
+            `SELECT id, variant_id
              FROM barcodes
              WHERE REGEXP_REPLACE(UPPER(TRIM(ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
              ORDER BY id ASC
@@ -939,7 +1002,8 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
                    sale_price = $5,
                    cost_price = $6,
                    b2c_discount_pct = $7,
-                   b2b_discount_pct = $8
+                   b2b_discount_pct = $8,
+                   updated_at = NOW()
                WHERE id = $9`,
               [
                 productId,
@@ -953,24 +1017,10 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
                 variantId
               ]
             )
-
-            await client.query(
-              `UPDATE barcodes
-               SET ean_code = $1
-               WHERE variant_id = $2`,
-              [prepared.Barcode, variantId]
-            )
           } else {
             const vRes = await client.query(
-              `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
-               VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
-               ON CONFLICT (product_id, size, colour)
-               DO UPDATE SET is_active = TRUE,
-                             mrp = EXCLUDED.mrp,
-                             sale_price = EXCLUDED.sale_price,
-                             cost_price = EXCLUDED.cost_price,
-                             b2c_discount_pct = EXCLUDED.b2c_discount_pct,
-                             b2b_discount_pct = EXCLUDED.b2b_discount_pct
+              `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct, created_at, updated_at)
+               VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8, NOW(), NOW())
                RETURNING id`,
               [productId, prepared.SIZE, prepared.COLOUR, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
             )
@@ -979,20 +1029,19 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
-               VALUES ($1, $2)
-               ON CONFLICT (ean_code)
-               DO UPDATE SET variant_id = EXCLUDED.variant_id`,
+               VALUES ($1, $2)`,
               [variantId, prepared.Barcode]
             )
           }
 
           await client.query(
-            `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
-             VALUES ($1, $2, $3, 0, TRUE)
+            `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active, created_at, updated_at)
+             VALUES ($1, $2, $3, 0, TRUE, NOW(), NOW())
              ON CONFLICT (branch_id, variant_id)
              DO UPDATE SET on_hand = EXCLUDED.on_hand,
                            reserved = 0,
-                           is_active = TRUE`,
+                           is_active = TRUE,
+                           updated_at = NOW()`,
             [branchId, variantId, prepared.PurchaseQty]
           )
 
@@ -1174,7 +1223,8 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         if (matched.variant_active === false) {
           await client.query(
             `UPDATE product_variants
-             SET is_active = TRUE
+             SET is_active = TRUE,
+                 updated_at = NOW()
              WHERE id = $1`,
             [matched.variant_id]
           )
@@ -1183,7 +1233,8 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         if (matched.stock_active === false) {
           await client.query(
             `UPDATE branch_variant_stock
-             SET is_active = TRUE
+             SET is_active = TRUE,
+                 updated_at = NOW()
              WHERE branch_id = $1 AND variant_id = $2`,
             [branchId, matched.variant_id]
           )
@@ -1202,14 +1253,16 @@ router.post('/:branchId/images/confirm', async (req, res) => {
         if (imageType === 'front' || imageType === 'main') {
           await client.query(
             `UPDATE product_variants
-             SET image_url = $1
+             SET image_url = $1,
+                 updated_at = NOW()
              WHERE id = $2`,
             [url, matched.variant_id]
           )
         } else {
           await client.query(
             `UPDATE product_variants
-             SET image_url = COALESCE(NULLIF(image_url, ''), $1)
+             SET image_url = COALESCE(NULLIF(image_url, ''), $1),
+                 updated_at = NOW()
              WHERE id = $2`,
             [url, matched.variant_id]
           )
@@ -1322,7 +1375,11 @@ router.get('/:branchId/stock', async (req, res) => {
        JOIN product_variants v ON v.id = bvs.variant_id
        JOIN products p ON p.id = v.product_id
        LEFT JOIN LATERAL (
-         SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
+         SELECT ean_code
+         FROM barcodes bc
+         WHERE bc.variant_id = v.id
+         ORDER BY id ASC
+         LIMIT 1
        ) bc ON TRUE
        LEFT JOIN LATERAL (
          SELECT
@@ -1341,7 +1398,7 @@ router.get('/:branchId/stock', async (req, res) => {
          WHERE pi.ean_code = bc.ean_code
        ) imgs ON TRUE
        WHERE ${where}
-       ORDER BY p.brand_name, p.name, v.colour, v.size`,
+       ORDER BY p.brand_name, p.name, v.colour, v.size, v.id`,
       params
     )
 
@@ -1418,7 +1475,8 @@ router.post('/:branchId/discounts', async (req, res) => {
     await pool.query(
       `UPDATE product_variants v
          SET b2c_discount_pct = $2,
-             b2b_discount_pct = $3
+             b2b_discount_pct = $3,
+             updated_at = NOW()
        FROM branch_variant_stock bvs
        WHERE bvs.variant_id = v.id
          AND bvs.branch_id = $1
