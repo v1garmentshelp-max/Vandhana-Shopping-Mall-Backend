@@ -350,14 +350,59 @@ function normalizeImages(images) {
   }
 }
 
+function normalizeGroupColour(v) {
+  return String(v || '').trim().toUpperCase()
+}
+
+function makeVariantPayload(row) {
+  return {
+    id: row.variant_id,
+    variant_id: row.variant_id,
+    product_id: row.product_id,
+    size: row.size || '',
+    colour: row.colour || '',
+    color: row.colour || '',
+    barcode: row.barcode || '',
+    ean_code: row.ean_code || row.barcode || '',
+    mrp: row.mrp,
+    base_sale_price: row.base_sale_price,
+    original_sale_price: row.original_sale_price,
+    sale_price: row.sale_price,
+    price: row.price,
+    selling_price: row.selling_price,
+    discounted_price: row.discounted_price,
+    mahaveer_price: row.mahaveer_price,
+    cost_price: row.cost_price,
+    b2c_discount_pct: row.b2c_discount_pct,
+    b2b_discount_pct: row.b2b_discount_pct,
+    original_price_b2c: row.original_price_b2c,
+    final_price_b2c: row.final_price_b2c,
+    original_price_b2b: row.original_price_b2b,
+    final_price_b2b: row.final_price_b2b,
+    on_hand: row.on_hand,
+    reserved: row.reserved,
+    available_qty: row.available_qty,
+    in_stock: row.in_stock,
+    image_url: row.image_url,
+    imageUrl: row.image_url,
+    front_image_url: row.front_image_url,
+    frontImageUrl: row.front_image_url,
+    back_image_url: row.back_image_url,
+    backImageUrl: row.back_image_url,
+    main_image_url: row.main_image_url,
+    mainImageUrl: row.main_image_url,
+    images: normalizeImages(row.images)
+  }
+}
+
 function groupStockRows(rows) {
-  const groups = new Map()
+  const productGroups = new Map()
 
   for (const row of Array.isArray(rows) ? rows : []) {
-    const key = String(row.product_id)
+    const productKey = String(row.product_id)
 
-    if (!groups.has(key)) {
-      groups.set(key, {
+    if (!productGroups.has(productKey)) {
+      productGroups.set(productKey, {
         product_id: row.product_id,
         product_name: row.product_name,
         brand_name: row.brand_name,
@@ -370,43 +415,10 @@ function groupStockRows(rows) {
       })
     }
 
-    const group = groups.get(key)
+    const group = productGroups.get(productKey)
 
     if (!group.variants.some(v => String(v.variant_id) === String(row.variant_id))) {
-      group.variants.push({
-        id: row.variant_id,
-        variant_id: row.variant_id,
-        product_id: row.product_id,
-        size: row.size || '',
-        colour: row.colour || '',
-        color: row.colour || '',
-        barcode: row.barcode || '',
-        ean_code: row.ean_code || row.barcode || '',
-        mrp: row.mrp,
-        base_sale_price: row.base_sale_price,
-        original_sale_price: row.original_sale_price,
-        sale_price: row.sale_price,
-        price: row.price,
-        selling_price: row.selling_price,
-        discounted_price: row.discounted_price,
-        mahaveer_price: row.mahaveer_price,
-        cost_price: row.cost_price,
-        b2c_discount_pct: row.b2c_discount_pct,
-        b2b_discount_pct: row.b2b_discount_pct,
-        original_price_b2c: row.original_price_b2c,
-        final_price_b2c: row.final_price_b2c,
-        original_price_b2b: row.original_price_b2b,
-        final_price_b2b: row.final_price_b2b,
-        on_hand: row.on_hand,
-        reserved: row.reserved,
-        available_qty: row.available_qty,
-        in_stock: row.in_stock,
-        image_url: row.image_url,
-        front_image_url: row.front_image_url,
-        back_image_url: row.back_image_url,
-        main_image_url: row.main_image_url,
-        images: normalizeImages(row.images)
-      })
+      group.variants.push(makeVariantPayload(row))
     }
 
     group._rows.push(row)
@@ -414,82 +426,183 @@ function groupStockRows(rows) {
 
   const out = []
 
-  for (const group of groups.values()) {
+  for (const group of productGroups.values()) {
     group.variants.sort((a, b) => {
-      const sizeCompare = String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
-      if (sizeCompare !== 0) return sizeCompare
-      return String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+      const colourCompare = String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+      if (colourCompare !== 0) return colourCompare
+      return String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
     })
 
-    const rowsSorted = group._rows.slice().sort((a, b) => {
-      const aq = toNumber(a.available_qty)
-      const bq = toNumber(b.available_qty)
-      if (bq !== aq) return bq - aq
-      return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
-    })
+    const allSizes = sortVariantValues(group.variants.map(v => v.size))
+    const allColours = sortVariantValues(group.variants.map(v => v.colour))
+    const allBarcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
 
-    const selected = rowsSorted[0] || group._rows[0] || {}
-    const imageRow = group._rows.find(r => r.front_image_url || r.main_image_url || r.image_url) || selected
-    const sizes = sortVariantValues(group.variants.map(v => v.size))
-    const colours = sortVariantValues(group.variants.map(v => v.colour))
-    const barcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
-    const totalOnHand = group.variants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
-    const totalReserved = group.variants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
-    const totalAvailable = group.variants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+    const colourGroups = new Map()
 
-    out.push({
-      id: group.product_id,
-      product_id: group.product_id,
-      primary_variant_id: selected.variant_id,
-      variant_id: selected.variant_id,
-      product_name: group.product_name,
-      name: group.product_name,
-      brand_name: group.brand_name,
-      brand: group.brand_name,
-      pattern_code: group.pattern_code,
-      fit_type: group.fit_type,
-      mark_code: group.mark_code,
-      gender: group.gender,
-      category: group.gender,
-      size: sizes.join(', '),
-      colour: colours.join(', '),
-      color: colours.join(', '),
-      sizes,
-      colours,
-      colors: colours,
-      barcodes,
-      ean_codes: barcodes,
-      barcode: selected.barcode || '',
-      ean_code: selected.ean_code || selected.barcode || '',
-      mrp: selected.mrp,
-      base_sale_price: selected.base_sale_price,
-      original_sale_price: selected.original_sale_price,
-      sale_price: selected.sale_price,
-      price: selected.price,
-      selling_price: selected.selling_price,
-      discounted_price: selected.discounted_price,
-      mahaveer_price: selected.mahaveer_price,
-      cost_price: selected.cost_price,
-      b2c_discount_pct: selected.b2c_discount_pct,
-      b2b_discount_pct: selected.b2b_discount_pct,
-      original_price_b2c: selected.original_price_b2c,
-      final_price_b2c: selected.final_price_b2c,
-      original_price_b2b: selected.original_price_b2b,
-      final_price_b2b: selected.final_price_b2b,
-      on_hand: totalOnHand,
-      reserved: totalReserved,
-      available_qty: totalAvailable,
-      total_count: totalOnHand,
-      in_stock: totalAvailable > 0,
-      image_url: imageRow.image_url || '',
-      front_image_url: imageRow.front_image_url || '',
-      back_image_url: imageRow.back_image_url || '',
-      main_image_url: imageRow.main_image_url || '',
-      images: normalizeImages(imageRow.images),
-      variant_count: group.variants.length,
-      variants: group.variants
-    })
+    for (const row of group._rows) {
+      const colourKey = normalizeGroupColour(row.colour) || 'NO_COLOUR'
+
+      if (!colourGroups.has(colourKey)) {
+        colourGroups.set(colourKey, {
+          colour: row.colour || '',
+          rows: []
+        })
+      }
+
+      colourGroups.get(colourKey).rows.push(row)
+    }
+
+    for (const colourGroup of colourGroups.values()) {
+      const colourRows = colourGroup.rows.slice().sort((a, b) => {
+        const aq = toNumber(a.available_qty)
+        const bq = toNumber(b.available_qty)
+        if (bq !== aq) return bq - aq
+        return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
+      })
+
+      const selected = colourRows[0] || {}
+      const imageRow = colourRows.find(r => r.front_image_url || r.main_image_url || r.image_url) || selected
+      const colourVariantIds = new Set(colourRows.map(r => String(r.variant_id)))
+      const colourVariants = group.variants.filter(v => colourVariantIds.has(String(v.variant_id)))
+      const colourSizes = sortVariantValues(colourVariants.map(v => v.size))
+      const colourBarcodes = uniqueValues(colourVariants.map(v => v.barcode || v.ean_code))
+      const totalOnHand = colourVariants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
+      const totalReserved = colourVariants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
+      const totalAvailable = colourVariants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+      const selectedColour = colourGroup.colour || selected.colour || ''
+      const selectedImages = normalizeImages(imageRow.images)
+
+      out.push({
+        id: selected.variant_id || group.product_id,
+        product_id: group.product_id,
+        productId: group.product_id,
+        primary_variant_id: selected.variant_id,
+        primaryVariantId: selected.variant_id,
+        variant_id: selected.variant_id,
+        variantId: selected.variant_id,
+        product_name: group.product_name,
+        productName: group.product_name,
+        name: group.product_name,
+        title: group.product_name,
+        brand_name: group.brand_name,
+        brandName: group.brand_name,
+        brand: group.brand_name,
+        pattern_code: group.pattern_code,
+        patternCode: group.pattern_code,
+        fit_type: group.fit_type,
+        fitType: group.fit_type,
+        mark_code: group.mark_code,
+        markCode: group.mark_code,
+        gender: group.gender,
+        category: group.gender,
+        size: colourSizes.join(', '),
+        size_summary: allSizes.join(', '),
+        sizeSummary: allSizes.join(', '),
+        display_size: colourSizes.join(', '),
+        displaySize: colourSizes.join(', '),
+        colour: selectedColour,
+        color: selectedColour,
+        selected_colour: selectedColour,
+        selectedColor: selectedColour,
+        colour_summary: allColours.join(', '),
+        color_summary: allColours.join(', '),
+        colourSummary: allColours.join(', '),
+        colorSummary: allColours.join(', '),
+        display_color: selectedColour,
+        displayColor: selectedColour,
+        sizes: colourSizes,
+        all_sizes: allSizes,
+        allSizes,
+        colours: allColours,
+        colors: allColours,
+        barcodes: colourBarcodes,
+        ean_codes: colourBarcodes,
+        all_barcodes: allBarcodes,
+        allBarcodes,
+        barcode: selected.barcode || '',
+        ean_code: selected.ean_code || selected.barcode || '',
+        eanCode: selected.ean_code || selected.barcode || '',
+        mrp: selected.mrp,
+        original_price: selected.original_price_b2c,
+        originalPrice: selected.original_price_b2c,
+        base_sale_price: selected.base_sale_price,
+        baseSalePrice: selected.base_sale_price,
+        original_sale_price: selected.original_sale_price,
+        originalSalePrice: selected.original_sale_price,
+        sale_price: selected.sale_price,
+        salePrice: selected.sale_price,
+        price: selected.price,
+        selling_price: selected.selling_price,
+        sellingPrice: selected.selling_price,
+        discounted_price: selected.discounted_price,
+        discountedPrice: selected.discounted_price,
+        mahaveer_price: selected.mahaveer_price,
+        mahaveerPrice: selected.mahaveer_price,
+        cost_price: selected.cost_price,
+        costPrice: selected.cost_price,
+        b2c_discount_pct: selected.b2c_discount_pct,
+        b2cDiscountPct: selected.b2c_discount_pct,
+        b2b_discount_pct: selected.b2b_discount_pct,
+        b2bDiscountPct: selected.b2b_discount_pct,
+        discount_b2c: selected.b2c_discount_pct,
+        discountB2c: selected.b2c_discount_pct,
+        discount_b2b: selected.b2b_discount_pct,
+        discountB2b: selected.b2b_discount_pct,
+        discount: selected.b2c_discount_pct,
+        discount_percentage: selected.b2c_discount_pct,
+        discountPercentage: selected.b2c_discount_pct,
+        discount_percent: selected.b2c_discount_pct,
+        discountPercent: selected.b2c_discount_pct,
+        original_price_b2c: selected.original_price_b2c,
+        originalPriceB2c: selected.original_price_b2c,
+        final_price_b2c: selected.final_price_b2c,
+        finalPriceB2c: selected.final_price_b2c,
+        original_price_b2b: selected.original_price_b2b,
+        originalPriceB2b: selected.original_price_b2b,
+        final_price_b2b: selected.final_price_b2b,
+        finalPriceB2b: selected.final_price_b2b,
+        b2c_final_price: selected.final_price_b2c,
+        b2cFinalPrice: selected.final_price_b2c,
+        b2b_final_price: selected.final_price_b2b,
+        b2bFinalPrice: selected.final_price_b2b,
+        final_price: selected.final_price_b2c,
+        finalPrice: selected.final_price_b2c,
+        on_hand: totalOnHand,
+        onHand: totalOnHand,
+        reserved: totalReserved,
+        available_qty: totalAvailable,
+        availableQty: totalAvailable,
+        total_count: totalOnHand,
+        totalCount: totalOnHand,
+        in_stock: totalAvailable > 0,
+        inStock: totalAvailable > 0,
+        image_url: imageRow.image_url || '',
+        imageUrl: imageRow.image_url || '',
+        front_image_url: imageRow.front_image_url || '',
+        frontImageUrl: imageRow.front_image_url || '',
+        back_image_url: imageRow.back_image_url || '',
+        backImageUrl: imageRow.back_image_url || '',
+        main_image_url: imageRow.main_image_url || '',
+        mainImageUrl: imageRow.main_image_url || '',
+        images: selectedImages,
+        variant_count: group.variants.length,
+        variantCount: group.variants.length,
+        color_variant_count: colourVariants.length,
+        colorVariantCount: colourVariants.length,
+        variants: group.variants,
+        color_variants: colourVariants,
+        colorVariants: colourVariants
+      })
+    }
   }
+
+  out.sort((a, b) => {
+    const brandCompare = String(a.brand_name || '').localeCompare(String(b.brand_name || ''), undefined, { numeric: true })
+    if (brandCompare !== 0) return brandCompare
+    const nameCompare = String(a.product_name || '').localeCompare(String(b.product_name || ''), undefined, { numeric: true })
+    if (nameCompare !== 0) return nameCompare
+    return String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
+  })
 
   return out
 }
@@ -1228,7 +1341,7 @@ router.get('/:branchId/stock', async (req, res) => {
          WHERE pi.ean_code = bc.ean_code
        ) imgs ON TRUE
        WHERE ${where}
-       ORDER BY p.brand_name, p.name, v.size, v.colour`,
+       ORDER BY p.brand_name, p.name, v.colour, v.size`,
       params
     )
 
