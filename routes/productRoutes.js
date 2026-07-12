@@ -23,6 +23,14 @@ const cleanValue = v =>
     .replace(/\s+/g, ' ')
     .trim()
 
+const normalizeBarcodeForWrite = v =>
+  String(v ?? '')
+    .trim()
+    .replace(/^"|"$/g, '')
+    .replace(/\s+/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, '')
+
 const hasGroupedVariantValue = v => {
   const s = cleanValue(v)
   if (!s) return false
@@ -834,9 +842,10 @@ const buildExpandedCandidatesFromRow = r => {
   return Array.from(out).map(x => x.split('||')[1])
 }
 
-const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'auto') => {
+const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFromBody, mode = 'auto' }) => {
   const numericId = parseInt(id, 10)
   const bodyVariantId = parseInt(variantIdFromBody || '', 10)
+  const barcode = normalizeBarcodeForWrite(barcodeFromBody)
 
   if (Number.isFinite(bodyVariantId) && bodyVariantId > 0) {
     const byBodyVariant = await client.query(
@@ -850,6 +859,22 @@ const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'aut
     )
 
     if (byBodyVariant.rows.length) return byBodyVariant.rows[0]
+  }
+
+  if (barcode) {
+    const byBarcode = await client.query(
+      `
+      SELECT v.id AS variant_id, v.product_id
+      FROM barcodes b
+      JOIN product_variants v ON v.id = b.variant_id
+      WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
+      ORDER BY b.id ASC
+      LIMIT 1
+      `,
+      [barcode]
+    )
+
+    if (byBarcode.rows.length) return byBarcode.rows[0]
   }
 
   if (mode === 'variant') {
@@ -871,12 +896,15 @@ const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'aut
       `
       SELECT v.id AS variant_id, v.product_id
       FROM product_variants v
+      LEFT JOIN barcodes b ON b.variant_id = v.id
       WHERE v.product_id = $1
         AND v.is_active = TRUE
-      ORDER BY v.id ASC
+      ORDER BY
+        CASE WHEN $2::text <> '' AND REGEXP_REPLACE(UPPER(TRIM(COALESCE(b.ean_code, ''))), '[^A-Z0-9._-]', '', 'g') = $2 THEN 0 ELSE 1 END,
+        v.id ASC
       LIMIT 1
       `,
-      [numericId]
+      [numericId, barcode]
     )
 
     if (byProduct.rows.length) return byProduct.rows[0]
@@ -899,21 +927,35 @@ const resolveVariantForWrite = async (client, id, variantIdFromBody, mode = 'aut
   return null
 }
 
-const saveProductImage = async (client, eanCode, imageUrl) => {
-  const code = cleanValue(eanCode)
+const saveProductImage = async (client, eanCode, imageUrl, imageType = 'front') => {
+  const code = normalizeBarcodeForWrite(eanCode)
   const url = cleanValue(imageUrl)
+  const type = cleanValue(imageType) || 'front'
 
   if (!code || !url || url.startsWith('/images/')) return
 
   try {
     await client.query(
       `
-      INSERT INTO product_images (ean_code, image_url)
-      VALUES ($1, $2)
+      INSERT INTO product_images (ean_code, image_type, image_url, public_id, uploaded_at)
+      VALUES ($1, $2, $3, NULL, NOW())
+      ON CONFLICT (ean_code, image_type)
+      DO UPDATE SET image_url = EXCLUDED.image_url,
+                    uploaded_at = NOW()
       `,
-      [code, url]
+      [code, type, url]
     )
-  } catch {}
+  } catch {
+    try {
+      await client.query(
+        `
+        INSERT INTO product_images (ean_code, image_url)
+        VALUES ($1, $2)
+        `,
+        [code, url]
+      )
+    } catch {}
+  }
 }
 
 const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => {
@@ -923,7 +965,13 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
   const nextColor = cleanValue(body?.color || body?.colour)
   const nextSize = cleanValue(body?.size)
 
-  const resolved = await resolveVariantForWrite(client, id, body?.variant_id, mode)
+  const resolved = await resolveVariantForWrite({
+    client,
+    id,
+    variantIdFromBody: body?.variant_id || body?.variantId || body?.product_variant_id,
+    barcodeFromBody: body?.ean_code || body?.eanCode || body?.barcode,
+    mode
+  })
 
   if (!resolved) {
     return { status: 404, payload: { message: 'Product not found' } }
@@ -991,7 +1039,7 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     [variantId]
   )
 
-  const eanCode = cleanValue(body?.ean_code || body?.barcode || barcodeRow.rows[0]?.ean_code || '')
+  const eanCode = normalizeBarcodeForWrite(body?.ean_code || body?.eanCode || body?.barcode || barcodeRow.rows[0]?.ean_code || '')
 
   await client.query(
     `
@@ -1031,6 +1079,21 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     ]
   )
 
+  if (eanCode) {
+    await client.query(
+      `
+      INSERT INTO barcodes (variant_id, ean_code)
+      SELECT $1, $2
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM barcodes
+        WHERE REGEXP_REPLACE(UPPER(TRIM(ean_code)), '[^A-Z0-9._-]', '', 'g') = $2
+      )
+      `,
+      [variantId, eanCode]
+    )
+  }
+
   const branchId = getBranchIdFromReq(req)
 
   if (branchId) {
@@ -1047,8 +1110,8 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     )
   }
 
-  await saveProductImage(client, eanCode, imageUrl)
-  await saveProductImage(client, eanCode, backImageUrl)
+  await saveProductImage(client, eanCode, imageUrl, 'front')
+  await saveProductImage(client, eanCode, backImageUrl, 'back')
 
   return {
     status: 200,
@@ -1058,6 +1121,8 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
       id: productId,
       product_id: productId,
       variant_id: variantId,
+      barcode: eanCode,
+      ean_code: eanCode,
       category: gender,
       gender,
       brand: nextBrand,
@@ -1462,6 +1527,60 @@ const updateVariantHandler = async (req, res) => {
 
 router.put('/variant/:variantId(\\d+)', updateVariantHandler)
 router.patch('/variant/:variantId(\\d+)', updateVariantHandler)
+
+const updateBarcodeHandler = async (req, res) => {
+  const client = await pool.connect()
+
+  try {
+    noStore(res)
+
+    const barcode = normalizeBarcodeForWrite(req.params.barcode)
+
+    if (!barcode) {
+      return res.status(400).json({ message: 'Invalid barcode' })
+    }
+
+    await client.query('BEGIN')
+
+    const result = await updateVariantRecord({
+      client,
+      req,
+      id: 0,
+      body: { ...(req.body || {}), barcode, ean_code: barcode },
+      mode: 'auto'
+    })
+
+    if (result.status !== 200) {
+      await client.query('ROLLBACK')
+      return res.status(result.status).json(result.payload)
+    }
+
+    await client.query('COMMIT')
+
+    const rows = await fetchProducts({
+      req,
+      productId: result.productId,
+      variantId: result.variantId,
+      limit: '500',
+      offset: '0',
+      random: false,
+      hasImage: false
+    })
+
+    return res.json(rows[0] || result.fallback)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({
+      message: 'Error updating barcode product',
+      error: err.message
+    })
+  } finally {
+    client.release()
+  }
+}
+
+router.put('/barcode/:barcode', updateBarcodeHandler)
+router.patch('/barcode/:barcode', updateBarcodeHandler)
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
