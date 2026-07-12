@@ -59,6 +59,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 app.use('/api', shiprocketPublicRoutes)
 app.use('/api/upload', require('./routes/uploadRoutes'))
+app.use('/api/categories', require('./routes/categoryRoutes'))
 app.use('/api/products', require('./routes/productRoutes'))
 app.use('/api/b2b-customers', require('./routes/b2bCustomerRoutes'))
 app.use('/api/b2c-customers', require('./routes/b2cCustomerRoutes'))
