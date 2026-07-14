@@ -3,13 +3,18 @@ const pool = require('../db')
 
 const router = express.Router()
 
-const normGender = v => {
-  const s = String(v || '').trim().toUpperCase()
-  if (s === 'MEN' || s === 'WOMEN' || s === 'KIDS') return s
-  if (s === 'MAN' || s === 'MALE' || s === 'MENS' || s === "MEN'S") return 'MEN'
-  if (s === 'WOMAN' || s === 'FEMALE' || s === 'LADIES' || s === 'WOMENS' || s === "WOMEN'S") return 'WOMEN'
-  if (s === 'CHILD' || s === 'CHILDREN' || s === 'BOYS' || s === 'GIRLS' || s === 'KID') return 'KIDS'
+const normGender = value => {
+  const gender = String(value || '').trim().toUpperCase()
+  if (['MEN', 'WOMEN', 'KIDS'].includes(gender)) return gender
+  if (['MAN', 'MALE', 'MENS', "MEN'S"].includes(gender)) return 'MEN'
+  if (['WOMAN', 'FEMALE', 'LADIES', 'WOMENS', "WOMEN'S"].includes(gender)) return 'WOMEN'
+  if (['CHILD', 'CHILDREN', 'BOYS', 'GIRLS', 'KID'].includes(gender)) return 'KIDS'
   return ''
+}
+
+const parsePositiveInt = value => {
+  const parsed = parseInt(value, 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
 const noStore = res => {
@@ -18,12 +23,19 @@ const noStore = res => {
   res.set('Expires', '0')
 }
 
+const compareNodes = (a, b) => {
+  const orderA = Number(a.sort_order) || 0
+  const orderB = Number(b.sort_order) || 0
+  if (orderA !== orderB) return orderA - orderB
+  return String(a.name || '').localeCompare(String(b.name || ''), undefined, { numeric: true })
+}
+
 const buildTree = rows => {
-  const map = new Map()
+  const categoryMap = new Map()
   const roots = []
 
   for (const row of rows) {
-    map.set(String(row.id), {
+    categoryMap.set(String(row.id), {
       id: row.id,
       parent_id: row.parent_id,
       gender: row.gender,
@@ -37,87 +49,140 @@ const buildTree = rows => {
     })
   }
 
-  for (const item of map.values()) {
-    if (item.parent_id && map.has(String(item.parent_id))) {
-      map.get(String(item.parent_id)).children.push(item)
+  for (const category of categoryMap.values()) {
+    const parentId = category.parent_id == null ? null : String(category.parent_id)
+    if (parentId && categoryMap.has(parentId)) {
+      categoryMap.get(parentId).children.push(category)
     } else {
-      roots.push(item)
+      roots.push(category)
     }
   }
 
-  const sortNode = node => {
-    node.children.sort((a, b) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
-      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { numeric: true })
-    })
-    node.children.forEach(sortNode)
+  const sortChildren = category => {
+    category.children.sort(compareNodes)
+    category.children.forEach(sortChildren)
   }
 
-  roots.sort((a, b) => {
-    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
-    return String(a.name || '').localeCompare(String(b.name || ''), undefined, { numeric: true })
-  })
+  roots.sort(compareNodes)
+  roots.forEach(sortChildren)
 
-  roots.forEach(sortNode)
   return roots
 }
 
-const getRows = async ({ gender } = {}) => {
+const getCategoryRows = async ({ gender = '', id = null } = {}) => {
   const params = []
-  let where = 'c.is_active = TRUE'
+  const filters = []
 
   if (gender) {
     params.push(gender)
-    where += ` AND c.gender = $${params.length}`
+    filters.push(`c.gender = $${params.length}`)
   }
 
-  const { rows } = await pool.query(
-    `SELECT
-       c.id,
-       c.parent_id,
-       p.name AS parent_name,
-       p.slug AS parent_slug,
-       c.gender,
-       c.name,
-       c.slug,
-       c.level,
-       c.sort_order,
-       c.is_active,
-       CASE
-         WHEN p2.id IS NOT NULL THEN p2.name || ' > ' || p.name || ' > ' || c.name
-         WHEN p.id IS NOT NULL THEN p.name || ' > ' || c.name
-         ELSE c.name
-       END AS category_path
-     FROM product_categories c
-     LEFT JOIN product_categories p ON p.id = c.parent_id
-     LEFT JOIN product_categories p2 ON p2.id = p.parent_id
-     WHERE ${where}
-     ORDER BY c.gender, c.level, COALESCE(p.sort_order, c.sort_order), c.sort_order, c.name`,
+  if (id) {
+    params.push(id)
+    filters.push(`c.id = $${params.length}`)
+  }
+
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+
+  const result = await pool.query(
+    `
+      WITH RECURSIVE category_tree AS (
+        SELECT
+          c.id,
+          c.parent_id,
+          c.gender,
+          c.name,
+          c.slug,
+          c.level,
+          c.sort_order,
+          c.is_active,
+          c.name::text AS category_path
+        FROM product_categories c
+        WHERE c.parent_id IS NULL
+          AND c.is_active = TRUE
+
+        UNION ALL
+
+        SELECT
+          c.id,
+          c.parent_id,
+          c.gender,
+          c.name,
+          c.slug,
+          c.level,
+          c.sort_order,
+          c.is_active,
+          category_tree.category_path || ' > ' || c.name
+        FROM product_categories c
+        JOIN category_tree
+          ON category_tree.id = c.parent_id
+        WHERE c.is_active = TRUE
+      )
+      SELECT
+        c.id,
+        c.parent_id,
+        parent.name AS parent_name,
+        parent.slug AS parent_slug,
+        c.gender,
+        c.name,
+        c.slug,
+        c.level,
+        c.sort_order,
+        c.is_active,
+        c.category_path
+      FROM category_tree c
+      LEFT JOIN category_tree parent
+        ON parent.id = c.parent_id
+      ${whereClause}
+      ORDER BY
+        CASE c.gender
+          WHEN 'MEN' THEN 1
+          WHEN 'WOMEN' THEN 2
+          WHEN 'KIDS' THEN 3
+          ELSE 4
+        END,
+        c.level,
+        c.sort_order,
+        c.name
+    `,
     params
   )
 
-  return rows
+  return result.rows
 }
 
 router.get('/', async (req, res) => {
   try {
     noStore(res)
-    const gender = normGender(req.query.gender)
-    const rows = await getRows({ gender })
-    res.json(rows)
-  } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' })
+    const requestedGender = String(req.query.gender || '').trim()
+    const gender = normGender(requestedGender)
+
+    if (requestedGender && !gender) {
+      return res.status(400).json({ message: 'Invalid gender' })
+    }
+
+    const rows = await getCategoryRows({ gender })
+    return res.json(rows)
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Server error' })
   }
 })
 
 router.get('/tree', async (req, res) => {
   try {
     noStore(res)
-    const gender = normGender(req.query.gender)
-    const rows = await getRows({ gender })
-    res.json(buildTree(rows))
-  } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' })
+    const requestedGender = String(req.query.gender || '').trim()
+    const gender = normGender(requestedGender)
+
+    if (requestedGender && !gender) {
+      return res.status(400).json({ message: 'Invalid gender' })
+    }
+
+    const rows = await getCategoryRows({ gender })
+    return res.json(buildTree(rows))
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Server error' })
   }
 })
 
@@ -125,11 +190,15 @@ router.get('/gender/:gender', async (req, res) => {
   try {
     noStore(res)
     const gender = normGender(req.params.gender)
-    if (!gender) return res.status(400).json({ message: 'Invalid gender' })
-    const rows = await getRows({ gender })
-    res.json(rows)
-  } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' })
+
+    if (!gender) {
+      return res.status(400).json({ message: 'Invalid gender' })
+    }
+
+    const rows = await getCategoryRows({ gender })
+    return res.json(rows)
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Server error' })
   }
 })
 
@@ -137,48 +206,36 @@ router.get('/gender/:gender/tree', async (req, res) => {
   try {
     noStore(res)
     const gender = normGender(req.params.gender)
-    if (!gender) return res.status(400).json({ message: 'Invalid gender' })
-    const rows = await getRows({ gender })
-    res.json(buildTree(rows))
-  } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' })
+
+    if (!gender) {
+      return res.status(400).json({ message: 'Invalid gender' })
+    }
+
+    const rows = await getCategoryRows({ gender })
+    return res.json(buildTree(rows))
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Server error' })
   }
 })
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     noStore(res)
-    const id = parseInt(req.params.id, 10)
+    const id = parsePositiveInt(req.params.id)
 
-    const { rows } = await pool.query(
-      `SELECT
-         c.id,
-         c.parent_id,
-         p.name AS parent_name,
-         p.slug AS parent_slug,
-         c.gender,
-         c.name,
-         c.slug,
-         c.level,
-         c.sort_order,
-         c.is_active,
-         CASE
-           WHEN p2.id IS NOT NULL THEN p2.name || ' > ' || p.name || ' > ' || c.name
-           WHEN p.id IS NOT NULL THEN p.name || ' > ' || c.name
-           ELSE c.name
-         END AS category_path
-       FROM product_categories c
-       LEFT JOIN product_categories p ON p.id = c.parent_id
-       LEFT JOIN product_categories p2 ON p2.id = p.parent_id
-       WHERE c.id = $1
-       LIMIT 1`,
-      [id]
-    )
+    if (!id) {
+      return res.status(400).json({ message: 'Invalid category id' })
+    }
 
-    if (!rows.length) return res.status(404).json({ message: 'Category not found' })
-    res.json(rows[0])
-  } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' })
+    const rows = await getCategoryRows({ id })
+
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Category not found' })
+    }
+
+    return res.json(rows[0])
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Server error' })
   }
 })
 
