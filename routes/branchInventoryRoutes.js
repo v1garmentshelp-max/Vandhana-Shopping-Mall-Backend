@@ -13,30 +13,10 @@ const PROCESS_MAX_LIMIT = 250
 const INSERT_CHUNK_SIZE = 500
 
 const HEADER_ALIASES = {
-  productname: [
-    'product',
-    'product name',
-    'item',
-    'item name',
-    'productname'
-  ],
-  brandname: [
-    'brand',
-    'brand name',
-    'brandname'
-  ],
-  costprice: [
-    'cost',
-    'purchase cost',
-    'costprice'
-  ],
-  purchaseqty: [
-    'clqty',
-    'qty',
-    'quantity',
-    'purchase qty',
-    'purchaseqty'
-  ],
+  productname: ['product', 'product name', 'item', 'item name', 'productname'],
+  brandname: ['brand', 'brand name', 'brandname'],
+  costprice: ['cost', 'purchase cost', 'costprice'],
+  purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty'],
   barcode: [
     'barcode',
     'bar code',
@@ -49,56 +29,21 @@ const HEADER_ALIASES = {
     'ean code',
     'eancode'
   ],
-  mrp: [
-    'mrp',
-    'retail mrp'
-  ],
-  rsaleprice: [
-    'retailprice',
-    'saleprice',
-    'sale price',
-    'retail price',
-    'rsp',
-    'rsaleprice'
-  ],
-  markcode: [
-    'mark code',
-    'mark',
-    'marking',
-    'markcode'
-  ],
-  size: [
-    'size'
-  ],
-  colour: [
-    'colour',
-    'color'
-  ],
-  pattern: [
-    'pattern code',
-    'style',
-    'style code',
-    'pattern'
-  ],
-  fitt: [
-    'fit',
-    'fit type',
-    'fitt'
-  ],
-  b2cdiscount: [
-    'b2cdiscount',
-    'b2c discount',
-    'discount_b2c',
-    'b2c disc',
-    'b2c_disc'
-  ],
-  b2bdiscount: [
-    'b2bdiscount',
-    'b2b discount',
-    'discount_b2b',
-    'b2b disc',
-    'b2b_disc'
-  ]
+  mrp: ['mrp', 'retail mrp'],
+  rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
+  markcode: ['mark code', 'mark', 'marking', 'markcode'],
+  size: ['size'],
+  colour: ['colour', 'color'],
+  pattern: ['pattern code', 'style', 'style code', 'pattern'],
+  fitt: ['fit', 'fit type', 'fitt'],
+  b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc'],
+  b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
+}
+
+function noStore(res) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
 }
 
 function parseBranchId(req) {
@@ -116,10 +61,7 @@ function quoteIdentifier(value) {
 }
 
 async function ensureBranchExists(branchId) {
-  const result = await pool.query(
-    'SELECT id FROM branches WHERE id = $1 LIMIT 1',
-    [branchId]
-  )
+  const result = await pool.query('SELECT id FROM branches WHERE id = $1 LIMIT 1', [branchId])
 
   return result.rows.length > 0
 }
@@ -127,9 +69,7 @@ async function ensureBranchExists(branchId) {
 function cleanText(value) {
   if (value == null) return ''
 
-  return String(value)
-    .replace(/\s+/g, ' ')
-    .trim()
+  return String(value).replace(/\s+/g, ' ').trim()
 }
 
 function normalizeBarcode(value) {
@@ -156,14 +96,13 @@ function normalizeImageType(value) {
 
 function baseNameNoExt(name) {
   const fileName =
-    String(name || '').split('/').pop() ||
     String(name || '')
+      .split('/')
+      .pop() || String(name || '')
 
   const extensionIndex = fileName.lastIndexOf('.')
 
-  return extensionIndex > 0
-    ? fileName.slice(0, extensionIndex)
-    : fileName
+  return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName
 }
 
 function extractBarcodeFromName(name) {
@@ -186,9 +125,7 @@ function extractImageTypeFromName(name) {
   const base = baseNameNoExt(name)
 
   if (base.includes('__')) {
-    return normalizeImageType(
-      base.split('__').slice(1).join('__')
-    )
+    return normalizeImageType(base.split('__').slice(1).join('__'))
   }
 
   const dotMatch = base.match(/^(.+)\.(front|back|main)$/i)
@@ -208,24 +145,15 @@ function normalizeRow(raw) {
   }
 
   for (const canonicalName of Object.keys(HEADER_ALIASES)) {
-    if (
-      normalized[canonicalName] != null &&
-      normalized[canonicalName] !== ''
-    ) {
+    if (normalized[canonicalName] != null && normalized[canonicalName] !== '') {
       continue
     }
 
     for (const alias of HEADER_ALIASES[canonicalName]) {
-      const normalizedAlias = String(alias)
-        .trim()
-        .toLowerCase()
+      const normalizedAlias = String(alias).trim().toLowerCase()
 
-      if (
-        normalized[normalizedAlias] != null &&
-        normalized[normalizedAlias] !== ''
-      ) {
-        normalized[canonicalName] =
-          normalized[normalizedAlias]
+      if (normalized[normalizedAlias] != null && normalized[normalizedAlias] !== '') {
+        normalized[canonicalName] = normalized[normalizedAlias]
 
         break
       }
@@ -240,10 +168,7 @@ function normalizeRow(raw) {
     normalized.brandname = raw.__EMPTY_1
   }
 
-  if (
-    normalized.purchaseqty == null &&
-    raw?.__EMPTY_2 != null
-  ) {
+  if (normalized.purchaseqty == null && raw?.__EMPTY_2 != null) {
     normalized.purchaseqty = raw.__EMPTY_2
   }
 
@@ -251,10 +176,7 @@ function normalizeRow(raw) {
     normalized.barcode = raw.__EMPTY_3
   }
 
-  if (
-    normalized.mrp == null &&
-    raw?.__EMPTY_4 != null
-  ) {
+  if (normalized.mrp == null && raw?.__EMPTY_4 != null) {
     normalized.mrp = raw.__EMPTY_4
   }
 
@@ -276,24 +198,15 @@ function normalizeRow(raw) {
 function toNumOrNull(value) {
   if (value === '' || value == null) return null
 
-  const parsed = parseFloat(
-    String(value).replace(/[₹, ]+/g, '')
-  )
+  const parsed = parseFloat(String(value).replace(/[₹, ]+/g, ''))
 
-  return Number.isFinite(parsed)
-    ? parsed
-    : null
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function toIntOrZero(value) {
-  const parsed = parseInt(
-    String(value).replace(/[₹, ]+/g, ''),
-    10
-  )
+  const parsed = parseInt(String(value).replace(/[₹, ]+/g, ''), 10)
 
-  return Number.isFinite(parsed)
-    ? parsed
-    : 0
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 function normGender(value) {
@@ -301,20 +214,11 @@ function normGender(value) {
     .trim()
     .toUpperCase()
 
-  if (
-    normalized === 'MEN' ||
-    normalized === 'WOMEN' ||
-    normalized === 'KIDS'
-  ) {
+  if (normalized === 'MEN' || normalized === 'WOMEN' || normalized === 'KIDS') {
     return normalized
   }
 
-  if (
-    normalized === 'MAN' ||
-    normalized === 'MALE' ||
-    normalized === 'MENS' ||
-    normalized === "MEN'S"
-  ) {
+  if (normalized === 'MAN' || normalized === 'MALE' || normalized === 'MENS' || normalized === "MEN'S") {
     return 'MEN'
   }
 
@@ -341,25 +245,10 @@ function normGender(value) {
   return ''
 }
 
-function isSummaryOrBlankRow(
-  raw,
-  productName,
-  brandName,
-  size,
-  colour,
-  row
-) {
-  const summary = cleanText(
-    raw?.['Stock Summary'] ||
-    raw?.['stock summary'] ||
-    ''
-  )
+function isSummaryOrBlankRow(raw, productName, brandName, size, colour, row) {
+  const summary = cleanText(raw?.['Stock Summary'] || raw?.['stock summary'] || '')
 
-  const allMainEmpty =
-    !productName &&
-    !brandName &&
-    !size &&
-    !colour
+  const allMainEmpty = !productName && !brandName && !size && !colour
 
   const hasAnyDataField =
     cleanText(row.barcode) ||
@@ -401,40 +290,36 @@ function isDefaultText(value) {
     return true
   }
 
-  return [
-    'inclusive of all taxes',
-    'new in'
-  ].some((text) => normalized.includes(text))
+  return ['inclusive of all taxes', 'new in'].some((text) => normalized.includes(text))
 }
 
-function shouldSkipBusinessRow(
-  productName,
-  brandName,
-  mrp,
-  salePrice
-) {
-  const normalizedMrp =
-    mrp == null ? null : Number(mrp)
+function shouldSkipBusinessRow(productName, brandName, mrp, salePrice) {
+  const normalizedMrp = mrp == null ? null : Number(mrp)
 
-  const normalizedSalePrice =
-    salePrice == null ? null : Number(salePrice)
+  const normalizedSalePrice = salePrice == null ? null : Number(salePrice)
 
   const bothZero =
-    (normalizedMrp === 0 || normalizedMrp === null) &&
-    (
-      normalizedSalePrice === 0 ||
-      normalizedSalePrice === null
-    )
+    (normalizedMrp === 0 || normalizedMrp === null) && (normalizedSalePrice === 0 || normalizedSalePrice === null)
 
   if (!bothZero) return false
 
-  return (
-    isDefaultText(productName) ||
-    isDefaultText(brandName)
-  )
+  return isDefaultText(productName) || isDefaultText(brandName)
 }
 
+let importSchemaPromise = null
+let productImagesSchemaPromise = null
+
 async function ensureImportRowsTable() {
+  if (!importSchemaPromise) {
+    importSchemaPromise = initializeImportRowsTable().catch((error) => {
+      importSchemaPromise = null
+      throw error
+    })
+  }
+  return importSchemaPromise
+}
+
+async function initializeImportRowsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS import_rows (
       id BIGSERIAL PRIMARY KEY,
@@ -583,6 +468,16 @@ async function ensureImportRowsTable() {
 }
 
 async function ensureProductImagesTable() {
+  if (!productImagesSchemaPromise) {
+    productImagesSchemaPromise = initializeProductImagesTable().catch((error) => {
+      productImagesSchemaPromise = null
+      throw error
+    })
+  }
+  return productImagesSchemaPromise
+}
+
+async function initializeProductImagesTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS product_images (
       id BIGSERIAL PRIMARY KEY,
@@ -693,47 +588,33 @@ async function validateCategory(categoryId, gender) {
 function rowToPreparedRecord(raw) {
   const row = normalizeRow(raw)
 
-  const productName =
-    cleanText(row.productname)
+  const productName = cleanText(row.productname)
 
-  const brandName =
-    cleanText(row.brandname)
+  const brandName = cleanText(row.brandname)
 
-  const size =
-    cleanText(row.size)
+  const size = cleanText(row.size)
 
-  const colour =
-    cleanText(row.colour)
+  const colour = cleanText(row.colour)
 
-  const pattern =
-    cleanText(row.pattern) || ''
+  const pattern = cleanText(row.pattern) || ''
 
-  const fit =
-    cleanText(row.fitt) || null
+  const fit = cleanText(row.fitt) || null
 
-  const markCode =
-    cleanText(row.markcode) || null
+  const markCode = cleanText(row.markcode) || null
 
-  const mrp =
-    toNumOrNull(row.mrp)
+  const mrp = toNumOrNull(row.mrp)
 
-  const salePrice =
-    toNumOrNull(row.rsaleprice)
+  const salePrice = toNumOrNull(row.rsaleprice)
 
-  const costPrice =
-    toNumOrNull(row.costprice) ?? 0
+  const costPrice = toNumOrNull(row.costprice) ?? 0
 
-  const purchaseQty =
-    toIntOrZero(row.purchaseqty)
+  const purchaseQty = toIntOrZero(row.purchaseqty)
 
-  const b2cDiscount =
-    toNumOrNull(row.b2cdiscount) ?? 0
+  const b2cDiscount = toNumOrNull(row.b2cdiscount) ?? 0
 
-  const b2bDiscount =
-    toNumOrNull(row.b2bdiscount) ?? 0
+  const b2bDiscount = toNumOrNull(row.b2bdiscount) ?? 0
 
-  const barcode =
-    normalizeBarcode(row.barcode)
+  const barcode = normalizeBarcode(row.barcode)
 
   return {
     raw,
@@ -768,14 +649,7 @@ function shouldQueueRow(prepared) {
     return false
   }
 
-  if (
-    shouldSkipBusinessRow(
-      prepared.ProductName,
-      prepared.BrandName,
-      prepared.MRP,
-      prepared.RSalePrice
-    )
-  ) {
+  if (shouldSkipBusinessRow(prepared.ProductName, prepared.BrandName, prepared.MRP, prepared.RSalePrice)) {
     return false
   }
 
@@ -796,39 +670,20 @@ async function getAllowedImportRowStatuses() {
 }
 
 function resolveCreatedStatus(enumValues) {
-  return enumValues.includes('CREATED')
-    ? 'CREATED'
-    : null
+  return enumValues.includes('CREATED') ? 'CREATED' : null
 }
 
 function resolveOkStatus(enumValues) {
-  return enumValues.includes('OK')
-    ? 'OK'
-    : null
+  return enumValues.includes('OK') ? 'OK' : null
 }
 
 function resolveErrorStatus(enumValues) {
-  return enumValues.includes('ERROR')
-    ? 'ERROR'
-    : null
+  return enumValues.includes('ERROR') ? 'ERROR' : null
 }
 
-async function insertImportRowsInBatches(
-  client,
-  jobId,
-  rows,
-  createdStatus,
-  categoryId
-) {
-  for (
-    let index = 0;
-    index < rows.length;
-    index += INSERT_CHUNK_SIZE
-  ) {
-    const chunk = rows.slice(
-      index,
-      index + INSERT_CHUNK_SIZE
-    )
+async function insertImportRowsInBatches(client, jobId, rows, createdStatus, categoryId) {
+  for (let index = 0; index < rows.length; index += INSERT_CHUNK_SIZE) {
+    const chunk = rows.slice(index, index + INSERT_CHUNK_SIZE)
 
     const values = []
     const params = []
@@ -873,9 +728,7 @@ async function insertImportRowsInBatches(
 function toNumber(value) {
   const numberValue = Number(value)
 
-  return Number.isFinite(numberValue)
-    ? numberValue
-    : 0
+  return Number.isFinite(numberValue) ? numberValue : 0
 }
 
 function uniqueValues(values) {
@@ -900,27 +753,15 @@ function uniqueValues(values) {
 
 function sortVariantValues(values) {
   return uniqueValues(values).sort((a, b) => {
-    const aNumber = parseFloat(
-      String(a).replace(/[^\d.]/g, '')
-    )
+    const aNumber = parseFloat(String(a).replace(/[^\d.]/g, ''))
 
-    const bNumber = parseFloat(
-      String(b).replace(/[^\d.]/g, '')
-    )
+    const bNumber = parseFloat(String(b).replace(/[^\d.]/g, ''))
 
-    if (
-      Number.isFinite(aNumber) &&
-      Number.isFinite(bNumber) &&
-      aNumber !== bNumber
-    ) {
+    if (Number.isFinite(aNumber) && Number.isFinite(bNumber) && aNumber !== bNumber) {
       return aNumber - bNumber
     }
 
-    return String(a).localeCompare(
-      String(b),
-      undefined,
-      { numeric: true }
-    )
+    return String(a).localeCompare(String(b), undefined, { numeric: true })
   })
 }
 
@@ -931,9 +772,7 @@ function normalizeImages(images) {
   try {
     const parsed = JSON.parse(images)
 
-    return Array.isArray(parsed)
-      ? parsed
-      : []
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -1020,10 +859,7 @@ function groupStockRows(rows) {
   const productGroups = new Map()
 
   for (const row of Array.isArray(rows) ? rows : []) {
-    const productKey = [
-      String(row.product_id || ''),
-      String(row.category_id || '')
-    ].join('|')
+    const productKey = [String(row.product_id || ''), String(row.category_id || '')].join('|')
 
     if (!productGroups.has(productKey)) {
       productGroups.set(productKey, {
@@ -1037,32 +873,21 @@ function groupStockRows(rows) {
         category_id: row.category_id,
         category_name: row.category_name,
         category_slug: row.category_slug,
-        parent_category_id:
-          row.parent_category_id,
-        parent_category_name:
-          row.parent_category_name,
-        parent_category_slug:
-          row.parent_category_slug,
+        parent_category_id: row.parent_category_id,
+        parent_category_name: row.parent_category_name,
+        parent_category_slug: row.parent_category_slug,
         category_path: row.category_path,
         variants: [],
         rows: []
       })
     }
 
-    const group =
-      productGroups.get(productKey)
+    const group = productGroups.get(productKey)
 
-    const alreadyExists =
-      group.variants.some(
-        (variant) =>
-          String(variant.variant_id) ===
-          String(row.variant_id)
-      )
+    const alreadyExists = group.variants.some((variant) => String(variant.variant_id) === String(row.variant_id))
 
     if (!alreadyExists) {
-      group.variants.push(
-        makeVariantPayload(row)
-      )
+      group.variants.push(makeVariantPayload(row))
     }
 
     group.rows.push(row)
@@ -1072,66 +897,35 @@ function groupStockRows(rows) {
 
   for (const group of productGroups.values()) {
     group.variants.sort((a, b) => {
-      const colourCompare =
-        String(a.colour || '').localeCompare(
-          String(b.colour || ''),
-          undefined,
-          { numeric: true }
-        )
+      const colourCompare = String(a.colour || '').localeCompare(String(b.colour || ''), undefined, { numeric: true })
 
       if (colourCompare !== 0) {
         return colourCompare
       }
 
-      const sizeCompare =
-        String(a.size || '').localeCompare(
-          String(b.size || ''),
-          undefined,
-          { numeric: true }
-        )
+      const sizeCompare = String(a.size || '').localeCompare(String(b.size || ''), undefined, {
+        numeric: true
+      })
 
       if (sizeCompare !== 0) {
         return sizeCompare
       }
 
-      return String(
-        a.variant_id || ''
-      ).localeCompare(
-        String(b.variant_id || ''),
-        undefined,
-        { numeric: true }
-      )
+      return String(a.variant_id || '').localeCompare(String(b.variant_id || ''), undefined, {
+        numeric: true
+      })
     })
 
-    const allSizes =
-      sortVariantValues(
-        group.variants.map(
-          (variant) => variant.size
-        )
-      )
+    const allSizes = sortVariantValues(group.variants.map((variant) => variant.size))
 
-    const allColours =
-      sortVariantValues(
-        group.variants.map(
-          (variant) => variant.colour
-        )
-      )
+    const allColours = sortVariantValues(group.variants.map((variant) => variant.colour))
 
-    const allBarcodes =
-      uniqueValues(
-        group.variants.map(
-          (variant) =>
-            variant.barcode ||
-            variant.ean_code
-        )
-      )
+    const allBarcodes = uniqueValues(group.variants.map((variant) => variant.barcode || variant.ean_code))
 
     const colourGroups = new Map()
 
     for (const row of group.rows) {
-      const colourKey =
-        normalizeGroupColour(row.colour) ||
-        'NO_COLOUR'
+      const colourKey = normalizeGroupColour(row.colour) || 'NO_COLOUR'
 
       if (!colourGroups.has(colourKey)) {
         colourGroups.set(colourKey, {
@@ -1144,480 +938,253 @@ function groupStockRows(rows) {
     }
 
     for (const colourGroup of colourGroups.values()) {
-      const cardRows =
-        colourGroup.rows
-          .slice()
-          .sort((a, b) => {
-            const availableCompare =
-              toNumber(b.available_qty) -
-              toNumber(a.available_qty)
+      const cardRows = colourGroup.rows.slice().sort((a, b) => {
+        const availableCompare = toNumber(b.available_qty) - toNumber(a.available_qty)
 
-            if (availableCompare !== 0) {
-              return availableCompare
-            }
+        if (availableCompare !== 0) {
+          return availableCompare
+        }
 
-            const bHasImage = Boolean(
-              b.front_image_url ||
-              b.main_image_url ||
-              b.image_url
-            )
+        const bHasImage = Boolean(b.front_image_url || b.main_image_url || b.image_url)
 
-            const aHasImage = Boolean(
-              a.front_image_url ||
-              a.main_image_url ||
-              a.image_url
-            )
+        const aHasImage = Boolean(a.front_image_url || a.main_image_url || a.image_url)
 
-            if (bHasImage !== aHasImage) {
-              return Number(bHasImage) -
-                Number(aHasImage)
-            }
+        if (bHasImage !== aHasImage) {
+          return Number(bHasImage) - Number(aHasImage)
+        }
 
-            return String(
-              a.variant_id || ''
-            ).localeCompare(
-              String(b.variant_id || ''),
-              undefined,
-              { numeric: true }
-            )
-          })
+        return String(a.variant_id || '').localeCompare(String(b.variant_id || ''), undefined, {
+          numeric: true
+        })
+      })
 
-      const selected =
-        cardRows[0] || {}
+      const selected = cardRows[0] || {}
 
-      const imageRow =
-        cardRows.find(
-          (row) =>
-            row.front_image_url ||
-            row.main_image_url ||
-            row.image_url
-        ) || selected
+      const imageRow = cardRows.find((row) => row.front_image_url || row.main_image_url || row.image_url) || selected
 
-      const cardVariantIds =
-        new Set(
-          cardRows.map(
-            (row) => String(row.variant_id)
-          )
-        )
+      const cardVariantIds = new Set(cardRows.map((row) => String(row.variant_id)))
 
-      const cardVariants =
-        group.variants.filter(
-          (variant) =>
-            cardVariantIds.has(
-              String(variant.variant_id)
-            )
-        )
+      const cardVariants = group.variants.filter((variant) => cardVariantIds.has(String(variant.variant_id)))
 
-      const cardSizes =
-        sortVariantValues(
-          cardVariants.map(
-            (variant) => variant.size
-          )
-        )
+      const cardSizes = sortVariantValues(cardVariants.map((variant) => variant.size))
 
-      const cardBarcodes =
-        uniqueValues(
-          cardVariants.map(
-            (variant) =>
-              variant.barcode ||
-              variant.ean_code
-          )
-        )
+      const cardBarcodes = uniqueValues(cardVariants.map((variant) => variant.barcode || variant.ean_code))
 
-      const totalOnHand =
-        cardVariants.reduce(
-          (sum, variant) =>
-            sum + toNumber(variant.on_hand),
-          0
-        )
+      const totalOnHand = cardVariants.reduce((sum, variant) => sum + toNumber(variant.on_hand), 0)
 
-      const totalReserved =
-        cardVariants.reduce(
-          (sum, variant) =>
-            sum + toNumber(variant.reserved),
-          0
-        )
+      const totalReserved = cardVariants.reduce((sum, variant) => sum + toNumber(variant.reserved), 0)
 
-      const totalAvailable =
-        cardVariants.reduce(
-          (sum, variant) =>
-            sum +
-            toNumber(variant.available_qty),
-          0
-        )
+      const totalAvailable = cardVariants.reduce((sum, variant) => sum + toNumber(variant.available_qty), 0)
 
-      const selectedColour =
-        colourGroup.colour ||
-        selected.colour ||
-        ''
+      const selectedColour = colourGroup.colour || selected.colour || ''
 
-      const selectedImages =
-        normalizeImages(imageRow.images)
+      const selectedImages = normalizeImages(imageRow.images)
 
       groupedProducts.push({
-        id:
-          selected.variant_id ||
-          group.product_id,
+        id: selected.variant_id || group.product_id,
         product_id: group.product_id,
         productId: group.product_id,
-        primary_variant_id:
-          selected.variant_id,
-        primaryVariantId:
-          selected.variant_id,
-        variant_id:
-          selected.variant_id,
-        variantId:
-          selected.variant_id,
-        product_name:
-          group.product_name,
-        productName:
-          group.product_name,
-        name:
-          group.product_name,
-        title:
-          group.product_name,
-        brand_name:
-          group.brand_name,
-        brandName:
-          group.brand_name,
-        brand:
-          group.brand_name,
-        pattern_code:
-          group.pattern_code,
-        patternCode:
-          group.pattern_code,
-        fit_type:
-          group.fit_type,
-        fitType:
-          group.fit_type,
-        mark_code:
-          group.mark_code,
-        markCode:
-          group.mark_code,
-        gender:
-          group.gender,
-        category:
-          group.gender,
-        category_id:
-          group.category_id,
-        categoryId:
-          group.category_id,
-        category_name:
-          group.category_name,
-        categoryName:
-          group.category_name,
-        category_slug:
-          group.category_slug,
-        categorySlug:
-          group.category_slug,
-        parent_category_id:
-          group.parent_category_id,
-        parentCategoryId:
-          group.parent_category_id,
-        parent_category_name:
-          group.parent_category_name,
-        parentCategoryName:
-          group.parent_category_name,
-        parent_category_slug:
-          group.parent_category_slug,
-        parentCategorySlug:
-          group.parent_category_slug,
-        category_path:
-          group.category_path,
-        categoryPath:
-          group.category_path,
-        size:
-          cardSizes.join(', '),
-        size_summary:
-          allSizes.join(', '),
-        sizeSummary:
-          allSizes.join(', '),
-        display_size:
-          cardSizes.join(', '),
-        displaySize:
-          cardSizes.join(', '),
-        colour:
-          selectedColour,
-        color:
-          selectedColour,
-        selected_colour:
-          selectedColour,
-        selectedColor:
-          selectedColour,
-        colour_summary:
-          allColours.join(', '),
-        color_summary:
-          allColours.join(', '),
-        colourSummary:
-          allColours.join(', '),
-        colorSummary:
-          allColours.join(', '),
-        display_color:
-          selectedColour,
-        displayColor:
-          selectedColour,
-        sizes:
-          cardSizes,
-        all_sizes:
-          allSizes,
+        primary_variant_id: selected.variant_id,
+        primaryVariantId: selected.variant_id,
+        variant_id: selected.variant_id,
+        variantId: selected.variant_id,
+        product_name: group.product_name,
+        productName: group.product_name,
+        name: group.product_name,
+        title: group.product_name,
+        brand_name: group.brand_name,
+        brandName: group.brand_name,
+        brand: group.brand_name,
+        pattern_code: group.pattern_code,
+        patternCode: group.pattern_code,
+        fit_type: group.fit_type,
+        fitType: group.fit_type,
+        mark_code: group.mark_code,
+        markCode: group.mark_code,
+        gender: group.gender,
+        category: group.gender,
+        category_id: group.category_id,
+        categoryId: group.category_id,
+        category_name: group.category_name,
+        categoryName: group.category_name,
+        category_slug: group.category_slug,
+        categorySlug: group.category_slug,
+        parent_category_id: group.parent_category_id,
+        parentCategoryId: group.parent_category_id,
+        parent_category_name: group.parent_category_name,
+        parentCategoryName: group.parent_category_name,
+        parent_category_slug: group.parent_category_slug,
+        parentCategorySlug: group.parent_category_slug,
+        category_path: group.category_path,
+        categoryPath: group.category_path,
+        size: cardSizes.join(', '),
+        size_summary: allSizes.join(', '),
+        sizeSummary: allSizes.join(', '),
+        display_size: cardSizes.join(', '),
+        displaySize: cardSizes.join(', '),
+        colour: selectedColour,
+        color: selectedColour,
+        selected_colour: selectedColour,
+        selectedColor: selectedColour,
+        colour_summary: allColours.join(', '),
+        color_summary: allColours.join(', '),
+        colourSummary: allColours.join(', '),
+        colorSummary: allColours.join(', '),
+        display_color: selectedColour,
+        displayColor: selectedColour,
+        sizes: cardSizes,
+        all_sizes: allSizes,
         allSizes,
-        colours:
-          allColours,
-        colors:
-          allColours,
-        barcodes:
-          cardBarcodes,
-        ean_codes:
-          cardBarcodes,
-        eanCodes:
-          cardBarcodes,
-        all_barcodes:
-          allBarcodes,
+        colours: allColours,
+        colors: allColours,
+        barcodes: cardBarcodes,
+        ean_codes: cardBarcodes,
+        eanCodes: cardBarcodes,
+        all_barcodes: allBarcodes,
         allBarcodes,
-        barcode:
-          selected.barcode || '',
-        ean_code:
-          selected.ean_code ||
-          selected.barcode ||
-          '',
-        eanCode:
-          selected.ean_code ||
-          selected.barcode ||
-          '',
-        mrp:
-          selected.mrp,
-        original_price:
-          selected.original_price_b2c,
-        originalPrice:
-          selected.original_price_b2c,
-        base_sale_price:
-          selected.base_sale_price,
-        baseSalePrice:
-          selected.base_sale_price,
-        original_sale_price:
-          selected.original_sale_price,
-        originalSalePrice:
-          selected.original_sale_price,
-        sale_price:
-          selected.sale_price,
-        salePrice:
-          selected.sale_price,
-        price:
-          selected.price,
-        selling_price:
-          selected.selling_price,
-        sellingPrice:
-          selected.selling_price,
-        discounted_price:
-          selected.discounted_price,
-        discountedPrice:
-          selected.discounted_price,
-        mahaveer_price:
-          selected.mahaveer_price,
-        mahaveerPrice:
-          selected.mahaveer_price,
-        cost_price:
-          selected.cost_price,
-        costPrice:
-          selected.cost_price,
-        b2c_discount_pct:
-          selected.b2c_discount_pct,
-        b2cDiscountPct:
-          selected.b2c_discount_pct,
-        b2b_discount_pct:
-          selected.b2b_discount_pct,
-        b2bDiscountPct:
-          selected.b2b_discount_pct,
-        discount_b2c:
-          selected.b2c_discount_pct,
-        discountB2c:
-          selected.b2c_discount_pct,
-        discount_b2b:
-          selected.b2b_discount_pct,
-        discountB2b:
-          selected.b2b_discount_pct,
-        discount:
-          selected.b2c_discount_pct,
-        discount_percentage:
-          selected.b2c_discount_pct,
-        discountPercentage:
-          selected.b2c_discount_pct,
-        discount_percent:
-          selected.b2c_discount_pct,
-        discountPercent:
-          selected.b2c_discount_pct,
-        original_price_b2c:
-          selected.original_price_b2c,
-        originalPriceB2c:
-          selected.original_price_b2c,
-        final_price_b2c:
-          selected.final_price_b2c,
-        finalPriceB2c:
-          selected.final_price_b2c,
-        original_price_b2b:
-          selected.original_price_b2b,
-        originalPriceB2b:
-          selected.original_price_b2b,
-        final_price_b2b:
-          selected.final_price_b2b,
-        finalPriceB2b:
-          selected.final_price_b2b,
-        b2c_final_price:
-          selected.final_price_b2c,
-        b2cFinalPrice:
-          selected.final_price_b2c,
-        b2b_final_price:
-          selected.final_price_b2b,
-        b2bFinalPrice:
-          selected.final_price_b2b,
-        final_price:
-          selected.final_price_b2c,
-        finalPrice:
-          selected.final_price_b2c,
-        on_hand:
-          totalOnHand,
-        onHand:
-          totalOnHand,
-        reserved:
-          totalReserved,
-        available_qty:
-          totalAvailable,
-        availableQty:
-          totalAvailable,
-        total_count:
-          totalOnHand,
-        totalCount:
-          totalOnHand,
-        in_stock:
-          totalAvailable > 0,
-        inStock:
-          totalAvailable > 0,
-        image_url:
-          imageRow.image_url || '',
-        imageUrl:
-          imageRow.image_url || '',
-        front_image_url:
-          imageRow.front_image_url || '',
-        frontImageUrl:
-          imageRow.front_image_url || '',
-        back_image_url:
-          imageRow.back_image_url || '',
-        backImageUrl:
-          imageRow.back_image_url || '',
-        main_image_url:
-          imageRow.main_image_url || '',
-        mainImageUrl:
-          imageRow.main_image_url || '',
-        images:
-          selectedImages,
-        variant_count:
-          group.variants.length,
-        variantCount:
-          group.variants.length,
-        color_variant_count:
-          cardVariants.length,
-        colorVariantCount:
-          cardVariants.length,
-        card_group_index:
-          0,
-        cardGroupIndex:
-          0,
-        variants:
-          group.variants,
-        color_variants:
-          cardVariants,
-        colorVariants:
-          cardVariants
+        barcode: selected.barcode || '',
+        ean_code: selected.ean_code || selected.barcode || '',
+        eanCode: selected.ean_code || selected.barcode || '',
+        mrp: selected.mrp,
+        original_price: selected.original_price_b2c,
+        originalPrice: selected.original_price_b2c,
+        base_sale_price: selected.base_sale_price,
+        baseSalePrice: selected.base_sale_price,
+        original_sale_price: selected.original_sale_price,
+        originalSalePrice: selected.original_sale_price,
+        sale_price: selected.sale_price,
+        salePrice: selected.sale_price,
+        price: selected.price,
+        selling_price: selected.selling_price,
+        sellingPrice: selected.selling_price,
+        discounted_price: selected.discounted_price,
+        discountedPrice: selected.discounted_price,
+        mahaveer_price: selected.mahaveer_price,
+        mahaveerPrice: selected.mahaveer_price,
+        cost_price: selected.cost_price,
+        costPrice: selected.cost_price,
+        b2c_discount_pct: selected.b2c_discount_pct,
+        b2cDiscountPct: selected.b2c_discount_pct,
+        b2b_discount_pct: selected.b2b_discount_pct,
+        b2bDiscountPct: selected.b2b_discount_pct,
+        discount_b2c: selected.b2c_discount_pct,
+        discountB2c: selected.b2c_discount_pct,
+        discount_b2b: selected.b2b_discount_pct,
+        discountB2b: selected.b2b_discount_pct,
+        discount: selected.b2c_discount_pct,
+        discount_percentage: selected.b2c_discount_pct,
+        discountPercentage: selected.b2c_discount_pct,
+        discount_percent: selected.b2c_discount_pct,
+        discountPercent: selected.b2c_discount_pct,
+        original_price_b2c: selected.original_price_b2c,
+        originalPriceB2c: selected.original_price_b2c,
+        final_price_b2c: selected.final_price_b2c,
+        finalPriceB2c: selected.final_price_b2c,
+        original_price_b2b: selected.original_price_b2b,
+        originalPriceB2b: selected.original_price_b2b,
+        final_price_b2b: selected.final_price_b2b,
+        finalPriceB2b: selected.final_price_b2b,
+        b2c_final_price: selected.final_price_b2c,
+        b2cFinalPrice: selected.final_price_b2c,
+        b2b_final_price: selected.final_price_b2b,
+        b2bFinalPrice: selected.final_price_b2b,
+        final_price: selected.final_price_b2c,
+        finalPrice: selected.final_price_b2c,
+        on_hand: totalOnHand,
+        onHand: totalOnHand,
+        reserved: totalReserved,
+        available_qty: totalAvailable,
+        availableQty: totalAvailable,
+        total_count: totalOnHand,
+        totalCount: totalOnHand,
+        in_stock: totalAvailable > 0,
+        inStock: totalAvailable > 0,
+        image_url: imageRow.image_url || '',
+        imageUrl: imageRow.image_url || '',
+        front_image_url: imageRow.front_image_url || '',
+        frontImageUrl: imageRow.front_image_url || '',
+        back_image_url: imageRow.back_image_url || '',
+        backImageUrl: imageRow.back_image_url || '',
+        main_image_url: imageRow.main_image_url || '',
+        mainImageUrl: imageRow.main_image_url || '',
+        images: selectedImages,
+        variant_count: group.variants.length,
+        variantCount: group.variants.length,
+        color_variant_count: cardVariants.length,
+        colorVariantCount: cardVariants.length,
+        card_group_index: 0,
+        cardGroupIndex: 0,
+        variants: group.variants,
+        color_variants: cardVariants,
+        colorVariants: cardVariants
       })
     }
   }
 
   groupedProducts.sort((a, b) => {
-    const categoryCompare =
-      String(a.category_path || '')
-        .localeCompare(
-          String(b.category_path || ''),
-          undefined,
-          { numeric: true }
-        )
+    const categoryCompare = String(a.category_path || '').localeCompare(String(b.category_path || ''), undefined, {
+      numeric: true
+    })
 
     if (categoryCompare !== 0) {
       return categoryCompare
     }
 
-    const brandCompare =
-      String(a.brand_name || '')
-        .localeCompare(
-          String(b.brand_name || ''),
-          undefined,
-          { numeric: true }
-        )
+    const brandCompare = String(a.brand_name || '').localeCompare(String(b.brand_name || ''), undefined, {
+      numeric: true
+    })
 
     if (brandCompare !== 0) {
       return brandCompare
     }
 
-    const nameCompare =
-      String(a.product_name || '')
-        .localeCompare(
-          String(b.product_name || ''),
-          undefined,
-          { numeric: true }
-        )
+    const nameCompare = String(a.product_name || '').localeCompare(String(b.product_name || ''), undefined, {
+      numeric: true
+    })
 
     if (nameCompare !== 0) {
       return nameCompare
     }
 
-    const colourCompare =
-      String(a.colour || '')
-        .localeCompare(
-          String(b.colour || ''),
-          undefined,
-          { numeric: true }
-        )
+    const colourCompare = String(a.colour || '').localeCompare(String(b.colour || ''), undefined, {
+      numeric: true
+    })
 
     if (colourCompare !== 0) {
       return colourCompare
     }
 
-    return String(
-      a.variant_id || ''
-    ).localeCompare(
-      String(b.variant_id || ''),
-      undefined,
-      { numeric: true }
-    )
+    return String(a.variant_id || '').localeCompare(String(b.variant_id || ''), undefined, {
+      numeric: true
+    })
   })
 
   return groupedProducts
 }
 
-router.get(
-  '/:branchId/import-jobs',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.get('/:branchId/import-jobs', async (req, res) => {
+  noStore(res)
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
+    await ensureImportRowsTable()
 
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
-
-      await ensureImportRowsTable()
-
-      const result = await pool.query(
-        `
+    const result = await pool.query(
+      `
           SELECT
             ij.id,
             ij.file_name,
@@ -1646,71 +1213,51 @@ router.get(
           ORDER BY ij.id DESC
           LIMIT 100
         `,
-        [branchId]
-      )
+      [branchId]
+    )
 
-      return res.json(result.rows)
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    }
+    return res.json(result.rows)
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.get(
-  '/:branchId/import-rows',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.get('/:branchId/import-rows', async (req, res) => {
+  noStore(res)
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null
+
+  const offset = Math.max(0, parseInt(req.query.offset || '0', 10))
+
+  const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)))
+
+  const status = String(req.query.status || '').trim()
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    const jobId = req.query.jobId
-      ? parseInt(req.query.jobId, 10)
-      : null
+    await ensureImportRowsTable()
 
-    const offset = Math.max(
-      0,
-      parseInt(req.query.offset || '0', 10)
-    )
+    let job
 
-    const limit = Math.max(
-      1,
-      Math.min(
-        500,
-        parseInt(
-          req.query.limit || '200',
-          10
-        )
-      )
-    )
-
-    const status =
-      String(req.query.status || '').trim()
-
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
-
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
-
-      await ensureImportRowsTable()
-
-      let job
-
-      if (jobId) {
-        const result = await pool.query(
-          `
+    if (jobId) {
+      const result = await pool.query(
+        `
             SELECT
               ij.*,
               c.name AS category_name,
@@ -1724,19 +1271,19 @@ router.get(
             WHERE ij.id = $1
               AND ij.branch_id = $2
           `,
-          [jobId, branchId]
-        )
+        [jobId, branchId]
+      )
 
-        if (!result.rows.length) {
-          return res.status(404).json({
-            message: 'Job not found'
-          })
-        }
+      if (!result.rows.length) {
+        return res.status(404).json({
+          message: 'Job not found'
+        })
+      }
 
-        job = result.rows[0]
-      } else {
-        const result = await pool.query(
-          `
+      job = result.rows[0]
+    } else {
+      const result = await pool.query(
+        `
             SELECT
               ij.*,
               c.name AS category_name,
@@ -1751,47 +1298,43 @@ router.get(
             ORDER BY ij.id DESC
             LIMIT 1
           `,
-          [branchId]
-        )
+        [branchId]
+      )
 
-        if (!result.rows.length) {
-          return res.json({
-            job: null,
-            rows: [],
-            nextOffset: offset,
-            total: 0
-          })
-        }
-
-        job = result.rows[0]
+      if (!result.rows.length) {
+        return res.json({
+          job: null,
+          rows: [],
+          nextOffset: offset,
+          total: 0
+        })
       }
 
-      const params = [job.id]
-      let whereClause =
-        'import_job_id = $1'
+      job = result.rows[0]
+    }
 
-      if (status) {
-        params.push(status)
+    const params = [job.id]
+    let whereClause = 'import_job_id = $1'
 
-        whereClause +=
-          ` AND status_enum = $${params.length}`
-      }
+    if (status) {
+      params.push(status)
 
-      const totalResult =
-        await pool.query(
-          `
+      whereClause += ` AND status_enum = $${params.length}`
+    }
+
+    const totalResult = await pool.query(
+      `
             SELECT COUNT(*)::int AS count
             FROM import_rows
             WHERE ${whereClause}
           `,
-          params
-        )
+      params
+    )
 
-      params.push(limit, offset)
+    params.push(limit, offset)
 
-      const rowsResult =
-        await pool.query(
-          `
+    const rowsResult = await pool.query(
+      `
             SELECT
               id,
               status_enum,
@@ -1804,194 +1347,147 @@ router.get(
             LIMIT $${params.length - 1}
             OFFSET $${params.length}
           `,
-          params
-        )
+      params
+    )
 
-      return res.json({
-        job: {
-          id: job.id,
-          file_name: job.file_name,
-          status_enum: job.status_enum,
-          rows_total: job.rows_total,
-          rows_success: job.rows_success,
-          rows_error: job.rows_error,
-          uploaded_at: job.uploaded_at,
-          completed_at: job.completed_at,
-          gender: job.gender,
-          category_id: job.category_id,
-          category_name:
-            job.category_name,
-          category_slug:
-            job.category_slug,
-          parent_category_name:
-            job.parent_category_name
-        },
-        rows: rowsResult.rows,
-        nextOffset:
-          offset + rowsResult.rows.length,
-        total:
-          totalResult.rows[0].count
-      })
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    }
+    return res.json({
+      job: {
+        id: job.id,
+        file_name: job.file_name,
+        status_enum: job.status_enum,
+        rows_total: job.rows_total,
+        rows_success: job.rows_success,
+        rows_error: job.rows_error,
+        uploaded_at: job.uploaded_at,
+        completed_at: job.completed_at,
+        gender: job.gender,
+        category_id: job.category_id,
+        category_name: job.category_name,
+        category_slug: job.category_slug,
+        parent_category_name: job.parent_category_name
+      },
+      rows: rowsResult.rows,
+      nextOffset: offset + rowsResult.rows.length,
+      total: totalResult.rows[0].count
+    })
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.post(
-  '/:branchId/import',
-  upload.single('file'),
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.post('/:branchId/import', upload.single('file'), async (req, res) => {
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  if (!req.file) {
+    return res.status(400).json({
+      message: 'File required'
+    })
+  }
+
+  const gender = normGender(req.body?.gender)
+
+  if (!gender) {
+    return res.status(400).json({
+      message: 'Category is required (MEN/WOMEN/KIDS)'
+    })
+  }
+
+  const client = await pool.connect()
+  let transactionStarted = false
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    if (!req.file) {
-      return res.status(400).json({
-        message: 'File required'
-      })
-    }
+    await ensureImportRowsTable()
 
-    const gender =
-      normGender(req.body?.gender)
-
-    if (!gender) {
-      return res.status(400).json({
-        message:
-          'Category is required (MEN/WOMEN/KIDS)'
-      })
-    }
-
-    const category =
-      await validateCategory(
-        req.body?.category_id,
-        gender
-      )
+    const category = await validateCategory(req.body?.category_id, gender)
 
     if (!category) {
-      return res.status(400).json({
-        message:
-          'Valid sub-category is required'
+      return res.status(400).json({ message: 'Valid active leaf sub-category is required' })
+    }
+
+    const enumValues = await getAllowedImportRowStatuses()
+
+    const createdStatus = resolveCreatedStatus(enumValues)
+
+    const errorStatus = resolveErrorStatus(enumValues)
+
+    if (!createdStatus || !errorStatus) {
+      return res.status(500).json({
+        message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}`
       })
     }
 
-    const client = await pool.connect()
-    let transactionStarted = false
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' })
 
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
+    const worksheetName = workbook.SheetNames?.[0]
 
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
+    if (!worksheetName) {
+      return res.status(400).json({
+        message: 'No worksheet in file'
+      })
+    }
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[worksheetName], { defval: '' })
+
+    const preparedRows = []
+    const seenBarcodes = new Set()
+    let duplicateErrors = 0
+
+    for (const raw of rows) {
+      const prepared = rowToPreparedRecord(raw)
+
+      if (!shouldQueueRow(prepared)) {
+        continue
       }
 
-      await ensureImportRowsTable()
-
-      const enumValues =
-        await getAllowedImportRowStatuses()
-
-      const createdStatus =
-        resolveCreatedStatus(enumValues)
-
-      const errorStatus =
-        resolveErrorStatus(enumValues)
-
-      if (!createdStatus || !errorStatus) {
-        return res.status(500).json({
-          message:
-            `Unsupported import_row_status enum values: ${enumValues.join(', ')}`
-        })
-      }
-
-      const workbook = XLSX.read(
-        req.file.buffer,
-        { type: 'buffer' }
-      )
-
-      const worksheetName =
-        workbook.SheetNames?.[0]
-
-      if (!worksheetName) {
-        return res.status(400).json({
-          message: 'No worksheet in file'
-        })
-      }
-
-      const rows = XLSX.utils.sheet_to_json(
-        workbook.Sheets[worksheetName],
-        { defval: '' }
-      )
-
-      const preparedRows = []
-      const seenBarcodes = new Set()
-      let duplicateErrors = 0
-
-      for (const raw of rows) {
-        const prepared =
-          rowToPreparedRecord(raw)
-
-        if (!shouldQueueRow(prepared)) {
-          continue
-        }
-
-        if (
-          prepared.Barcode &&
-          seenBarcodes.has(prepared.Barcode)
-        ) {
-          preparedRows.push({
-            raw,
-            status_enum: errorStatus,
-            error_msg:
-              `Duplicate barcode in Excel: ${prepared.Barcode}`
-          })
-
-          duplicateErrors += 1
-          continue
-        }
-
-        if (prepared.Barcode) {
-          seenBarcodes.add(
-            prepared.Barcode
-          )
-        }
-
+      if (prepared.Barcode && seenBarcodes.has(prepared.Barcode)) {
         preparedRows.push({
           raw,
-          status_enum: createdStatus,
-          error_msg: null
+          status_enum: errorStatus,
+          error_msg: `Duplicate barcode in Excel: ${prepared.Barcode}`
         })
+
+        duplicateErrors += 1
+        continue
       }
 
-      await client.query('BEGIN')
-      transactionStarted = true
+      if (prepared.Barcode) {
+        seenBarcodes.add(prepared.Barcode)
+      }
 
-      const fileName =
-        req.file.originalname ||
-        `import_${Date.now()}.xlsx`
+      preparedRows.push({
+        raw,
+        status_enum: createdStatus,
+        error_msg: null
+      })
+    }
 
-      const initialStatus =
-        preparedRows.length === 0
-          ? 'COMPLETE'
-          : 'PENDING'
+    await client.query('BEGIN')
+    transactionStarted = true
 
-      const completedAtSql =
-        preparedRows.length === 0
-          ? 'NOW()'
-          : 'NULL'
+    const fileName = req.file.originalname || `import_${Date.now()}.xlsx`
 
-      const result = await client.query(
-        `
+    const initialStatus = preparedRows.length === 0 ? 'COMPLETE' : 'PENDING'
+
+    const completedAtSql = preparedRows.length === 0 ? 'NOW()' : 'NULL'
+
+    const result = await client.query(
+      `
           INSERT INTO import_jobs (
             file_name,
             file_url,
@@ -2033,125 +1529,86 @@ router.post(
             gender,
             category_id
         `,
-        [
-          fileName,
-          null,
-          null,
-          initialStatus,
-          preparedRows.length,
-          duplicateErrors,
-          branchId,
-          gender,
-          category.id
-        ]
-      )
+      [fileName, null, null, initialStatus, preparedRows.length, duplicateErrors, branchId, gender, category.id]
+    )
 
-      const job = result.rows[0]
+    const job = result.rows[0]
 
-      if (preparedRows.length) {
-        await insertImportRowsInBatches(
-          client,
-          job.id,
-          preparedRows,
-          createdStatus,
-          category.id
-        )
-      }
-
-      await client.query('COMMIT')
-      transactionStarted = false
-
-      return res.status(201).json({
-        ...job,
-        category_name: category.name,
-        category_slug: category.slug,
-        category_path:
-          category.category_path
-      })
-    } catch (error) {
-      if (transactionStarted) {
-        try {
-          await client.query('ROLLBACK')
-        } catch {}
-      }
-
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    } finally {
-      client.release()
+    if (preparedRows.length) {
+      await insertImportRowsInBatches(client, job.id, preparedRows, createdStatus, category.id)
     }
+
+    await client.query('COMMIT')
+    transactionStarted = false
+
+    return res.status(201).json({
+      ...job,
+      category_name: category.name,
+      category_slug: category.slug,
+      category_path: category.category_path
+    })
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query('ROLLBACK')
+      } catch {}
+    }
+
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
+  } finally {
+    client.release()
   }
-)
+})
 
-router.post(
-  '/:branchId/import/process/:jobId',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.post('/:branchId/import/process/:jobId', async (req, res) => {
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  const jobId = parsePositiveInt(req.params.jobId)
+
+  if (!jobId) {
+    return res.status(400).json({ message: 'Invalid jobId' })
+  }
+
+  const requestedLimit = parseInt(req.query.limit || String(PROCESS_MAX_LIMIT), 10)
+  const limit = Number.isInteger(requestedLimit)
+    ? Math.max(1, Math.min(PROCESS_MAX_LIMIT, requestedLimit))
+    : PROCESS_MAX_LIMIT
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    const jobId = parseInt(
-      req.params.jobId,
-      10
-    )
+    await ensureImportRowsTable()
 
-    const limit = Math.max(
-      1,
-      Math.min(
-        PROCESS_MAX_LIMIT,
-        parseInt(
-          req.query.limit ||
-          String(PROCESS_MAX_LIMIT),
-          10
-        )
-      )
-    )
+    const enumValues = await getAllowedImportRowStatuses()
 
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
+    const createdStatus = resolveCreatedStatus(enumValues)
 
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
+    const okStatus = resolveOkStatus(enumValues)
 
-      await ensureImportRowsTable()
+    const errorStatus = resolveErrorStatus(enumValues)
 
-      const enumValues =
-        await getAllowedImportRowStatuses()
+    if (!createdStatus || !okStatus || !errorStatus) {
+      return res.status(500).json({
+        message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}`
+      })
+    }
 
-      const createdStatus =
-        resolveCreatedStatus(enumValues)
-
-      const okStatus =
-        resolveOkStatus(enumValues)
-
-      const errorStatus =
-        resolveErrorStatus(enumValues)
-
-      if (
-        !createdStatus ||
-        !okStatus ||
-        !errorStatus
-      ) {
-        return res.status(500).json({
-          message:
-            `Unsupported import_row_status enum values: ${enumValues.join(', ')}`
-        })
-      }
-
-      const jobResult =
-        await pool.query(
-          `
+    const jobResult = await pool.query(
+      `
             SELECT
               id,
               file_url,
@@ -2165,49 +1622,39 @@ router.post(
             WHERE id = $1
               AND branch_id = $2
           `,
-          [jobId, branchId]
-        )
+      [jobId, branchId]
+    )
 
-      if (!jobResult.rows.length) {
-        return res.status(404).json({
-          message: 'Job not found'
-        })
-      }
+    if (!jobResult.rows.length) {
+      return res.status(404).json({
+        message: 'Job not found'
+      })
+    }
 
-      const job = jobResult.rows[0]
+    const job = jobResult.rows[0]
 
-      const status =
-        String(job.status_enum || '')
-          .toUpperCase()
+    const status = String(job.status_enum || '').toUpperCase()
 
-      if (
-        status === 'COMPLETE' ||
-        status === 'PARTIAL' ||
-        status === 'FAILED'
-      ) {
-        return res.json({
-          done: true,
-          processed: 0,
-          nextStart:
-            (job.rows_success || 0) +
-            (job.rows_error || 0),
-          ok: 0,
-          err: 0,
-          totalRows:
-            job.rows_total || 0
-        })
-      }
+    if (status === 'COMPLETE' || status === 'PARTIAL' || status === 'FAILED') {
+      return res.json({
+        done: true,
+        processed: 0,
+        nextStart: (job.rows_success || 0) + (job.rows_error || 0),
+        ok: 0,
+        err: 0,
+        totalRows: job.rows_total || 0
+      })
+    }
 
-      const client = await pool.connect()
-      let ok = 0
-      let err = 0
-      const errorMap = new Map()
-      const errorSamples = []
+    const client = await pool.connect()
+    let ok = 0
+    let err = 0
+    const errorMap = new Map()
+    const errorSamples = []
 
-      try {
-        const batchResult =
-          await client.query(
-            `
+    try {
+      const batchResult = await client.query(
+        `
               SELECT
                 id,
                 raw_row_json,
@@ -2218,94 +1665,61 @@ router.post(
               ORDER BY id ASC
               LIMIT $3
             `,
-            [
-              jobId,
-              createdStatus,
-              limit
-            ]
-          )
+        [jobId, createdStatus, limit]
+      )
 
-        const rowsToProcess =
-          batchResult.rows
+      const rowsToProcess = batchResult.rows
 
-        if (!rowsToProcess.length) {
-          const finalSuccess =
-            job.rows_success || 0
+      if (!rowsToProcess.length) {
+        const finalSuccess = job.rows_success || 0
 
-          const finalError =
-            job.rows_error || 0
+        const finalError = job.rows_error || 0
 
-          const finalStatus =
-            finalSuccess === 0 &&
-            finalError > 0
-              ? 'FAILED'
-              : finalError > 0
-                ? 'PARTIAL'
-                : 'COMPLETE'
+        const finalStatus = finalSuccess === 0 && finalError > 0 ? 'FAILED' : finalError > 0 ? 'PARTIAL' : 'COMPLETE'
 
-          await pool.query(
-            `
+        await pool.query(
+          `
               UPDATE import_jobs
               SET
                 status_enum = $1,
                 completed_at = NOW()
               WHERE id = $2
             `,
-            [finalStatus, jobId]
-          )
+          [finalStatus, jobId]
+        )
 
-          return res.json({
-            done: true,
-            processed: 0,
-            nextStart:
-              finalSuccess + finalError,
-            ok: 0,
-            err: 0,
-            totalRows:
-              job.rows_total || 0
-          })
-        }
+        return res.json({
+          done: true,
+          processed: 0,
+          nextStart: finalSuccess + finalError,
+          ok: 0,
+          err: 0,
+          totalRows: job.rows_total || 0
+        })
+      }
 
-        const gender =
-          normGender(job.gender)
+      const gender = normGender(job.gender)
 
-        const categoryId =
-          parsePositiveInt(
-            job.category_id
-          )
+      const categoryId = parsePositiveInt(job.category_id)
 
-        const category =
-          await validateCategory(
-            categoryId,
-            gender
-          )
+      const category = await validateCategory(categoryId, gender)
 
-        if (!category) {
-          return res.status(400).json({
-            message:
-              'Import job category is invalid or is not a selectable leaf category'
-          })
-        }
+      if (!category) {
+        return res.status(400).json({
+          message: 'Import job category is invalid or is not a selectable leaf category'
+        })
+      }
 
-        for (const batchRow of rowsToProcess) {
-          const raw =
-            batchRow.raw_row_json || {}
+      for (const batchRow of rowsToProcess) {
+        const raw = batchRow.raw_row_json || {}
 
-          const prepared =
-            rowToPreparedRecord(raw)
+        const prepared = rowToPreparedRecord(raw)
 
-          if (
-            !prepared.ProductName ||
-            !prepared.BrandName ||
-            !prepared.SIZE ||
-            !prepared.COLOUR ||
-            !prepared.Barcode
-          ) {
-            const message =
-              'Missing required fields (ProductName/BrandName/SIZE/COLOUR/Barcode)'
+        if (!prepared.ProductName || !prepared.BrandName || !prepared.SIZE || !prepared.COLOUR || !prepared.Barcode) {
+          const message = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR/Barcode)'
 
-            await client.query(
-              `
+          await client.query(
+            `
                 UPDATE import_rows
                 SET
                   status_enum = $2,
@@ -2313,36 +1727,28 @@ router.post(
                   processed_at = NOW()
                 WHERE id = $1
               `,
-              [
-                batchRow.id,
-                errorStatus,
-                message
-              ]
-            )
+            [batchRow.id, errorStatus, message]
+          )
 
-            err += 1
+          err += 1
 
-            errorMap.set(
-              message,
-              (errorMap.get(message) || 0) + 1
-            )
+          errorMap.set(message, (errorMap.get(message) || 0) + 1)
 
-            if (errorSamples.length < 5) {
-              errorSamples.push({
-                row: raw,
-                error: message
-              })
-            }
-
-            continue
+          if (errorSamples.length < 5) {
+            errorSamples.push({
+              row: raw,
+              error: message
+            })
           }
 
-          try {
-            await client.query('BEGIN')
+          continue
+        }
 
-            const productResult =
-              await client.query(
-                `
+        try {
+          await client.query('BEGIN')
+
+          const productResult = await client.query(
+            `
                   INSERT INTO products (
                     name,
                     brand_name,
@@ -2376,23 +1782,21 @@ router.post(
                     updated_at = NOW()
                   RETURNING id
                 `,
-                [
-                  prepared.ProductName,
-                  prepared.BrandName,
-                  prepared.PATTERN,
-                  prepared.FITT,
-                  prepared.MarkCode,
-                  gender || null,
-                  categoryId
-                ]
-              )
+            [
+              prepared.ProductName,
+              prepared.BrandName,
+              prepared.PATTERN,
+              prepared.FITT,
+              prepared.MarkCode,
+              gender || null,
+              categoryId
+            ]
+          )
 
-            const productId =
-              productResult.rows[0].id
+          const productId = productResult.rows[0].id
 
-            const existingBarcode =
-              await client.query(
-                `
+          const existingBarcode = await client.query(
+            `
                   SELECT
                     id,
                     variant_id
@@ -2406,18 +1810,16 @@ router.post(
                   ORDER BY id ASC
                   LIMIT 1
                 `,
-                [prepared.Barcode]
-              )
+            [prepared.Barcode]
+          )
 
-            let variantId
+          let variantId
 
-            if (existingBarcode.rowCount) {
-              variantId =
-                existingBarcode.rows[0]
-                  .variant_id
+          if (existingBarcode.rowCount) {
+            variantId = existingBarcode.rows[0].variant_id
 
-              await client.query(
-                `
+            await client.query(
+              `
                   UPDATE product_variants
                   SET
                     product_id = $1,
@@ -2432,22 +1834,21 @@ router.post(
                     updated_at = NOW()
                   WHERE id = $9
                 `,
-                [
-                  productId,
-                  prepared.SIZE,
-                  prepared.COLOUR,
-                  prepared.MRP,
-                  prepared.RSalePrice,
-                  prepared.CostPrice,
-                  prepared.B2CDiscount,
-                  prepared.B2BDiscount,
-                  variantId
-                ]
-              )
-            } else {
-              const variantResult =
-                await client.query(
-                  `
+              [
+                productId,
+                prepared.SIZE,
+                prepared.COLOUR,
+                prepared.MRP,
+                prepared.RSalePrice,
+                prepared.CostPrice,
+                prepared.B2CDiscount,
+                prepared.B2BDiscount,
+                variantId
+              ]
+            )
+          } else {
+            const variantResult = await client.query(
+              `
                     INSERT INTO product_variants (
                       product_id,
                       size,
@@ -2476,38 +1877,34 @@ router.post(
                     )
                     RETURNING id
                   `,
-                  [
-                    productId,
-                    prepared.SIZE,
-                    prepared.COLOUR,
-                    prepared.MRP,
-                    prepared.RSalePrice,
-                    prepared.CostPrice,
-                    prepared.B2CDiscount,
-                    prepared.B2BDiscount
-                  ]
-                )
+              [
+                productId,
+                prepared.SIZE,
+                prepared.COLOUR,
+                prepared.MRP,
+                prepared.RSalePrice,
+                prepared.CostPrice,
+                prepared.B2CDiscount,
+                prepared.B2BDiscount
+              ]
+            )
 
-              variantId =
-                variantResult.rows[0].id
+            variantId = variantResult.rows[0].id
 
-              await client.query(
-                `
+            await client.query(
+              `
                   INSERT INTO barcodes (
                     variant_id,
                     ean_code
                   )
                   VALUES ($1, $2)
                 `,
-                [
-                  variantId,
-                  prepared.Barcode
-                ]
-              )
-            }
+              [variantId, prepared.Barcode]
+            )
+          }
 
-            await client.query(
-              `
+          await client.query(
+            `
                 INSERT INTO branch_variant_stock (
                   branch_id,
                   variant_id,
@@ -2537,15 +1934,11 @@ router.post(
                   is_active = TRUE,
                   updated_at = NOW()
               `,
-              [
-                branchId,
-                variantId,
-                prepared.PurchaseQty
-              ]
-            )
+            [branchId, variantId, prepared.PurchaseQty]
+          )
 
-            await client.query(
-              `
+          await client.query(
+            `
                 UPDATE import_rows
                 SET
                   status_enum = $2,
@@ -2554,25 +1947,18 @@ router.post(
                   processed_at = NOW()
                 WHERE id = $1
               `,
-              [
-                batchRow.id,
-                okStatus,
-                categoryId
-              ]
-            )
+            [batchRow.id, okStatus, categoryId]
+          )
 
-            await client.query('COMMIT')
-            ok += 1
-          } catch (error) {
-            await client.query('ROLLBACK')
+          await client.query('COMMIT')
+          ok += 1
+        } catch (error) {
+          await client.query('ROLLBACK')
 
-            const message =
-              String(
-                error.message || 'error'
-              ).slice(0, 500)
+          const message = String(error.message || 'error').slice(0, 500)
 
-            await client.query(
-              `
+          await client.query(
+            `
                 UPDATE import_rows
                 SET
                   status_enum = $2,
@@ -2580,35 +1966,27 @@ router.post(
                   processed_at = NOW()
                 WHERE id = $1
               `,
-              [
-                batchRow.id,
-                errorStatus,
-                message
-              ]
-            )
+            [batchRow.id, errorStatus, message]
+          )
 
-            err += 1
+          err += 1
 
-            errorMap.set(
-              message,
-              (errorMap.get(message) || 0) + 1
-            )
+          errorMap.set(message, (errorMap.get(message) || 0) + 1)
 
-            if (errorSamples.length < 5) {
-              errorSamples.push({
-                row: raw,
-                error: message
-              })
-            }
+          if (errorSamples.length < 5) {
+            errorSamples.push({
+              row: raw,
+              error: message
+            })
           }
         }
-      } finally {
-        client.release()
       }
+    } finally {
+      client.release()
+    }
 
-      const statusResult =
-        await pool.query(
-          `
+    const statusResult = await pool.query(
+      `
             SELECT
               COUNT(*) FILTER (
                 WHERE status_enum = $2
@@ -2622,49 +2000,35 @@ router.post(
             FROM import_rows
             WHERE import_job_id = $1
           `,
-          [
-            jobId,
-            createdStatus,
-            okStatus,
-            errorStatus
-          ]
-        )
+      [jobId, createdStatus, okStatus, errorStatus]
+    )
 
-      const counts =
-        statusResult.rows[0]
+    const counts = statusResult.rows[0]
 
-      const pendingCount =
-        counts.pending_count || 0
+    const pendingCount = counts.pending_count || 0
 
-      const okCount =
-        counts.ok_count || 0
+    const okCount = counts.ok_count || 0
 
-      const errorCount =
-        counts.error_count || 0
+    const errorCount = counts.error_count || 0
 
-      const processedCount =
-        okCount + errorCount
+    const processedCount = okCount + errorCount
 
-      const isDone =
-        pendingCount === 0
+    const isDone = pendingCount === 0
 
-      let finalStatus = 'PENDING'
+    let finalStatus = 'PENDING'
 
-      if (isDone) {
-        if (
-          okCount === 0 &&
-          errorCount > 0
-        ) {
-          finalStatus = 'FAILED'
-        } else if (errorCount > 0) {
-          finalStatus = 'PARTIAL'
-        } else {
-          finalStatus = 'COMPLETE'
-        }
+    if (isDone) {
+      if (okCount === 0 && errorCount > 0) {
+        finalStatus = 'FAILED'
+      } else if (errorCount > 0) {
+        finalStatus = 'PARTIAL'
+      } else {
+        finalStatus = 'COMPLETE'
       }
+    }
 
-      await pool.query(
-        `
+    await pool.query(
+      `
           UPDATE import_jobs
           SET
             rows_total = $1,
@@ -2683,150 +2047,97 @@ router.post(
               END
           WHERE id = $5
         `,
-        [
-          job.rows_total || 0,
-          okCount,
-          errorCount,
-          finalStatus,
-          jobId
-        ]
-      )
+      [job.rows_total || 0, okCount, errorCount, finalStatus, jobId]
+    )
 
-      const errorCounts =
-        Array.from(errorMap.entries())
-          .map(([message, count]) => ({
-            message,
-            count
-          }))
-          .sort(
-            (a, b) => b.count - a.count
-          )
-          .slice(0, 10)
+    const errorCounts = Array.from(errorMap.entries())
+      .map(([message, count]) => ({
+        message,
+        count
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10)
 
-      return res.json({
-        done: isDone,
-        processed: ok + err,
-        ok,
-        err,
-        totalRows:
-          job.rows_total || 0,
-        nextStart:
-          processedCount,
-        error_counts:
-          errorCounts,
-        errors_sample:
-          errorSamples
-      })
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    }
+    return res.json({
+      done: isDone,
+      processed: ok + err,
+      ok,
+      err,
+      totalRows: job.rows_total || 0,
+      nextStart: processedCount,
+      error_counts: errorCounts,
+      errors_sample: errorSamples
+    })
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.post(
-  '/:branchId/images/confirm',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.post('/:branchId/images/confirm', async (req, res) => {
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  const images = Array.isArray(req.body?.images) ? req.body.images : []
+
+  if (!images.length) {
+    return res.status(400).json({
+      message: 'No images'
+    })
+  }
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    const images =
-      Array.isArray(req.body?.images)
-        ? req.body.images
-        : []
+    await ensureProductImagesTable()
 
-    if (!images.length) {
-      return res.status(400).json({
-        message: 'No images'
-      })
-    }
+    const client = await pool.connect()
+    let updated = 0
+    const unmatched = []
 
     try {
-      const branchExists =
-        await ensureBranchExists(branchId)
+      await client.query('BEGIN')
 
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
+      for (const image of images) {
+        const directBarcode = normalizeBarcode(image.barcode || image.ean_code || image.ean || '')
 
-      await ensureProductImagesTable()
+        const fallbackBarcode = extractBarcodeFromName(image.original_filename || image.public_id || '')
 
-      const client = await pool.connect()
-      let updated = 0
-      const unmatched = []
+        const barcode = directBarcode || fallbackBarcode
 
-      try {
-        await client.query('BEGIN')
+        const imageType = normalizeImageType(
+          image.image_type || extractImageTypeFromName(image.original_filename || image.public_id || '')
+        )
 
-        for (const image of images) {
-          const directBarcode =
-            normalizeBarcode(
-              image.barcode ||
-              image.ean_code ||
-              image.ean ||
-              ''
-            )
+        const imageUrl = String(image.secure_url || image.url || image.image_url || '').trim()
 
-          const fallbackBarcode =
-            extractBarcodeFromName(
-              image.original_filename ||
-              image.public_id ||
-              ''
-            )
+        const publicId = String(image.public_id || '').trim()
 
-          const barcode =
-            directBarcode ||
-            fallbackBarcode
+        if (!barcode || !imageUrl) {
+          unmatched.push({
+            barcode: barcode || null,
+            image_type: imageType,
+            original_filename: image.original_filename || '',
+            reason: 'Missing barcode or URL'
+          })
 
-          const imageType =
-            normalizeImageType(
-              image.image_type ||
-              extractImageTypeFromName(
-                image.original_filename ||
-                image.public_id ||
-                ''
-              )
-            )
+          continue
+        }
 
-          const imageUrl =
-            String(
-              image.secure_url ||
-              image.url ||
-              image.image_url ||
-              ''
-            ).trim()
-
-          const publicId =
-            String(
-              image.public_id || ''
-            ).trim()
-
-          if (!barcode || !imageUrl) {
-            unmatched.push({
-              barcode: barcode || null,
-              image_type: imageType,
-              original_filename:
-                image.original_filename || '',
-              reason:
-                'Missing barcode or URL'
-            })
-
-            continue
-          }
-
-          const barcodeResult =
-            await client.query(
-              `
+        const barcodeResult = await client.query(
+          `
                 SELECT
                   b.ean_code,
                   b.variant_id,
@@ -2858,58 +2169,49 @@ router.post(
                   b.id ASC
                 LIMIT 1
               `,
-              [barcode, branchId]
-            )
+          [barcode, branchId]
+        )
 
-          if (!barcodeResult.rowCount) {
-            unmatched.push({
-              barcode,
-              image_type: imageType,
-              original_filename:
-                image.original_filename || '',
-              reason:
-                'Barcode not found in barcodes table'
-            })
+        if (!barcodeResult.rowCount) {
+          unmatched.push({
+            barcode,
+            image_type: imageType,
+            original_filename: image.original_filename || '',
+            reason: 'Barcode not found in barcodes table'
+          })
 
-            continue
-          }
+          continue
+        }
 
-          const matched =
-            barcodeResult.rows[0]
+        const matched = barcodeResult.rows[0]
 
-          if (!matched.branch_id) {
-            unmatched.push({
-              barcode,
-              image_type: imageType,
-              original_filename:
-                image.original_filename || '',
-              reason:
-                'Barcode found but not available in this branch'
-            })
+        if (!matched.branch_id) {
+          unmatched.push({
+            barcode,
+            image_type: imageType,
+            original_filename: image.original_filename || '',
+            reason: 'Barcode found but not available in this branch'
+          })
 
-            continue
-          }
+          continue
+        }
 
-          if (
-            matched.variant_active === false
-          ) {
-            await client.query(
-              `
+        if (matched.variant_active === false) {
+          await client.query(
+            `
                 UPDATE product_variants
                 SET
                   is_active = TRUE,
                   updated_at = NOW()
                 WHERE id = $1
               `,
-              [matched.variant_id]
-            )
-          }
+            [matched.variant_id]
+          )
+        }
 
-          if (
-            matched.stock_active === false
-          ) {
-            await client.query(
-              `
+        if (matched.stock_active === false) {
+          await client.query(
+            `
                 UPDATE branch_variant_stock
                 SET
                   is_active = TRUE,
@@ -2917,15 +2219,12 @@ router.post(
                 WHERE branch_id = $1
                   AND variant_id = $2
               `,
-              [
-                branchId,
-                matched.variant_id
-              ]
-            )
-          }
+            [branchId, matched.variant_id]
+          )
+        }
 
-          await client.query(
-            `
+        await client.query(
+          `
               INSERT INTO product_images (
                 ean_code,
                 image_type,
@@ -2951,34 +2250,23 @@ router.post(
                   EXCLUDED.public_id,
                 uploaded_at = NOW()
             `,
-            [
-              matched.ean_code,
-              imageType,
-              imageUrl,
-              publicId || null
-            ]
-          )
+          [matched.ean_code, imageType, imageUrl, publicId || null]
+        )
 
-          if (
-            imageType === 'front' ||
-            imageType === 'main'
-          ) {
-            await client.query(
-              `
+        if (imageType === 'front' || imageType === 'main') {
+          await client.query(
+            `
                 UPDATE product_variants
                 SET
                   image_url = $1,
                   updated_at = NOW()
                 WHERE id = $2
               `,
-              [
-                imageUrl,
-                matched.variant_id
-              ]
-            )
-          } else {
-            await client.query(
-              `
+            [imageUrl, matched.variant_id]
+          )
+        } else {
+          await client.query(
+            `
                 UPDATE product_variants
                 SET
                   image_url =
@@ -2989,100 +2277,88 @@ router.post(
                   updated_at = NOW()
                 WHERE id = $2
               `,
-              [
-                imageUrl,
-                matched.variant_id
-              ]
-            )
-          }
-
-          updated += 1
+            [imageUrl, matched.variant_id]
+          )
         }
 
-        await client.query('COMMIT')
-      } catch (error) {
-        await client.query('ROLLBACK')
-
-        return res.status(500).json({
-          message:
-            error.message ||
-            'DB error'
-        })
-      } finally {
-        client.release()
+        updated += 1
       }
 
-      return res.json({
-        totalUpdated: updated,
-        unmatched
-      })
+      await client.query('COMMIT')
     } catch (error) {
+      await client.query('ROLLBACK')
+
       return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
+        message: error.message || 'DB error'
       })
+    } finally {
+      client.release()
     }
+
+    return res.json({
+      totalUpdated: updated,
+      unmatched
+    })
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.get(
-  '/:branchId/stock',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.get('/:branchId/stock', async (req, res) => {
+  noStore(res)
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  const gender = normGender(req.query?.gender)
+
+  const categoryId = parsePositiveInt(req.query?.category_id)
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    const gender =
-      normGender(req.query?.gender)
+    await ensureProductImagesTable()
 
-    const categoryId =
-      parsePositiveInt(
-        req.query?.category_id
-      )
+    const params = [branchId]
 
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
-
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
-
-      await ensureProductImagesTable()
-
-      const params = [branchId]
-
-      let whereClause = `
+    let whereClause = `
         bvs.branch_id = $1
         AND bvs.is_active = TRUE
         AND v.is_active = TRUE
-        AND bvs.on_hand > 0
+        AND c.is_active = TRUE
+        AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
       `
 
-      if (gender) {
-        params.push(gender)
+    if (gender) {
+      params.push(gender)
 
-        whereClause += `
+      whereClause += `
           AND p.gender = $${params.length}
         `
-      }
+    }
 
-      if (categoryId) {
-        params.push(categoryId)
+    if (categoryId) {
+      params.push(categoryId)
 
-        whereClause += `
+      whereClause += `
           AND p.category_id IN (
             WITH RECURSIVE cats AS (
               SELECT id
               FROM product_categories
               WHERE id = $${params.length}
+                AND is_active = TRUE
 
               UNION ALL
 
@@ -3090,15 +2366,16 @@ router.get(
               FROM product_categories pc
               JOIN cats c
                 ON pc.parent_id = c.id
+              WHERE pc.is_active = TRUE
             )
             SELECT id
             FROM cats
           )
         `
-      }
+    }
 
-      const result = await pool.query(
-        `
+    const result = await pool.query(
+      `
           SELECT
             p.id AS product_id,
             p.name AS product_name,
@@ -3425,45 +2702,38 @@ router.get(
             v.size,
             v.id
         `,
-        params
-      )
+      params
+    )
 
-      return res.json(
-        groupStockRows(result.rows)
-      )
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    }
+    return res.json(groupStockRows(result.rows))
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.get(
-  '/:branchId/discounts',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.get('/:branchId/discounts', async (req, res) => {
+  noStore(res)
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
-
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
-
-      const result = await pool.query(
-        `
+    const result = await pool.query(
+      `
           SELECT
             COALESCE(
               (
@@ -3498,67 +2768,54 @@ router.get(
               0
             ) AS b2b_discount_pct
         `,
-        [branchId]
-      )
+      [branchId]
+    )
 
-      if (!result.rows.length) {
-        return res.json({
-          b2c_discount_pct: 0,
-          b2b_discount_pct: 0
-        })
-      }
-
-      return res.json(result.rows[0])
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
+    if (!result.rows.length) {
+      return res.json({
+        b2c_discount_pct: 0,
+        b2b_discount_pct: 0
       })
     }
+
+    return res.json(result.rows[0])
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
-router.post(
-  '/:branchId/discounts',
-  async (req, res) => {
-    const branchId = parseBranchId(req)
+router.post('/:branchId/discounts', async (req, res) => {
+  const branchId = parseBranchId(req)
 
-    if (!branchId) {
-      return res.status(400).json({
-        message: 'Invalid branchId'
+  if (!branchId) {
+    return res.status(400).json({
+      message: 'Invalid branchId'
+    })
+  }
+
+  const b2cDiscount = Number(req.body?.b2c_discount_pct)
+
+  const b2bDiscount = Number(req.body?.b2b_discount_pct)
+
+  if (!Number.isFinite(b2cDiscount) || !Number.isFinite(b2bDiscount) || b2cDiscount < 0 || b2bDiscount < 0) {
+    return res.status(400).json({
+      message: 'Invalid discount values'
+    })
+  }
+
+  try {
+    const branchExists = await ensureBranchExists(branchId)
+
+    if (!branchExists) {
+      return res.status(404).json({
+        message: 'Branch not found'
       })
     }
 
-    const b2cDiscount =
-      Number(req.body?.b2c_discount_pct)
-
-    const b2bDiscount =
-      Number(req.body?.b2b_discount_pct)
-
-    if (
-      !Number.isFinite(b2cDiscount) ||
-      !Number.isFinite(b2bDiscount) ||
-      b2cDiscount < 0 ||
-      b2bDiscount < 0
-    ) {
-      return res.status(400).json({
-        message: 'Invalid discount values'
-      })
-    }
-
-    try {
-      const branchExists =
-        await ensureBranchExists(branchId)
-
-      if (!branchExists) {
-        return res.status(404).json({
-          message: 'Branch not found'
-        })
-      }
-
-      await pool.query(
-        `
+    await pool.query(
+      `
           UPDATE product_variants v
           SET
             b2c_discount_pct = $2,
@@ -3570,27 +2827,18 @@ router.post(
             AND v.is_active = TRUE
             AND bvs.is_active = TRUE
         `,
-        [
-          branchId,
-          b2cDiscount,
-          b2bDiscount
-        ]
-      )
+      [branchId, b2cDiscount, b2bDiscount]
+    )
 
-      return res.json({
-        b2c_discount_pct:
-          b2cDiscount,
-        b2b_discount_pct:
-          b2bDiscount
-      })
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    }
+    return res.json({
+      b2c_discount_pct: b2cDiscount,
+      b2b_discount_pct: b2bDiscount
+    })
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    })
   }
-)
+})
 
 module.exports = router
