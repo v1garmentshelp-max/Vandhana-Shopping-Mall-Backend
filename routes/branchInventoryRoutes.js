@@ -56,9 +56,6 @@ function parsePositiveInt(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-function quoteIdentifier(value) {
-  return `"${String(value || '').replace(/"/g, '""')}"`
-}
 
 async function ensureBranchExists(branchId) {
   const result = await pool.query('SELECT id FROM branches WHERE id = $1 LIMIT 1', [branchId])
@@ -374,38 +371,11 @@ async function initializeImportRowsTable() {
     ON DELETE SET NULL
   `)
 
-  const oldConstraints = await pool.query(`
-    SELECT c.conname
-    FROM pg_constraint c
-    JOIN LATERAL (
-      SELECT ARRAY_AGG(
-        a.attname
-        ORDER BY cols.ordinality
-      ) AS column_names
-      FROM UNNEST(c.conkey)
-      WITH ORDINALITY AS cols(attnum, ordinality)
-      JOIN pg_attribute a
-        ON a.attrelid = c.conrelid
-       AND a.attnum = cols.attnum
-    ) key_columns ON TRUE
-    WHERE c.conrelid = 'products'::regclass
-      AND c.contype = 'u'
-      AND key_columns.column_names =
-        ARRAY[
-          'name',
-          'brand_name',
-          'pattern_code',
-          'gender'
-        ]::text[]
+  await pool.query(`
+    ALTER TABLE products
+    DROP CONSTRAINT IF EXISTS
+    products_name_brand_name_pattern_code_gender_key
   `)
-
-  for (const row of oldConstraints.rows) {
-    await pool.query(`
-      ALTER TABLE products
-      DROP CONSTRAINT IF EXISTS
-      ${quoteIdentifier(row.conname)}
-    `)
-  }
 
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS
@@ -547,6 +517,34 @@ async function validateCategory(categoryId, gender) {
 
   const result = await pool.query(
     `
+      WITH RECURSIVE category_tree AS (
+        SELECT
+          c.id,
+          c.parent_id,
+          c.gender,
+          c.name,
+          c.slug,
+          c.level,
+          c.name::text AS category_path
+        FROM product_categories c
+        WHERE c.parent_id IS NULL
+          AND c.is_active = TRUE
+
+        UNION ALL
+
+        SELECT
+          c.id,
+          c.parent_id,
+          c.gender,
+          c.name,
+          c.slug,
+          c.level,
+          category_tree.category_path || ' > ' || c.name
+        FROM product_categories c
+        JOIN category_tree
+          ON category_tree.id = c.parent_id
+        WHERE c.is_active = TRUE
+      )
       SELECT
         c.id,
         c.parent_id,
@@ -554,22 +552,9 @@ async function validateCategory(categoryId, gender) {
         c.name,
         c.slug,
         c.level,
-        CASE
-          WHEN p2.id IS NOT NULL
-            THEN p2.name || ' > ' ||
-                 p.name || ' > ' ||
-                 c.name
-          WHEN p.id IS NOT NULL
-            THEN p.name || ' > ' || c.name
-          ELSE c.name
-        END AS category_path
-      FROM product_categories c
-      LEFT JOIN product_categories p
-        ON p.id = c.parent_id
-      LEFT JOIN product_categories p2
-        ON p2.id = p.parent_id
+        c.category_path
+      FROM category_tree c
       WHERE c.id = $1
-        AND c.is_active = TRUE
         AND c.gender = $2
         AND NOT EXISTS (
           SELECT 1
@@ -2376,6 +2361,28 @@ router.get('/:branchId/stock', async (req, res) => {
 
     const result = await pool.query(
       `
+          WITH RECURSIVE category_paths AS (
+            SELECT
+              c.id,
+              c.parent_id,
+              c.name,
+              c.name::text AS category_path
+            FROM product_categories c
+            WHERE c.parent_id IS NULL
+              AND c.is_active = TRUE
+
+            UNION ALL
+
+            SELECT
+              c.id,
+              c.parent_id,
+              c.name,
+              category_paths.category_path || ' > ' || c.name
+            FROM product_categories c
+            JOIN category_paths
+              ON category_paths.id = c.parent_id
+            WHERE c.is_active = TRUE
+          )
           SELECT
             p.id AS product_id,
             p.name AS product_name,
@@ -2391,18 +2398,7 @@ router.get('/:branchId/stock', async (req, res) => {
             pc.id AS parent_category_id,
             pc.name AS parent_category_name,
             pc.slug AS parent_category_slug,
-            CASE
-              WHEN ppc.id IS NOT NULL
-                THEN
-                  ppc.name || ' > ' ||
-                  pc.name || ' > ' ||
-                  c.name
-              WHEN pc.id IS NOT NULL
-                THEN
-                  pc.name || ' > ' ||
-                  c.name
-              ELSE c.name
-            END AS category_path,
+            cp.category_path,
             v.id AS variant_id,
             v.size,
             v.colour,
@@ -2652,8 +2648,8 @@ router.get('/:branchId/stock', async (req, res) => {
             ON c.id = p.category_id
           LEFT JOIN product_categories pc
             ON pc.id = c.parent_id
-          LEFT JOIN product_categories ppc
-            ON ppc.id = pc.parent_id
+          LEFT JOIN category_paths cp
+            ON cp.id = p.category_id
           LEFT JOIN LATERAL (
             SELECT ean_code
             FROM barcodes bc
