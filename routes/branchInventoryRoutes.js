@@ -40,6 +40,38 @@ const HEADER_ALIASES = {
   b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 }
 
+
+const ALL_CATEGORY_PATHS_CTE = `
+  WITH RECURSIVE category_paths AS (
+    SELECT
+      c.id,
+      c.parent_id,
+      c.gender,
+      c.name,
+      c.slug,
+      c.level,
+      c.is_active,
+      c.name::text AS category_path
+    FROM product_categories c
+    WHERE c.parent_id IS NULL
+
+    UNION ALL
+
+    SELECT
+      c.id,
+      c.parent_id,
+      c.gender,
+      c.name,
+      c.slug,
+      c.level,
+      c.is_active,
+      category_paths.category_path || ' > ' || c.name
+    FROM product_categories c
+    JOIN category_paths
+      ON category_paths.id = c.parent_id
+  )
+`
+
 function noStore(res) {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
   res.set('Pragma', 'no-cache')
@@ -1170,6 +1202,7 @@ router.get('/:branchId/import-jobs', async (req, res) => {
 
     const result = await pool.query(
       `
+          ${ALL_CATEGORY_PATHS_CTE}
           SELECT
             ij.id,
             ij.file_name,
@@ -1188,12 +1221,15 @@ router.get('/:branchId/import-jobs', async (req, res) => {
             c.slug AS category_slug,
             pc.id AS parent_category_id,
             pc.name AS parent_category_name,
-            pc.slug AS parent_category_slug
+            pc.slug AS parent_category_slug,
+            cp.category_path
           FROM import_jobs ij
           LEFT JOIN product_categories c
             ON c.id = ij.category_id
           LEFT JOIN product_categories pc
             ON pc.id = c.parent_id
+          LEFT JOIN category_paths cp
+            ON cp.id = ij.category_id
           WHERE ij.branch_id = $1
           ORDER BY ij.id DESC
           LIMIT 100
@@ -1243,16 +1279,22 @@ router.get('/:branchId/import-rows', async (req, res) => {
     if (jobId) {
       const result = await pool.query(
         `
+            ${ALL_CATEGORY_PATHS_CTE}
             SELECT
               ij.*,
               c.name AS category_name,
               c.slug AS category_slug,
-              pc.name AS parent_category_name
+              pc.id AS parent_category_id,
+              pc.name AS parent_category_name,
+              pc.slug AS parent_category_slug,
+              cp.category_path
             FROM import_jobs ij
             LEFT JOIN product_categories c
               ON c.id = ij.category_id
             LEFT JOIN product_categories pc
               ON pc.id = c.parent_id
+            LEFT JOIN category_paths cp
+              ON cp.id = ij.category_id
             WHERE ij.id = $1
               AND ij.branch_id = $2
           `,
@@ -1269,16 +1311,22 @@ router.get('/:branchId/import-rows', async (req, res) => {
     } else {
       const result = await pool.query(
         `
+            ${ALL_CATEGORY_PATHS_CTE}
             SELECT
               ij.*,
               c.name AS category_name,
               c.slug AS category_slug,
-              pc.name AS parent_category_name
+              pc.id AS parent_category_id,
+              pc.name AS parent_category_name,
+              pc.slug AS parent_category_slug,
+              cp.category_path
             FROM import_jobs ij
             LEFT JOIN product_categories c
               ON c.id = ij.category_id
             LEFT JOIN product_categories pc
               ON pc.id = c.parent_id
+            LEFT JOIN category_paths cp
+              ON cp.id = ij.category_id
             WHERE ij.branch_id = $1
             ORDER BY ij.id DESC
             LIMIT 1
@@ -1349,7 +1397,10 @@ router.get('/:branchId/import-rows', async (req, res) => {
         category_id: job.category_id,
         category_name: job.category_name,
         category_slug: job.category_slug,
-        parent_category_name: job.parent_category_name
+        parent_category_id: job.parent_category_id,
+        parent_category_name: job.parent_category_name,
+        parent_category_slug: job.parent_category_slug,
+        category_path: job.category_path
       },
       rows: rowsResult.rows,
       nextOffset: offset + rowsResult.rows.length,

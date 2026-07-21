@@ -140,6 +140,38 @@ const noStore = res => {
   res.set('Expires', '0')
 }
 
+
+const ACTIVE_CATEGORY_PATHS_CTE = `
+  WITH RECURSIVE category_paths AS (
+    SELECT
+      c.id,
+      c.parent_id,
+      c.gender,
+      c.name,
+      c.slug,
+      c.level,
+      c.name::text AS category_path
+    FROM product_categories c
+    WHERE c.parent_id IS NULL
+      AND c.is_active = TRUE
+
+    UNION ALL
+
+    SELECT
+      c.id,
+      c.parent_id,
+      c.gender,
+      c.name,
+      c.slug,
+      c.level,
+      category_paths.category_path || ' > ' || c.name
+    FROM product_categories c
+    JOIN category_paths
+      ON category_paths.id = c.parent_id
+    WHERE c.is_active = TRUE
+  )
+`
+
 const priceSql = () => `
   CASE
     WHEN COALESCE(v.b2c_discount_pct, 0) > 0
@@ -150,8 +182,9 @@ const priceSql = () => `
 
 const productWhere = () => `
   v.is_active = TRUE
+  AND c.is_active = TRUE
   AND COALESCE(bvs.is_active, FALSE) = TRUE
-  AND COALESCE(bvs.on_hand, 0) > 0
+  AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
   AND COALESCE(v.size, '') NOT LIKE '%,%'
   AND COALESCE(v.colour, '') NOT LIKE '%,%'
 `
@@ -190,6 +223,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
   const backImage = backImageSql()
 
   return `
+  ${ACTIVE_CATEGORY_PATHS_CTE}
   SELECT
     p.id AS product_id,
     p.name AS product_name,
@@ -208,11 +242,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     pc.id AS parent_category_id,
     pc.name AS parent_category_name,
     pc.slug AS parent_category_slug,
-    CASE
-      WHEN ppc.id IS NOT NULL THEN ppc.name || ' > ' || pc.name || ' > ' || c.name
-      WHEN pc.id IS NOT NULL THEN pc.name || ' > ' || c.name
-      ELSE c.name
-    END AS category_path,
+    cp.category_path,
     v.id AS variant_id,
     v.id AS id,
     v.size,
@@ -270,9 +300,13 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     jsonb_build_array(${frontImage}, NULLIF(${backImage}, '')) AS images
   FROM products p
   JOIN product_variants v ON v.product_id = p.id
-  LEFT JOIN product_categories c ON c.id = p.category_id
-  LEFT JOIN product_categories pc ON pc.id = c.parent_id
-  LEFT JOIN product_categories ppc ON ppc.id = pc.parent_id
+  JOIN product_categories c
+    ON c.id = p.category_id
+   AND c.is_active = TRUE
+  JOIN category_paths cp
+    ON cp.id = c.id
+  LEFT JOIN product_categories pc
+    ON pc.id = c.parent_id
   LEFT JOIN LATERAL (
     SELECT ean_code
     FROM barcodes b
@@ -561,27 +595,97 @@ const groupProductRows = rows => {
 
 const addCategoryFilter = ({ req, params, where }) => {
   const categoryId = parsePositiveInt(req.query.category_id || req.query.categoryId)
+  const categoryPath = cleanValue(req.query.category_path || req.query.categoryPath || '')
   const categorySlug = cleanValue(req.query.category_slug || req.query.categorySlug || '')
 
   if (categoryId) {
     params.push(categoryId)
+    const categoryIndex = params.length
+
     where += ` AND p.category_id IN (
       WITH RECURSIVE cats AS (
-        SELECT id FROM product_categories WHERE id = $${params.length}
+        SELECT id
+        FROM product_categories
+        WHERE id = $${categoryIndex}
+          AND is_active = TRUE
+
         UNION ALL
-        SELECT pc.id FROM product_categories pc JOIN cats c ON pc.parent_id = c.id
+
+        SELECT pc.id
+        FROM product_categories pc
+        JOIN cats c
+          ON pc.parent_id = c.id
+        WHERE pc.is_active = TRUE
       )
-      SELECT id FROM cats
+      SELECT id
+      FROM cats
+    )`
+  } else if (categoryPath) {
+    params.push(categoryPath)
+    const categoryPathIndex = params.length
+
+    where += ` AND p.category_id IN (
+      WITH RECURSIVE filter_paths AS (
+        SELECT
+          c.id,
+          c.parent_id,
+          c.name::text AS category_path
+        FROM product_categories c
+        WHERE c.parent_id IS NULL
+          AND c.is_active = TRUE
+
+        UNION ALL
+
+        SELECT
+          c.id,
+          c.parent_id,
+          filter_paths.category_path || ' > ' || c.name
+        FROM product_categories c
+        JOIN filter_paths
+          ON filter_paths.id = c.parent_id
+        WHERE c.is_active = TRUE
+      ),
+      matched AS (
+        SELECT id
+        FROM filter_paths
+        WHERE LOWER(category_path) = LOWER($${categoryPathIndex})
+      ),
+      cats AS (
+        SELECT id
+        FROM matched
+
+        UNION ALL
+
+        SELECT pc.id
+        FROM product_categories pc
+        JOIN cats c
+          ON pc.parent_id = c.id
+        WHERE pc.is_active = TRUE
+      )
+      SELECT id
+      FROM cats
     )`
   } else if (categorySlug) {
     params.push(categorySlug)
+    const categorySlugIndex = params.length
+
     where += ` AND p.category_id IN (
       WITH RECURSIVE cats AS (
-        SELECT id FROM product_categories WHERE slug = $${params.length}
-        UNION ALL
-        SELECT pc.id FROM product_categories pc JOIN cats c ON pc.parent_id = c.id
+        SELECT id
+        FROM product_categories
+        WHERE LOWER(slug) = LOWER($${categorySlugIndex})
+          AND is_active = TRUE
+
+        UNION
+
+        SELECT pc.id
+        FROM product_categories pc
+        JOIN cats c
+          ON pc.parent_id = c.id
+        WHERE pc.is_active = TRUE
       )
-      SELECT id FROM cats
+      SELECT id
+      FROM cats
     )`
   }
 
@@ -629,7 +733,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
     for (const t of tokens) {
       params.push(`%${t}%`)
       const idx = params.length
-      parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR c.name ILIKE $${idx} OR pc.name ILIKE $${idx})`)
+      parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR c.name ILIKE $${idx} OR pc.name ILIKE $${idx} OR cp.category_path ILIKE $${idx})`)
     }
 
     where += ` AND (${parts.join(' OR ')})`
@@ -735,22 +839,56 @@ const getProductCategoryId = async (client, productId) => {
 }
 
 const validateCategoryForWrite = async (client, categoryId, gender, fallbackProductId) => {
-  const id = parsePositiveInt(categoryId)
+  let id = parsePositiveInt(categoryId)
 
-  if (!id) return getProductCategoryId(client, fallbackProductId)
+  if (!id) {
+    id = parsePositiveInt(await getProductCategoryId(client, fallbackProductId))
+  }
+
+  if (!id) return null
 
   const { rows } = await client.query(
-    `SELECT id
-     FROM product_categories
-     WHERE id = $1
-       AND gender = $2
-       AND is_active = TRUE
+    `WITH RECURSIVE category_tree AS (
+       SELECT
+         c.id,
+         c.parent_id,
+         c.gender,
+         c.name,
+         c.slug,
+         c.level
+       FROM product_categories c
+       WHERE c.parent_id IS NULL
+         AND c.is_active = TRUE
+
+       UNION ALL
+
+       SELECT
+         c.id,
+         c.parent_id,
+         c.gender,
+         c.name,
+         c.slug,
+         c.level
+       FROM product_categories c
+       JOIN category_tree
+         ON category_tree.id = c.parent_id
+       WHERE c.is_active = TRUE
+     )
+     SELECT c.id
+     FROM category_tree c
+     WHERE c.id = $1
+       AND c.gender = $2
+       AND NOT EXISTS (
+         SELECT 1
+         FROM product_categories child
+         WHERE child.parent_id = c.id
+           AND child.is_active = TRUE
+       )
      LIMIT 1`,
     [id, gender]
   )
 
-  if (!rows.length) return null
-  return rows[0].id
+  return rows[0]?.id || null
 }
 
 const saveProductImage = async (client, eanCode, imageUrl, imageType = 'front') => {
@@ -797,7 +935,7 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
 
   const categoryId = await validateCategoryForWrite(client, body?.category_id || body?.categoryId, gender, productId)
 
-  if (!categoryId) return { status: 400, payload: { message: 'Valid sub-category is required' } }
+  if (!categoryId) return { status: 400, payload: { message: 'Valid active leaf sub-category is required' } }
 
   if (!nextName || !nextBrand || !nextSize || !nextColor) {
     return { status: 400, payload: { message: 'Product name, brand, color and size are required' } }
