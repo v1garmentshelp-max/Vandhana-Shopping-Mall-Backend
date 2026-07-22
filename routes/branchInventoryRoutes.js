@@ -97,6 +97,10 @@ function cleanText(value) {
   return String(value).replace(/\s+/g, ' ').trim()
 }
 
+function normalizeLogicalText(value) {
+  return cleanText(value).toLowerCase()
+}
+
 function normalizeBarcode(value) {
   return String(value ?? '')
     .trim()
@@ -104,6 +108,22 @@ function normalizeBarcode(value) {
     .replace(/\s+/g, '')
     .toUpperCase()
     .replace(/[^A-Z0-9._-]/g, '')
+}
+
+function uniqueBarcodes(values) {
+  const seen = new Set()
+  const output = []
+
+  for (const value of Array.isArray(values) ? values : []) {
+    const barcode = normalizeBarcode(value)
+
+    if (!barcode || seen.has(barcode)) continue
+
+    seen.add(barcode)
+    output.push(barcode)
+  }
+
+  return output
 }
 
 function normalizeImageType(value) {
@@ -120,13 +140,8 @@ function normalizeImageType(value) {
 }
 
 function baseNameNoExt(name) {
-  const fileName =
-    String(name || '')
-      .split('/')
-      .pop() || String(name || '')
-
+  const fileName = String(name || '').split('/').pop() || String(name || '')
   const extensionIndex = fileName.lastIndexOf('.')
-
   return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName
 }
 
@@ -223,20 +238,16 @@ function toNumOrNull(value) {
   if (value === '' || value == null) return null
 
   const parsed = parseFloat(String(value).replace(/[₹, ]+/g, ''))
-
   return Number.isFinite(parsed) ? parsed : null
 }
 
 function toIntOrZero(value) {
   const parsed = parseInt(String(value).replace(/[₹, ]+/g, ''), 10)
-
   return Number.isFinite(parsed) ? parsed : 0
 }
 
 function normGender(value) {
-  const normalized = String(value || '')
-    .trim()
-    .toUpperCase()
+  const normalized = String(value || '').trim().toUpperCase()
 
   if (normalized === 'MEN' || normalized === 'WOMEN' || normalized === 'KIDS') {
     return normalized
@@ -400,13 +411,11 @@ async function initializeImportRowsTable() {
 
   await pool.query(`
     ALTER TABLE products
-    DROP CONSTRAINT IF EXISTS
-    products_name_brand_name_pattern_code_gender_key
+    DROP CONSTRAINT IF EXISTS products_name_brand_name_pattern_code_gender_key
   `)
 
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS
-    uq_products_name_brand_pattern_gender_category
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_products_name_brand_pattern_gender_category
     ON products (
       name,
       brand_name,
@@ -417,8 +426,7 @@ async function initializeImportRowsTable() {
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_rows_job_status_id
+    CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id
     ON import_rows (
       import_job_id,
       status_enum,
@@ -427,8 +435,7 @@ async function initializeImportRowsTable() {
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_jobs_branch_uploaded_id
+    CREATE INDEX IF NOT EXISTS idx_import_jobs_branch_uploaded_id
     ON import_jobs (
       branch_id,
       id DESC
@@ -436,26 +443,22 @@ async function initializeImportRowsTable() {
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_jobs_category_id
+    CREATE INDEX IF NOT EXISTS idx_import_jobs_category_id
     ON import_jobs(category_id)
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_products_category_id
+    CREATE INDEX IF NOT EXISTS idx_products_category_id
     ON products(category_id)
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_barcodes_variant_id
+    CREATE INDEX IF NOT EXISTS idx_barcodes_variant_id
     ON barcodes(variant_id)
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_branch_variant_stock_branch_active
+    CREATE INDEX IF NOT EXISTS idx_branch_variant_stock_branch_active
     ON branch_variant_stock(
       branch_id,
       is_active,
@@ -523,8 +526,7 @@ async function initializeProductImagesTable() {
   `)
 
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS
-    product_images_ean_code_image_type_key
+    CREATE UNIQUE INDEX IF NOT EXISTS product_images_ean_code_image_type_key
     ON product_images(
       ean_code,
       image_type
@@ -532,8 +534,7 @@ async function initializeProductImagesTable() {
   `)
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_product_images_ean_code
+    CREATE INDEX IF NOT EXISTS idx_product_images_ean_code
     ON product_images(ean_code)
   `)
 }
@@ -616,6 +617,11 @@ function rowToPreparedRecord(raw) {
   const b2bDiscount = toNumOrNull(row.b2bdiscount) ?? 0
   const barcode = normalizeBarcode(row.barcode)
 
+  const barcodes = uniqueBarcodes([
+    ...(Array.isArray(raw?.barcodes) ? raw.barcodes : []),
+    barcode
+  ])
+
   return {
     raw,
     ProductName: productName,
@@ -631,7 +637,8 @@ function rowToPreparedRecord(raw) {
     PurchaseQty: purchaseQty,
     B2CDiscount: b2cDiscount,
     B2BDiscount: b2bDiscount,
-    Barcode: barcode
+    Barcode: barcode,
+    Barcodes: barcodes
   }
 }
 
@@ -665,10 +672,10 @@ function shouldQueueRow(prepared) {
 
 function buildPreparedImportRows(rows, createdStatus, errorStatus) {
   const grouped = new Map()
+  const barcodeOwners = new Map()
   const preparedRows = []
 
-  for (let index = 0; index < rows.length; index += 1) {
-    const raw = rows[index]
+  for (const raw of rows) {
     const prepared = rowToPreparedRecord(raw)
 
     if (!shouldQueueRow(prepared)) {
@@ -685,33 +692,17 @@ function buildPreparedImportRows(rows, createdStatus, errorStatus) {
       continue
     }
 
-    const key = prepared.Barcode
-    const signature = [
-      prepared.ProductName.toLowerCase(),
-      prepared.BrandName.toLowerCase(),
-      prepared.SIZE.toLowerCase(),
-      prepared.COLOUR.toLowerCase(),
-      prepared.PATTERN.toLowerCase()
+    const logicalKey = [
+      normalizeLogicalText(prepared.ProductName),
+      normalizeLogicalText(prepared.BrandName),
+      normalizeLogicalText(prepared.PATTERN),
+      normalizeLogicalText(prepared.SIZE),
+      normalizeLogicalText(prepared.COLOUR)
     ].join('|')
 
-    const existing = grouped.get(key)
+    const previousOwner = barcodeOwners.get(prepared.Barcode)
 
-    if (!existing) {
-      grouped.set(key, {
-        raw: {
-          ...raw,
-          purchaseqty: prepared.PurchaseQty,
-          barcode: prepared.Barcode
-        },
-        signature,
-        quantity: prepared.PurchaseQty,
-        sourceRows: 1
-      })
-
-      continue
-    }
-
-    if (existing.signature !== signature) {
+    if (previousOwner && previousOwner !== logicalKey) {
       preparedRows.push({
         raw,
         status_enum: errorStatus,
@@ -721,17 +712,43 @@ function buildPreparedImportRows(rows, createdStatus, errorStatus) {
       continue
     }
 
+    barcodeOwners.set(prepared.Barcode, logicalKey)
+
+    const existing = grouped.get(logicalKey)
+
+    if (!existing) {
+      grouped.set(logicalKey, {
+        raw: {
+          ...raw,
+          purchaseqty: prepared.PurchaseQty,
+          barcode: prepared.Barcode,
+          barcodes: [prepared.Barcode]
+        },
+        quantity: prepared.PurchaseQty,
+        barcodes: [prepared.Barcode]
+      })
+
+      continue
+    }
+
     existing.quantity += prepared.PurchaseQty
-    existing.sourceRows += 1
+    existing.barcodes = uniqueBarcodes([
+      ...existing.barcodes,
+      prepared.Barcode
+    ])
+
     existing.raw.purchaseqty = existing.quantity
-    existing.raw.barcode = prepared.Barcode
+    existing.raw.barcode = existing.barcodes[0] || prepared.Barcode
+    existing.raw.barcodes = existing.barcodes
   }
 
   for (const item of grouped.values()) {
     preparedRows.push({
       raw: {
         ...item.raw,
-        purchaseqty: item.quantity
+        purchaseqty: item.quantity,
+        barcode: item.barcodes[0] || '',
+        barcodes: item.barcodes
       },
       status_enum: createdStatus,
       error_msg: null
@@ -860,16 +877,58 @@ function normalizeImages(images) {
 }
 
 function normalizeGroupColour(value) {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
+  return String(value || '').trim().toUpperCase()
+}
+
+function normalizeGroupSize(value) {
+  return String(value || '').trim().toUpperCase().replace(/\s+/g, '')
+}
+
+function mergeImages(first, second) {
+  const seen = new Set()
+  const output = []
+
+  for (const item of [...normalizeImages(first), ...normalizeImages(second)]) {
+    const url = String(
+      item?.image_url ||
+      item?.imageUrl ||
+      item?.secure_url ||
+      item?.url ||
+      item ||
+      ''
+    ).trim()
+
+    const key = url.toLowerCase()
+
+    if (!url || seen.has(key)) continue
+
+    seen.add(key)
+    output.push(item)
+  }
+
+  return output
 }
 
 function makeVariantPayload(row) {
+  const barcode = row.barcode || row.ean_code || ''
+  const stockSource = {
+    variant_id: row.variant_id,
+    variantId: row.variant_id,
+    barcode,
+    ean_code: barcode,
+    on_hand: toNumber(row.on_hand),
+    onHand: toNumber(row.on_hand),
+    reserved: toNumber(row.reserved),
+    available_qty: toNumber(row.available_qty),
+    availableQty: toNumber(row.available_qty)
+  }
+
   return {
     id: row.variant_id,
     variant_id: row.variant_id,
     variantId: row.variant_id,
+    variant_ids: [row.variant_id],
+    variantIds: [row.variant_id],
     product_id: row.product_id,
     productId: row.product_id,
     category_id: row.category_id,
@@ -889,9 +948,12 @@ function makeVariantPayload(row) {
     size: row.size || '',
     colour: row.colour || '',
     color: row.colour || '',
-    barcode: row.barcode || '',
-    ean_code: row.ean_code || row.barcode || '',
-    eanCode: row.ean_code || row.barcode || '',
+    barcode,
+    ean_code: barcode,
+    eanCode: barcode,
+    barcodes: barcode ? [barcode] : [],
+    ean_codes: barcode ? [barcode] : [],
+    eanCodes: barcode ? [barcode] : [],
     mrp: row.mrp,
     base_sale_price: row.base_sale_price,
     original_sale_price: row.original_sale_price,
@@ -917,15 +979,17 @@ function makeVariantPayload(row) {
     originalPriceB2b: row.original_price_b2b,
     final_price_b2b: row.final_price_b2b,
     finalPriceB2b: row.final_price_b2b,
-    on_hand: row.on_hand,
-    onHand: row.on_hand,
-    reserved: row.reserved,
-    reserved_qty: row.reserved,
-    reservedQty: row.reserved,
-    available_qty: row.available_qty,
-    availableQty: row.available_qty,
-    in_stock: row.in_stock,
-    inStock: row.in_stock,
+    on_hand: toNumber(row.on_hand),
+    onHand: toNumber(row.on_hand),
+    reserved: toNumber(row.reserved),
+    reserved_qty: toNumber(row.reserved),
+    reservedQty: toNumber(row.reserved),
+    available_qty: toNumber(row.available_qty),
+    availableQty: toNumber(row.available_qty),
+    in_stock: toNumber(row.available_qty) > 0,
+    inStock: toNumber(row.available_qty) > 0,
+    stock_sources: [stockSource],
+    stockSources: [stockSource],
     image_url: row.image_url,
     imageUrl: row.image_url,
     front_image_url: row.front_image_url,
@@ -938,11 +1002,81 @@ function makeVariantPayload(row) {
   }
 }
 
+function mergeVariantPayload(target, source) {
+  const existingVariantIds = new Set(
+    (target.variant_ids || []).map((value) => String(value))
+  )
+
+  const sourceVariantIds = source.variant_ids || []
+  const newVariantIds = sourceVariantIds.filter(
+    (value) => !existingVariantIds.has(String(value))
+  )
+
+  const shouldAddStock = newVariantIds.length > 0
+
+  target.variant_ids = uniqueValues([
+    ...(target.variant_ids || []),
+    ...sourceVariantIds
+  ])
+
+  target.variantIds = target.variant_ids
+
+  target.barcodes = uniqueValues([
+    ...(target.barcodes || []),
+    ...(source.barcodes || [])
+  ])
+
+  target.ean_codes = target.barcodes
+  target.eanCodes = target.barcodes
+
+  target.stock_sources = [
+    ...(target.stock_sources || []),
+    ...(source.stock_sources || []).filter((item) =>
+      newVariantIds.some(
+        (variantId) => String(variantId) === String(item.variant_id)
+      )
+    )
+  ]
+
+  target.stockSources = target.stock_sources
+
+  if (shouldAddStock) {
+    target.on_hand = toNumber(target.on_hand) + toNumber(source.on_hand)
+    target.onHand = target.on_hand
+    target.reserved = toNumber(target.reserved) + toNumber(source.reserved)
+    target.reserved_qty = target.reserved
+    target.reservedQty = target.reserved
+    target.available_qty =
+      toNumber(target.available_qty) + toNumber(source.available_qty)
+    target.availableQty = target.available_qty
+    target.in_stock = target.available_qty > 0
+    target.inStock = target.in_stock
+  }
+
+  target.image_url = target.image_url || source.image_url || ''
+  target.imageUrl = target.image_url
+  target.front_image_url =
+    target.front_image_url || source.front_image_url || ''
+  target.frontImageUrl = target.front_image_url
+  target.back_image_url =
+    target.back_image_url || source.back_image_url || ''
+  target.backImageUrl = target.back_image_url
+  target.main_image_url =
+    target.main_image_url || source.main_image_url || ''
+  target.mainImageUrl = target.main_image_url
+  target.images = mergeImages(target.images, source.images)
+
+  return target
+}
+
 function groupStockRows(rows) {
   const productGroups = new Map()
 
   for (const row of Array.isArray(rows) ? rows : []) {
-    const productKey = [String(row.product_id || ''), String(row.category_id || '')].join('|')
+    const productKey = [
+      String(row.product_id || ''),
+      String(row.category_id || '')
+    ].join('|')
 
     if (!productGroups.has(productKey)) {
       productGroups.set(productKey, {
@@ -960,18 +1094,24 @@ function groupStockRows(rows) {
         parent_category_name: row.parent_category_name,
         parent_category_slug: row.parent_category_slug,
         category_path: row.category_path,
-        variants: [],
+        variantMap: new Map(),
         rows: []
       })
     }
 
     const group = productGroups.get(productKey)
-    const alreadyExists = group.variants.some(
-      (variant) => String(variant.variant_id) === String(row.variant_id)
-    )
+    const variantKey = [
+      normalizeGroupColour(row.colour),
+      normalizeGroupSize(row.size)
+    ].join('|')
 
-    if (!alreadyExists) {
-      group.variants.push(makeVariantPayload(row))
+    const payload = makeVariantPayload(row)
+    const existingVariant = group.variantMap.get(variantKey)
+
+    if (existingVariant) {
+      mergeVariantPayload(existingVariant, payload)
+    } else {
+      group.variantMap.set(variantKey, payload)
     }
 
     group.rows.push(row)
@@ -980,16 +1120,16 @@ function groupStockRows(rows) {
   const groupedProducts = []
 
   for (const group of productGroups.values()) {
-    group.variants.sort((a, b) => {
+    const variants = Array.from(group.variantMap.values())
+
+    variants.sort((a, b) => {
       const colourCompare = String(a.colour || '').localeCompare(
         String(b.colour || ''),
         undefined,
         { numeric: true }
       )
 
-      if (colourCompare !== 0) {
-        return colourCompare
-      }
+      if (colourCompare !== 0) return colourCompare
 
       const sizeCompare = String(a.size || '').localeCompare(
         String(b.size || ''),
@@ -997,9 +1137,7 @@ function groupStockRows(rows) {
         { numeric: true }
       )
 
-      if (sizeCompare !== 0) {
-        return sizeCompare
-      }
+      if (sizeCompare !== 0) return sizeCompare
 
       return String(a.variant_id || '').localeCompare(
         String(b.variant_id || ''),
@@ -1008,10 +1146,16 @@ function groupStockRows(rows) {
       )
     })
 
-    const allSizes = sortVariantValues(group.variants.map((variant) => variant.size))
-    const allColours = sortVariantValues(group.variants.map((variant) => variant.colour))
+    const allSizes = sortVariantValues(
+      variants.map((variant) => variant.size)
+    )
+
+    const allColours = sortVariantValues(
+      variants.map((variant) => variant.colour)
+    )
+
     const allBarcodes = uniqueValues(
-      group.variants.map((variant) => variant.barcode || variant.ean_code)
+      variants.flatMap((variant) => variant.barcodes || [])
     )
 
     const colourGroups = new Map()
@@ -1031,14 +1175,22 @@ function groupStockRows(rows) {
 
     for (const colourGroup of colourGroups.values()) {
       const cardRows = colourGroup.rows.slice().sort((a, b) => {
-        const availableCompare = toNumber(b.available_qty) - toNumber(a.available_qty)
+        const availableCompare =
+          toNumber(b.available_qty) - toNumber(a.available_qty)
 
-        if (availableCompare !== 0) {
-          return availableCompare
-        }
+        if (availableCompare !== 0) return availableCompare
 
-        const bHasImage = Boolean(b.front_image_url || b.main_image_url || b.image_url)
-        const aHasImage = Boolean(a.front_image_url || a.main_image_url || a.image_url)
+        const bHasImage = Boolean(
+          b.front_image_url ||
+          b.main_image_url ||
+          b.image_url
+        )
+
+        const aHasImage = Boolean(
+          a.front_image_url ||
+          a.main_image_url ||
+          a.image_url
+        )
 
         if (bHasImage !== aHasImage) {
           return Number(bHasImage) - Number(aHasImage)
@@ -1052,18 +1204,39 @@ function groupStockRows(rows) {
       })
 
       const selected = cardRows[0] || {}
-      const imageRow =
-        cardRows.find((row) => row.front_image_url || row.main_image_url || row.image_url) ||
-        selected
 
-      const cardVariantIds = new Set(cardRows.map((row) => String(row.variant_id)))
-      const cardVariants = group.variants.filter((variant) =>
-        cardVariantIds.has(String(variant.variant_id))
+      const imageRow =
+        cardRows.find(
+          (row) =>
+            row.front_image_url ||
+            row.main_image_url ||
+            row.image_url
+        ) || selected
+
+      const cardVariantIds = new Set(
+        cardRows.map((row) => String(row.variant_id))
       )
 
-      const cardSizes = sortVariantValues(cardVariants.map((variant) => variant.size))
+      const cardVariants = variants.filter((variant) =>
+        (variant.variant_ids || []).some((variantId) =>
+          cardVariantIds.has(String(variantId))
+        )
+      )
+
+      const cardSizes = sortVariantValues(
+        cardVariants.map((variant) => variant.size)
+      )
+
       const cardBarcodes = uniqueValues(
-        cardVariants.map((variant) => variant.barcode || variant.ean_code)
+        cardVariants.flatMap((variant) => variant.barcodes || [])
+      )
+
+      const cardVariantIdsList = uniqueValues(
+        cardVariants.flatMap((variant) => variant.variant_ids || [])
+      )
+
+      const stockSources = cardVariants.flatMap(
+        (variant) => variant.stock_sources || []
       )
 
       const totalOnHand = cardVariants.reduce(
@@ -1081,7 +1254,11 @@ function groupStockRows(rows) {
         0
       )
 
-      const selectedColour = colourGroup.colour || selected.colour || ''
+      const selectedColour =
+        colourGroup.colour ||
+        selected.colour ||
+        ''
+
       const selectedImages = normalizeImages(imageRow.images)
 
       groupedProducts.push({
@@ -1092,6 +1269,8 @@ function groupStockRows(rows) {
         primaryVariantId: selected.variant_id,
         variant_id: selected.variant_id,
         variantId: selected.variant_id,
+        variant_ids: cardVariantIdsList,
+        variantIds: cardVariantIdsList,
         product_name: group.product_name,
         productName: group.product_name,
         name: group.product_name,
@@ -1205,6 +1384,8 @@ function groupStockRows(rows) {
         totalCount: totalOnHand,
         in_stock: totalAvailable > 0,
         inStock: totalAvailable > 0,
+        stock_sources: stockSources,
+        stockSources,
         image_url: imageRow.image_url || '',
         imageUrl: imageRow.image_url || '',
         front_image_url: imageRow.front_image_url || '',
@@ -1214,13 +1395,13 @@ function groupStockRows(rows) {
         main_image_url: imageRow.main_image_url || '',
         mainImageUrl: imageRow.main_image_url || '',
         images: selectedImages,
-        variant_count: group.variants.length,
-        variantCount: group.variants.length,
+        variant_count: variants.length,
+        variantCount: variants.length,
         color_variant_count: cardVariants.length,
         colorVariantCount: cardVariants.length,
         card_group_index: 0,
         cardGroupIndex: 0,
-        variants: group.variants,
+        variants,
         color_variants: cardVariants,
         colorVariants: cardVariants
       })
@@ -1234,9 +1415,7 @@ function groupStockRows(rows) {
       { numeric: true }
     )
 
-    if (categoryCompare !== 0) {
-      return categoryCompare
-    }
+    if (categoryCompare !== 0) return categoryCompare
 
     const brandCompare = String(a.brand_name || '').localeCompare(
       String(b.brand_name || ''),
@@ -1244,9 +1423,7 @@ function groupStockRows(rows) {
       { numeric: true }
     )
 
-    if (brandCompare !== 0) {
-      return brandCompare
-    }
+    if (brandCompare !== 0) return brandCompare
 
     const nameCompare = String(a.product_name || '').localeCompare(
       String(b.product_name || ''),
@@ -1254,9 +1431,7 @@ function groupStockRows(rows) {
       { numeric: true }
     )
 
-    if (nameCompare !== 0) {
-      return nameCompare
-    }
+    if (nameCompare !== 0) return nameCompare
 
     const colourCompare = String(a.colour || '').localeCompare(
       String(b.colour || ''),
@@ -1264,9 +1439,7 @@ function groupStockRows(rows) {
       { numeric: true }
     )
 
-    if (colourCompare !== 0) {
-      return colourCompare
-    }
+    if (colourCompare !== 0) return colourCompare
 
     return String(a.variant_id || '').localeCompare(
       String(b.variant_id || ''),
@@ -1284,18 +1457,14 @@ router.get('/:branchId/import-jobs', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   try {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureImportRowsTable()
@@ -1351,9 +1520,7 @@ router.get('/:branchId/import-rows', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null
@@ -1365,9 +1532,7 @@ router.get('/:branchId/import-rows', async (req, res) => {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureImportRowsTable()
@@ -1400,9 +1565,7 @@ router.get('/:branchId/import-rows', async (req, res) => {
       )
 
       if (!result.rows.length) {
-        return res.status(404).json({
-          message: 'Job not found'
-        })
+        return res.status(404).json({ message: 'Job not found' })
       }
 
       job = result.rows[0]
@@ -1514,15 +1677,11 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   if (!req.file) {
-    return res.status(400).json({
-      message: 'File required'
-    })
+    return res.status(400).json({ message: 'File required' })
   }
 
   const gender = normGender(req.body?.gender)
@@ -1540,9 +1699,7 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureImportRowsTable()
@@ -1569,9 +1726,7 @@ router.post('/:branchId/import', upload.single('file'), async (req, res) => {
     const worksheetName = workbook.SheetNames?.[0]
 
     if (!worksheetName) {
-      return res.status(400).json({
-        message: 'No worksheet in file'
-      })
+      return res.status(400).json({ message: 'No worksheet in file' })
     }
 
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[worksheetName], {
@@ -1691,17 +1846,13 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   const jobId = parsePositiveInt(req.params.jobId)
 
   if (!jobId) {
-    return res.status(400).json({
-      message: 'Invalid jobId'
-    })
+    return res.status(400).json({ message: 'Invalid jobId' })
   }
 
   const requestedLimit = parseInt(
@@ -1717,9 +1868,7 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureImportRowsTable()
@@ -1754,9 +1903,7 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
     )
 
     if (!jobResult.rows.length) {
-      return res.status(404).json({
-        message: 'Job not found'
-      })
+      return res.status(404).json({ message: 'Job not found' })
     }
 
     const job = jobResult.rows[0]
@@ -1865,7 +2012,7 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
           !prepared.BrandName ||
           !prepared.SIZE ||
           !prepared.COLOUR ||
-          !prepared.Barcode
+          !prepared.Barcodes.length
         ) {
           const message =
             'Missing required fields (ProductName/BrandName/SIZE/COLOUR/Barcode)'
@@ -1944,29 +2091,53 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
 
           const productId = productResult.rows[0].id
 
-          const existingBarcode = await client.query(
+          const logicalVariantResult = await client.query(
+            `
+              SELECT id
+              FROM product_variants
+              WHERE product_id = $1
+                AND LOWER(TRIM(COALESCE(size, ''))) =
+                    LOWER(TRIM(COALESCE($2, '')))
+                AND LOWER(TRIM(COALESCE(colour, ''))) =
+                    LOWER(TRIM(COALESCE($3, '')))
+              ORDER BY
+                CASE WHEN is_active = TRUE THEN 0 ELSE 1 END,
+                id ASC
+              LIMIT 1
+              FOR UPDATE
+            `,
+            [
+              productId,
+              prepared.SIZE,
+              prepared.COLOUR
+            ]
+          )
+
+          const barcodeVariantResult = await client.query(
             `
               SELECT
-                id,
-                variant_id
-              FROM barcodes
+                b.id,
+                b.variant_id,
+                b.ean_code
+              FROM barcodes b
               WHERE REGEXP_REPLACE(
-                UPPER(TRIM(ean_code)),
+                UPPER(TRIM(b.ean_code)),
                 '[^A-Z0-9._-]',
                 '',
                 'g'
-              ) = $1
-              ORDER BY id ASC
-              LIMIT 1
+              ) = ANY($1::text[])
+              ORDER BY b.id ASC
+              FOR UPDATE
             `,
-            [prepared.Barcode]
+            [prepared.Barcodes]
           )
 
-          let variantId
+          let variantId =
+            logicalVariantResult.rows[0]?.id ||
+            barcodeVariantResult.rows[0]?.variant_id ||
+            null
 
-          if (existingBarcode.rowCount) {
-            variantId = existingBarcode.rows[0].variant_id
-
+          if (variantId) {
             await client.query(
               `
                 UPDATE product_variants
@@ -2039,18 +2210,64 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
             )
 
             variantId = variantResult.rows[0].id
-
-            await client.query(
-              `
-                INSERT INTO barcodes (
-                  variant_id,
-                  ean_code
-                )
-                VALUES ($1, $2)
-              `,
-              [variantId, prepared.Barcode]
-            )
           }
+
+          for (const barcode of prepared.Barcodes) {
+            const barcodeUpdateResult = await client.query(
+              `
+                UPDATE barcodes
+                SET variant_id = $1
+                WHERE REGEXP_REPLACE(
+                  UPPER(TRIM(ean_code)),
+                  '[^A-Z0-9._-]',
+                  '',
+                  'g'
+                ) = $2
+                RETURNING id
+              `,
+              [variantId, barcode]
+            )
+
+            if (!barcodeUpdateResult.rowCount) {
+              await client.query(
+                `
+                  INSERT INTO barcodes (
+                    variant_id,
+                    ean_code
+                  )
+                  VALUES ($1, $2)
+                `,
+                [variantId, barcode]
+              )
+            }
+          }
+
+          await client.query(
+            `
+              UPDATE branch_variant_stock bvs
+              SET
+                on_hand = 0,
+                reserved = 0,
+                is_active = FALSE,
+                updated_at = NOW()
+              FROM product_variants duplicate_variant
+              WHERE duplicate_variant.id = bvs.variant_id
+                AND bvs.branch_id = $1
+                AND duplicate_variant.product_id = $2
+                AND LOWER(TRIM(COALESCE(duplicate_variant.size, ''))) =
+                    LOWER(TRIM(COALESCE($3, '')))
+                AND LOWER(TRIM(COALESCE(duplicate_variant.colour, ''))) =
+                    LOWER(TRIM(COALESCE($4, '')))
+                AND duplicate_variant.id <> $5
+            `,
+            [
+              branchId,
+              productId,
+              prepared.SIZE,
+              prepared.COLOUR,
+              variantId
+            ]
+          )
 
           await client.query(
             `
@@ -2085,7 +2302,11 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
                 is_active = TRUE,
                 updated_at = NOW()
             `,
-            [branchId, variantId, prepared.PurchaseQty]
+            [
+              branchId,
+              variantId,
+              prepared.PurchaseQty
+            ]
           )
 
           await client.query(
@@ -2192,7 +2413,13 @@ router.post('/:branchId/import/process/:jobId', async (req, res) => {
             END
         WHERE id = $5
       `,
-      [job.rows_total || 0, okCount, errorCount, finalStatus, jobId]
+      [
+        job.rows_total || 0,
+        okCount,
+        errorCount,
+        finalStatus,
+        jobId
+      ]
     )
 
     const errorCounts = Array.from(errorMap.entries())
@@ -2224,26 +2451,22 @@ router.post('/:branchId/images/confirm', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
-  const images = Array.isArray(req.body?.images) ? req.body.images : []
+  const images = Array.isArray(req.body?.images)
+    ? req.body.images
+    : []
 
   if (!images.length) {
-    return res.status(400).json({
-      message: 'No images'
-    })
+    return res.status(400).json({ message: 'No images' })
   }
 
   try {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureProductImagesTable()
@@ -2258,33 +2481,33 @@ router.post('/:branchId/images/confirm', async (req, res) => {
       for (const image of images) {
         const directBarcode = normalizeBarcode(
           image.barcode ||
-            image.ean_code ||
-            image.ean ||
-            ''
+          image.ean_code ||
+          image.ean ||
+          ''
         )
 
         const fallbackBarcode = extractBarcodeFromName(
           image.original_filename ||
-            image.public_id ||
-            ''
+          image.public_id ||
+          ''
         )
 
         const barcode = directBarcode || fallbackBarcode
 
         const imageType = normalizeImageType(
           image.image_type ||
-            extractImageTypeFromName(
-              image.original_filename ||
-                image.public_id ||
-                ''
-            )
+          extractImageTypeFromName(
+            image.original_filename ||
+            image.public_id ||
+            ''
+          )
         )
 
         const imageUrl = String(
           image.secure_url ||
-            image.url ||
-            image.image_url ||
-            ''
+          image.url ||
+          image.image_url ||
+          ''
         ).trim()
 
         const publicId = String(image.public_id || '').trim()
@@ -2410,7 +2633,12 @@ router.post('/:branchId/images/confirm', async (req, res) => {
               public_id = EXCLUDED.public_id,
               uploaded_at = NOW()
           `,
-          [matched.ean_code, imageType, imageUrl, publicId || null]
+          [
+            matched.ean_code,
+            imageType,
+            imageUrl,
+            publicId || null
+          ]
         )
 
         if (imageType === 'front' || imageType === 'main') {
@@ -2472,9 +2700,7 @@ router.get('/:branchId/stock', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   const gender = normGender(req.query?.gender)
@@ -2484,9 +2710,7 @@ router.get('/:branchId/stock', async (req, res) => {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await ensureProductImagesTable()
@@ -2763,7 +2987,11 @@ router.get('/:branchId/stock', async (req, res) => {
                 id
             ) AS images
           FROM product_images pi
-          WHERE pi.ean_code = bc.ean_code
+          WHERE pi.ean_code IN (
+            SELECT barcode.ean_code
+            FROM barcodes barcode
+            WHERE barcode.variant_id = v.id
+          )
         ) imgs ON TRUE
         WHERE ${whereClause}
         ORDER BY
@@ -2790,18 +3018,14 @@ router.get('/:branchId/discounts', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   try {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     const result = await pool.query(
@@ -2858,9 +3082,7 @@ router.post('/:branchId/discounts', async (req, res) => {
   const branchId = parseBranchId(req)
 
   if (!branchId) {
-    return res.status(400).json({
-      message: 'Invalid branchId'
-    })
+    return res.status(400).json({ message: 'Invalid branchId' })
   }
 
   const b2cDiscount = Number(req.body?.b2c_discount_pct)
@@ -2883,9 +3105,7 @@ router.post('/:branchId/discounts', async (req, res) => {
     const branchExists = await ensureBranchExists(branchId)
 
     if (!branchExists) {
-      return res.status(404).json({
-        message: 'Branch not found'
-      })
+      return res.status(404).json({ message: 'Branch not found' })
     }
 
     await pool.query(
