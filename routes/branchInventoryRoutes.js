@@ -17,84 +17,22 @@ const HEADER_ALIASES = {
   brandname: ['brand', 'brand name', 'brandname'],
   costprice: ['cost', 'purchase cost', 'costprice'],
   purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty'],
-  barcode: [
-    'barcode',
-    'bar code',
-    'bar-code',
-    'barcode number',
-    'barcode no',
-    'sku',
-    'sku code',
-    'ean',
-    'ean code',
-    'eancode'
-  ],
+  barcode: ['barcode', 'bar code', 'bar-code', 'barcode number', 'barcode no', 'sku', 'sku code', 'ean', 'ean code', 'eancode'],
   mrp: ['mrp', 'retail mrp'],
-  rsaleprice: [
-    'retailprice',
-    'saleprice',
-    'sale price',
-    'retail price',
-    'rsp',
-    'rsaleprice'
-  ],
+  rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
   markcode: ['mark code', 'mark', 'marking', 'markcode'],
   size: ['size'],
   colour: ['colour', 'color'],
   pattern: ['pattern code', 'style', 'style code', 'pattern'],
   fitt: ['fit', 'fit type', 'fitt'],
-  b2cdiscount: [
-    'b2cdiscount',
-    'b2c discount',
-    'discount_b2c',
-    'b2c disc',
-    'b2c_disc'
-  ],
-  b2bdiscount: [
-    'b2bdiscount',
-    'b2b discount',
-    'discount_b2b',
-    'b2b disc',
-    'b2b_disc'
-  ]
+  b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc'],
+  b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 }
 
-const ALL_CATEGORY_PATHS_CTE = `
-  WITH RECURSIVE category_paths AS (
-    SELECT
-      c.id,
-      c.parent_id,
-      c.gender,
-      c.name,
-      c.slug,
-      c.level,
-      c.is_active,
-      c.name::text AS category_path
-    FROM product_categories c
-    WHERE c.parent_id IS NULL
-
-    UNION ALL
-
-    SELECT
-      c.id,
-      c.parent_id,
-      c.gender,
-      c.name,
-      c.slug,
-      c.level,
-      c.is_active,
-      category_paths.category_path || ' > ' || c.name
-    FROM product_categories c
-    JOIN category_paths
-      ON category_paths.id = c.parent_id
-  )
-`
+const ALL_CATEGORY_PATHS_CTE = `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.gender, c.name, c.slug, c.level, c.is_active, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.gender, c.name, c.slug, c.level, c.is_active, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id)`
 
 function noStore(res) {
-  res.set(
-    'Cache-Control',
-    'no-store, no-cache, must-revalidate, proxy-revalidate'
-  )
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
   res.set('Pragma', 'no-cache')
   res.set('Expires', '0')
 }
@@ -110,11 +48,7 @@ function parsePositiveInt(value) {
 }
 
 async function ensureBranchExists(branchId) {
-  const result = await pool.query(
-    'SELECT id FROM branches WHERE id = $1 LIMIT 1',
-    [branchId]
-  )
-
+  const result = await pool.query('SELECT id FROM branches WHERE id = $1 LIMIT 1', [branchId])
   return result.rows.length > 0
 }
 
@@ -136,22 +70,6 @@ function normalizeBarcode(value) {
     .replace(/[^A-Z0-9._-]/g, '')
 }
 
-function uniqueBarcodes(values) {
-  const seen = new Set()
-  const output = []
-
-  for (const value of Array.isArray(values) ? values : []) {
-    const barcode = normalizeBarcode(value)
-
-    if (!barcode || seen.has(barcode)) continue
-
-    seen.add(barcode)
-    output.push(barcode)
-  }
-
-  return output
-}
-
 function normalizeImageType(value) {
   const normalized = String(value || '')
     .toLowerCase()
@@ -166,15 +84,9 @@ function normalizeImageType(value) {
 }
 
 function baseNameNoExt(name) {
-  const fileName =
-    String(name || '').split('/').pop() ||
-    String(name || '')
-
+  const fileName = String(name || '').split('/').pop() || String(name || '')
   const extensionIndex = fileName.lastIndexOf('.')
-
-  return extensionIndex > 0
-    ? fileName.slice(0, extensionIndex)
-    : fileName
+  return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName
 }
 
 function extractBarcodeFromName(name) {
@@ -197,9 +109,7 @@ function extractImageTypeFromName(name) {
   const base = baseNameNoExt(name)
 
   if (base.includes('__')) {
-    return normalizeImageType(
-      base.split('__').slice(1).join('__')
-    )
+    return normalizeImageType(base.split('__').slice(1).join('__'))
   }
 
   const dotMatch = base.match(/^(.+)\.(front|back|main)$/i)
@@ -219,164 +129,60 @@ function normalizeRow(raw) {
   }
 
   for (const canonicalName of Object.keys(HEADER_ALIASES)) {
-    if (
-      normalized[canonicalName] != null &&
-      normalized[canonicalName] !== ''
-    ) {
+    if (normalized[canonicalName] != null && normalized[canonicalName] !== '') {
       continue
     }
 
     for (const alias of HEADER_ALIASES[canonicalName]) {
-      const normalizedAlias = String(alias)
-        .trim()
-        .toLowerCase()
+      const normalizedAlias = String(alias).trim().toLowerCase()
 
-      if (
-        normalized[normalizedAlias] != null &&
-        normalized[normalizedAlias] !== ''
-      ) {
-        normalized[canonicalName] =
-          normalized[normalizedAlias]
-
+      if (normalized[normalizedAlias] != null && normalized[normalizedAlias] !== '') {
+        normalized[canonicalName] = normalized[normalizedAlias]
         break
       }
     }
   }
 
-  if (!normalized.productname && raw?.__EMPTY) {
-    normalized.productname = raw.__EMPTY
-  }
-
-  if (!normalized.brandname && raw?.__EMPTY_1) {
-    normalized.brandname = raw.__EMPTY_1
-  }
-
-  if (
-    normalized.purchaseqty == null &&
-    raw?.__EMPTY_2 != null
-  ) {
-    normalized.purchaseqty = raw.__EMPTY_2
-  }
-
-  if (!normalized.barcode && raw?.__EMPTY_3) {
-    normalized.barcode = raw.__EMPTY_3
-  }
-
-  if (
-    normalized.mrp == null &&
-    raw?.__EMPTY_4 != null
-  ) {
-    normalized.mrp = raw.__EMPTY_4
-  }
-
-  if (!normalized.size && raw?.__EMPTY_5) {
-    normalized.size = raw.__EMPTY_5
-  }
-
-  if (!normalized.colour && raw?.__EMPTY_6) {
-    normalized.colour = raw.__EMPTY_6
-  }
-
-  if (!normalized.pattern && raw?.__EMPTY_7) {
-    normalized.pattern = raw.__EMPTY_7
-  }
+  if (!normalized.productname && raw?.__EMPTY) normalized.productname = raw.__EMPTY
+  if (!normalized.brandname && raw?.__EMPTY_1) normalized.brandname = raw.__EMPTY_1
+  if (normalized.purchaseqty == null && raw?.__EMPTY_2 != null) normalized.purchaseqty = raw.__EMPTY_2
+  if (!normalized.barcode && raw?.__EMPTY_3) normalized.barcode = raw.__EMPTY_3
+  if (normalized.mrp == null && raw?.__EMPTY_4 != null) normalized.mrp = raw.__EMPTY_4
+  if (!normalized.size && raw?.__EMPTY_5) normalized.size = raw.__EMPTY_5
+  if (!normalized.colour && raw?.__EMPTY_6) normalized.colour = raw.__EMPTY_6
+  if (!normalized.pattern && raw?.__EMPTY_7) normalized.pattern = raw.__EMPTY_7
 
   return normalized
 }
 
 function toNumOrNull(value) {
   if (value === '' || value == null) return null
-
-  const parsed = parseFloat(
-    String(value).replace(/[₹, ]+/g, '')
-  )
-
+  const parsed = parseFloat(String(value).replace(/[₹, ]+/g, ''))
   return Number.isFinite(parsed) ? parsed : null
 }
 
 function toIntOrZero(value) {
-  const parsed = parseInt(
-    String(value).replace(/[₹, ]+/g, ''),
-    10
-  )
-
+  const parsed = parseInt(String(value).replace(/[₹, ]+/g, ''), 10)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
 function normGender(value) {
-  const normalized = String(value || '')
-    .trim()
-    .toUpperCase()
+  const normalized = String(value || '').trim().toUpperCase()
 
-  if (
-    normalized === 'MEN' ||
-    normalized === 'WOMEN' ||
-    normalized === 'KIDS'
-  ) {
-    return normalized
-  }
-
-  if (
-    normalized === 'MAN' ||
-    normalized === 'MALE' ||
-    normalized === 'MENS' ||
-    normalized === "MEN'S"
-  ) {
-    return 'MEN'
-  }
-
-  if (
-    normalized === 'WOMAN' ||
-    normalized === 'FEMALE' ||
-    normalized === 'LADIES' ||
-    normalized === 'WOMENS' ||
-    normalized === "WOMEN'S"
-  ) {
-    return 'WOMEN'
-  }
-
-  if (
-    normalized === 'CHILD' ||
-    normalized === 'CHILDREN' ||
-    normalized === 'BOYS' ||
-    normalized === 'GIRLS' ||
-    normalized === 'KID'
-  ) {
-    return 'KIDS'
-  }
+  if (['MEN', 'WOMEN', 'KIDS'].includes(normalized)) return normalized
+  if (['MAN', 'MALE', 'MENS', "MEN'S"].includes(normalized)) return 'MEN'
+  if (['WOMAN', 'FEMALE', 'LADIES', 'WOMENS', "WOMEN'S"].includes(normalized)) return 'WOMEN'
+  if (['CHILD', 'CHILDREN', 'BOYS', 'GIRLS', 'KID'].includes(normalized)) return 'KIDS'
 
   return ''
 }
 
-function isSummaryOrBlankRow(
-  raw,
-  productName,
-  brandName,
-  size,
-  colour,
-  row
-) {
-  const summary = cleanText(
-    raw?.['Stock Summary'] ||
-    raw?.['stock summary'] ||
-    ''
-  )
+function isSummaryOrBlankRow(raw, productName, brandName, size, colour, row) {
+  const summary = cleanText(raw?.['Stock Summary'] || raw?.['stock summary'] || '')
+  const allMainEmpty = !productName && !brandName && !size && !colour
+  const hasAnyDataField = cleanText(row.barcode) || toNumOrNull(row.mrp) != null || toNumOrNull(row.rsaleprice) != null || toIntOrZero(row.purchaseqty) !== 0
 
-  const allMainEmpty =
-    !productName &&
-    !brandName &&
-    !size &&
-    !colour
-
-  const hasAnyDataField =
-    cleanText(row.barcode) ||
-    toNumOrNull(row.mrp) != null ||
-    toNumOrNull(row.rsaleprice) != null ||
-    toIntOrZero(row.purchaseqty) !== 0
-
-  if (allMainEmpty && !hasAnyDataField) {
-    return true
-  }
+  if (allMainEmpty && !hasAnyDataField) return true
 
   const normalizedSummary = summary.toLowerCase()
 
@@ -404,44 +210,19 @@ function isDefaultText(value) {
     '₹0.0'
   ])
 
-  if (blockedValues.has(normalized)) {
-    return true
-  }
+  if (blockedValues.has(normalized)) return true
 
-  return [
-    'inclusive of all taxes',
-    'new in'
-  ].some((text) => normalized.includes(text))
+  return ['inclusive of all taxes', 'new in'].some(text => normalized.includes(text))
 }
 
-function shouldSkipBusinessRow(
-  productName,
-  brandName,
-  mrp,
-  salePrice
-) {
-  const normalizedMrp =
-    mrp == null ? null : Number(mrp)
-
-  const normalizedSalePrice =
-    salePrice == null ? null : Number(salePrice)
-
-  const bothZero =
-    (
-      normalizedMrp === 0 ||
-      normalizedMrp === null
-    ) &&
-    (
-      normalizedSalePrice === 0 ||
-      normalizedSalePrice === null
-    )
+function shouldSkipBusinessRow(productName, brandName, mrp, salePrice) {
+  const normalizedMrp = mrp == null ? null : Number(mrp)
+  const normalizedSalePrice = salePrice == null ? null : Number(salePrice)
+  const bothZero = (normalizedMrp === 0 || normalizedMrp === null) && (normalizedSalePrice === 0 || normalizedSalePrice === null)
 
   if (!bothZero) return false
 
-  return (
-    isDefaultText(productName) ||
-    isDefaultText(brandName)
-  )
+  return isDefaultText(productName) || isDefaultText(brandName)
 }
 
 let importSchemaPromise = null
@@ -449,215 +230,56 @@ let productImagesSchemaPromise = null
 
 async function ensureImportRowsTable() {
   if (!importSchemaPromise) {
-    importSchemaPromise =
-      initializeImportRowsTable().catch((error) => {
-        importSchemaPromise = null
-        throw error
-      })
+    importSchemaPromise = initializeImportRowsTable().catch(error => {
+      importSchemaPromise = null
+      throw error
+    })
   }
 
   return importSchemaPromise
 }
 
 async function initializeImportRowsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS import_rows (
-      id BIGSERIAL PRIMARY KEY,
-      import_job_id BIGINT NOT NULL
-        REFERENCES import_jobs(id)
-        ON DELETE CASCADE,
-      raw_row_json JSONB NOT NULL,
-      status_enum TEXT,
-      error_msg TEXT
-    )
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_rows
-    ADD COLUMN IF NOT EXISTS created_at
-    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_rows
-    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_rows
-    ADD COLUMN IF NOT EXISTS raw_row_json JSONB
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_rows
-    ADD COLUMN IF NOT EXISTS error_msg TEXT
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_rows
-    ADD COLUMN IF NOT EXISTS category_id BIGINT
-    REFERENCES product_categories(id)
-    ON DELETE SET NULL
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_jobs
-    ADD COLUMN IF NOT EXISTS category_id BIGINT
-    REFERENCES product_categories(id)
-    ON DELETE SET NULL
-  `)
-
-  await pool.query(`
-    ALTER TABLE import_jobs
-    ADD COLUMN IF NOT EXISTS worksheet_name TEXT
-  `)
-
-  await pool.query(`
-    ALTER TABLE products
-    ADD COLUMN IF NOT EXISTS category_id BIGINT
-    REFERENCES product_categories(id)
-    ON DELETE SET NULL
-  `)
-
-  await pool.query(`
-    ALTER TABLE products
-    DROP CONSTRAINT IF EXISTS
-    products_name_brand_name_pattern_code_gender_key
-  `)
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS
-    uq_products_name_brand_pattern_gender_category
-    ON products (
-      name,
-      brand_name,
-      pattern_code,
-      gender,
-      category_id
-    )
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_rows_job_status_id
-    ON import_rows (
-      import_job_id,
-      status_enum,
-      id
-    )
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_jobs_branch_uploaded_id
-    ON import_jobs (
-      branch_id,
-      id DESC
-    )
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_import_jobs_category_id
-    ON import_jobs(category_id)
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_products_category_id
-    ON products(category_id)
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_barcodes_variant_id
-    ON barcodes(variant_id)
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_branch_variant_stock_branch_active
-    ON branch_variant_stock(
-      branch_id,
-      is_active,
-      variant_id
-    )
-  `)
+  await pool.query(`CREATE TABLE IF NOT EXISTS import_rows (id BIGSERIAL PRIMARY KEY, import_job_id BIGINT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE, raw_row_json JSONB NOT NULL, status_enum TEXT, error_msg TEXT)`)
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`)
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS raw_row_json JSONB`)
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS error_msg TEXT`)
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES product_categories(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES product_categories(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS worksheet_name TEXT`)
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES product_categories(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE products DROP CONSTRAINT IF EXISTS products_name_brand_name_pattern_code_gender_key`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_products_name_brand_pattern_gender_category ON products (name, brand_name, pattern_code, gender, category_id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows (import_job_id, status_enum, id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_branch_uploaded_id ON import_jobs (branch_id, id DESC)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_category_id ON import_jobs(category_id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_barcodes_variant_id ON barcodes(variant_id)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_branch_variant_stock_branch_active ON branch_variant_stock(branch_id, is_active, variant_id)`)
 }
 
 async function ensureProductImagesTable() {
   if (!productImagesSchemaPromise) {
-    productImagesSchemaPromise =
-      initializeProductImagesTable().catch((error) => {
-        productImagesSchemaPromise = null
-        throw error
-      })
+    productImagesSchemaPromise = initializeProductImagesTable().catch(error => {
+      productImagesSchemaPromise = null
+      throw error
+    })
   }
 
   return productImagesSchemaPromise
 }
 
 async function initializeProductImagesTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS product_images (
-      id BIGSERIAL PRIMARY KEY,
-      ean_code TEXT NOT NULL,
-      image_type TEXT NOT NULL,
-      image_url TEXT NOT NULL,
-      public_id TEXT,
-      uploaded_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `)
-
-  await pool.query(`
-    ALTER TABLE product_images
-    ADD COLUMN IF NOT EXISTS ean_code TEXT
-  `)
-
-  await pool.query(`
-    ALTER TABLE product_images
-    ADD COLUMN IF NOT EXISTS image_type
-    TEXT NOT NULL DEFAULT 'main'
-  `)
-
-  await pool.query(`
-    ALTER TABLE product_images
-    ADD COLUMN IF NOT EXISTS image_url TEXT
-  `)
-
-  await pool.query(`
-    ALTER TABLE product_images
-    ADD COLUMN IF NOT EXISTS public_id TEXT
-  `)
-
-  await pool.query(`
-    ALTER TABLE product_images
-    ADD COLUMN IF NOT EXISTS uploaded_at
-    TIMESTAMPTZ DEFAULT NOW()
-  `)
-
-  await pool.query(`
-    DELETE FROM product_images a
-    USING product_images b
-    WHERE a.ctid < b.ctid
-      AND a.ean_code = b.ean_code
-      AND a.image_type = b.image_type
-  `)
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS
-    product_images_ean_code_image_type_key
-    ON product_images(
-      ean_code,
-      image_type
-    )
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS
-    idx_product_images_ean_code
-    ON product_images(ean_code)
-  `)
+  await pool.query(`CREATE TABLE IF NOT EXISTS product_images (id BIGSERIAL PRIMARY KEY, ean_code TEXT NOT NULL, image_type TEXT NOT NULL, image_url TEXT NOT NULL, public_id TEXT, uploaded_at TIMESTAMPTZ DEFAULT NOW())`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS ean_code TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_type TEXT NOT NULL DEFAULT 'main'`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_url TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS public_id TEXT`)
+  await pool.query(`ALTER TABLE product_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ DEFAULT NOW()`)
+  await pool.query(`DELETE FROM product_images a USING product_images b WHERE a.ctid < b.ctid AND a.ean_code = b.ean_code AND a.image_type = b.image_type`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS product_images_ean_code_image_type_key ON product_images(ean_code, image_type)`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_images_ean_code ON product_images(ean_code)`)
 }
 
 async function validateCategory(categoryId, gender) {
@@ -665,326 +287,55 @@ async function validateCategory(categoryId, gender) {
 
   if (!id) return null
 
-  const result = await pool.query(
-    `
-      WITH RECURSIVE category_tree AS (
-        SELECT
-          c.id,
-          c.parent_id,
-          c.gender,
-          c.name,
-          c.slug,
-          c.level,
-          c.name::text AS category_path
-        FROM product_categories c
-        WHERE c.parent_id IS NULL
-          AND c.is_active = TRUE
-
-        UNION ALL
-
-        SELECT
-          c.id,
-          c.parent_id,
-          c.gender,
-          c.name,
-          c.slug,
-          c.level,
-          category_tree.category_path ||
-          ' > ' ||
-          c.name
-        FROM product_categories c
-        JOIN category_tree
-          ON category_tree.id = c.parent_id
-        WHERE c.is_active = TRUE
-      )
-      SELECT
-        c.id,
-        c.parent_id,
-        c.gender,
-        c.name,
-        c.slug,
-        c.level,
-        c.category_path
-      FROM category_tree c
-      WHERE c.id = $1
-        AND c.gender = $2
-        AND NOT EXISTS (
-          SELECT 1
-          FROM product_categories child
-          WHERE child.parent_id = c.id
-            AND child.is_active = TRUE
-        )
-      LIMIT 1
-    `,
-    [id, gender]
-  )
+  const result = await pool.query(`WITH RECURSIVE category_tree AS (SELECT c.id, c.parent_id, c.gender, c.name, c.slug, c.level, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL AND c.is_active = TRUE UNION ALL SELECT c.id, c.parent_id, c.gender, c.name, c.slug, c.level, category_tree.category_path || ' > ' || c.name FROM product_categories c JOIN category_tree ON category_tree.id = c.parent_id WHERE c.is_active = TRUE) SELECT c.id, c.parent_id, c.gender, c.name, c.slug, c.level, c.category_path FROM category_tree c WHERE c.id = $1 AND c.gender = $2 AND NOT EXISTS (SELECT 1 FROM product_categories child WHERE child.parent_id = c.id AND child.is_active = TRUE) LIMIT 1`, [id, gender])
 
   return result.rows[0] || null
 }
 
-async function findImportBarcodeConflicts(
-  preparedRows,
-  categoryId,
-  gender
-) {
-  const sourceByBarcode = new Map()
-
-  for (const item of preparedRows) {
-    if (item.error_msg) continue
-
-    const prepared = rowToPreparedRecord(item.raw)
-
-    if (!prepared.Barcode) continue
-
-    sourceByBarcode.set(
-      prepared.Barcode,
-      prepared
-    )
-  }
-
-  const barcodes =
-    Array.from(sourceByBarcode.keys())
-
-  if (!barcodes.length) return []
-
-  const result = await pool.query(
-    `
-      WITH RECURSIVE category_paths AS (
-        SELECT
-          c.id,
-          c.parent_id,
-          c.name,
-          c.name::text AS category_path
-        FROM product_categories c
-        WHERE c.parent_id IS NULL
-
-        UNION ALL
-
-        SELECT
-          c.id,
-          c.parent_id,
-          c.name,
-          category_paths.category_path ||
-          ' > ' ||
-          c.name
-        FROM product_categories c
-        JOIN category_paths
-          ON category_paths.id = c.parent_id
-      )
-      SELECT
-        REGEXP_REPLACE(
-          UPPER(TRIM(b.ean_code)),
-          '[^A-Z0-9._-]',
-          '',
-          'g'
-        ) AS barcode,
-        b.ean_code,
-        b.variant_id,
-        v.product_id,
-        p.name AS product_name,
-        p.brand_name,
-        p.gender,
-        p.category_id,
-        cp.category_path
-      FROM barcodes b
-      JOIN product_variants v
-        ON v.id = b.variant_id
-      JOIN products p
-        ON p.id = v.product_id
-      LEFT JOIN category_paths cp
-        ON cp.id = p.category_id
-      WHERE REGEXP_REPLACE(
-        UPPER(TRIM(b.ean_code)),
-        '[^A-Z0-9._-]',
-        '',
-        'g'
-      ) = ANY($1::text[])
-      ORDER BY b.id ASC
-    `,
-    [barcodes]
-  )
-
-  const conflicts = []
-
-  for (const existing of result.rows) {
-    const prepared =
-      sourceByBarcode.get(existing.barcode)
-
-    if (!prepared) continue
-
-    const categoryMismatch =
-      Number(existing.category_id) !==
-      Number(categoryId)
-
-    const genderMismatch =
-      normGender(existing.gender) !== gender
-
-    const productMismatch =
-      normalizeLogicalText(
-        existing.product_name
-      ) !==
-      normalizeLogicalText(
-        prepared.ProductName
-      )
-
-    const brandMismatch =
-      normalizeLogicalText(
-        existing.brand_name
-      ) !==
-      normalizeLogicalText(
-        prepared.BrandName
-      )
-
-    if (
-      !categoryMismatch &&
-      !genderMismatch &&
-      !productMismatch &&
-      !brandMismatch
-    ) {
-      continue
-    }
-
-    conflicts.push({
-      barcode: existing.ean_code,
-      incoming_product:
-        prepared.ProductName,
-      incoming_brand:
-        prepared.BrandName,
-      selected_gender:
-        gender,
-      selected_category_id:
-        categoryId,
-      existing_product_id:
-        existing.product_id,
-      existing_product:
-        existing.product_name,
-      existing_brand:
-        existing.brand_name,
-      existing_gender:
-        existing.gender,
-      existing_category_id:
-        existing.category_id,
-      existing_category_path:
-        existing.category_path
-    })
-  }
-
-  return conflicts
-}
-
 function rowToPreparedRecord(raw) {
   const row = normalizeRow(raw)
-
-  const productName =
-    cleanText(row.productname)
-
-  const brandName =
-    cleanText(row.brandname)
-
-  const size =
-    cleanText(row.size)
-
-  const colour =
-    cleanText(row.colour)
-
-  const pattern =
-    cleanText(row.pattern) || ''
-
-  const fit =
-    cleanText(row.fitt) || null
-
-  const markCode =
-    cleanText(row.markcode) || null
-
-  const mrp =
-    toNumOrNull(row.mrp)
-
-  const salePrice =
-    toNumOrNull(row.rsaleprice)
-
-  const costPrice =
-    toNumOrNull(row.costprice) ?? 0
-
-  const purchaseQty = Math.max(
-    0,
-    toIntOrZero(row.purchaseqty)
-  )
-
-  const b2cDiscount =
-    toNumOrNull(row.b2cdiscount) ?? 0
-
-  const b2bDiscount =
-    toNumOrNull(row.b2bdiscount) ?? 0
-
-  const barcode =
-    normalizeBarcode(row.barcode)
-
-  const barcodes =
-    barcode ? [barcode] : []
+  const barcode = normalizeBarcode(row.barcode)
 
   return {
     raw,
-    ProductName: productName,
-    BrandName: brandName,
-    SIZE: size,
-    COLOUR: colour,
-    PATTERN: pattern,
-    FITT: fit,
-    MarkCode: markCode,
-    MRP: mrp,
-    RSalePrice: salePrice,
-    CostPrice: costPrice,
-    PurchaseQty: purchaseQty,
-    B2CDiscount: b2cDiscount,
-    B2BDiscount: b2bDiscount,
+    ProductName: cleanText(row.productname),
+    BrandName: cleanText(row.brandname),
+    SIZE: cleanText(row.size),
+    COLOUR: cleanText(row.colour),
+    PATTERN: cleanText(row.pattern) || '',
+    FITT: cleanText(row.fitt) || null,
+    MarkCode: cleanText(row.markcode) || null,
+    MRP: toNumOrNull(row.mrp),
+    RSalePrice: toNumOrNull(row.rsaleprice),
+    CostPrice: toNumOrNull(row.costprice) ?? 0,
+    PurchaseQty: Math.max(0, toIntOrZero(row.purchaseqty)),
+    B2CDiscount: toNumOrNull(row.b2cdiscount) ?? 0,
+    B2BDiscount: toNumOrNull(row.b2bdiscount) ?? 0,
     Barcode: barcode,
-    Barcodes: barcodes
+    Barcodes: barcode ? [barcode] : []
   }
 }
 
 function shouldQueueRow(prepared) {
-  if (
-    isSummaryOrBlankRow(
-      prepared.raw,
-      prepared.ProductName,
-      prepared.BrandName,
-      prepared.SIZE,
-      prepared.COLOUR,
-      normalizeRow(prepared.raw)
-    )
-  ) {
+  if (isSummaryOrBlankRow(prepared.raw, prepared.ProductName, prepared.BrandName, prepared.SIZE, prepared.COLOUR, normalizeRow(prepared.raw))) {
     return false
   }
 
-  if (
-    shouldSkipBusinessRow(
-      prepared.ProductName,
-      prepared.BrandName,
-      prepared.MRP,
-      prepared.RSalePrice
-    )
-  ) {
+  if (shouldSkipBusinessRow(prepared.ProductName, prepared.BrandName, prepared.MRP, prepared.RSalePrice)) {
     return false
   }
 
   return true
 }
 
-function buildPreparedImportRows(
-  rows,
-  createdStatus,
-  errorStatus
-) {
+function buildPreparedImportRows(rows, createdStatus, errorStatus) {
   const grouped = new Map()
   const preparedRows = []
 
   for (const raw of rows) {
-    const prepared =
-      rowToPreparedRecord(raw)
+    const prepared = rowToPreparedRecord(raw)
 
-    if (!shouldQueueRow(prepared)) {
-      continue
-    }
+    if (!shouldQueueRow(prepared)) continue
 
     if (!prepared.Barcode) {
       preparedRows.push({
@@ -997,55 +348,32 @@ function buildPreparedImportRows(
     }
 
     const signature = [
-      normalizeLogicalText(
-        prepared.ProductName
-      ),
-      normalizeLogicalText(
-        prepared.BrandName
-      ),
-      normalizeLogicalText(
-        prepared.PATTERN
-      ),
-      normalizeLogicalText(
-        prepared.SIZE
-      ),
-      normalizeLogicalText(
-        prepared.COLOUR
-      ),
+      normalizeLogicalText(prepared.ProductName),
+      normalizeLogicalText(prepared.BrandName),
+      normalizeLogicalText(prepared.PATTERN),
+      normalizeLogicalText(prepared.SIZE),
+      normalizeLogicalText(prepared.COLOUR),
       String(prepared.MRP ?? ''),
       String(prepared.RSalePrice ?? ''),
       String(prepared.CostPrice ?? ''),
-      normalizeLogicalText(
-        prepared.MarkCode
-      ),
-      normalizeLogicalText(
-        prepared.FITT
-      )
+      normalizeLogicalText(prepared.MarkCode),
+      normalizeLogicalText(prepared.FITT)
     ].join('|')
 
-    const existing =
-      grouped.get(prepared.Barcode)
+    const existing = grouped.get(prepared.Barcode)
 
     if (!existing) {
-      grouped.set(
-        prepared.Barcode,
-        {
-          raw: {
-            ...raw,
-            purchaseqty:
-              prepared.PurchaseQty,
-            barcode:
-              prepared.Barcode,
-            barcodes: [
-              prepared.Barcode
-            ]
-          },
-          signature,
-          quantity:
-            prepared.PurchaseQty,
-          conflict: false
-        }
-      )
+      grouped.set(prepared.Barcode, {
+        raw: {
+          ...raw,
+          purchaseqty: prepared.PurchaseQty,
+          barcode: prepared.Barcode,
+          barcodes: [prepared.Barcode]
+        },
+        signature,
+        quantity: prepared.PurchaseQty,
+        conflict: false
+      })
 
       continue
     }
@@ -1055,17 +383,11 @@ function buildPreparedImportRows(
       continue
     }
 
-    existing.quantity +=
-      prepared.PurchaseQty
-
-    existing.raw.purchaseqty =
-      existing.quantity
+    existing.quantity += prepared.PurchaseQty
+    existing.raw.purchaseqty = existing.quantity
   }
 
-  for (
-    const [barcode, item]
-    of grouped.entries()
-  ) {
+  for (const [barcode, item] of grouped.entries()) {
     preparedRows.push({
       raw: {
         ...item.raw,
@@ -1073,51 +395,565 @@ function buildPreparedImportRows(
         barcode,
         barcodes: [barcode]
       },
-      status_enum:
-        item.conflict
-          ? errorStatus
-          : createdStatus,
-      error_msg:
-        item.conflict
-          ? `Conflicting product details for barcode: ${barcode}`
-          : null
+      status_enum: item.conflict ? errorStatus : createdStatus,
+      error_msg: item.conflict ? `Conflicting product details for barcode: ${barcode}` : null
     })
   }
 
   return preparedRows
 }
 
-async function getAllowedImportRowStatuses() {
-  const result = await pool.query(`
-    SELECT enumlabel
-    FROM pg_enum e
-    JOIN pg_type t
-      ON t.oid = e.enumtypid
-    WHERE t.typname = 'import_row_status'
-    ORDER BY enumsortorder
-  `)
+async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
+  const sourceByBarcode = new Map()
 
-  return result.rows.map(
-    (row) => row.enumlabel
+  for (const item of preparedRows) {
+    if (item.error_msg) continue
+
+    const prepared = rowToPreparedRecord(item.raw)
+
+    if (!prepared.Barcode) continue
+
+    sourceByBarcode.set(prepared.Barcode, prepared)
+  }
+
+  const barcodes = Array.from(sourceByBarcode.keys())
+
+  if (!barcodes.length) return []
+
+  const result = await pool.query(`WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') AS barcode, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]) ORDER BY b.id ASC`, [barcodes])
+
+  const conflicts = []
+
+  for (const existing of result.rows) {
+    const prepared = sourceByBarcode.get(existing.barcode)
+
+    if (!prepared) continue
+
+    const categoryMismatch = Number(existing.category_id) !== Number(categoryId)
+    const genderMismatch = normGender(existing.gender) !== gender
+    const productMismatch = normalizeLogicalText(existing.product_name) !== normalizeLogicalText(prepared.ProductName)
+    const brandMismatch = normalizeLogicalText(existing.brand_name) !== normalizeLogicalText(prepared.BrandName)
+
+    if (!categoryMismatch && !genderMismatch && !productMismatch && !brandMismatch) {
+      continue
+    }
+
+    conflicts.push({
+      barcode: existing.ean_code,
+      incoming_product: prepared.ProductName,
+      incoming_brand: prepared.BrandName,
+      selected_gender: gender,
+      selected_category_id: categoryId,
+      existing_product_id: existing.product_id,
+      existing_product: existing.product_name,
+      existing_brand: existing.brand_name,
+      existing_gender: existing.gender,
+      existing_category_id: existing.category_id,
+      existing_category_path: existing.category_path
+    })
+  }
+
+  return conflicts
+}
+
+function normalizeImportSearchText(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/co[\s-]*ords?/g, ' coord ')
+    .replace(/t[\s-]*shirts?/g, ' tshirt ')
+    .replace(/round[\s-]*necks?/g, ' roundneck ')
+    .replace(/half[\s-]*sleeves?/g, ' halfsleeve ')
+    .replace(/full[\s-]*sleeves?/g, ' fullsleeve ')
+    .replace(/3\s*\/\s*4(?:th)?/g, ' threequarter ')
+    .replace(/three[\s-]*quarters?/g, ' threequarter ')
+    .replace(/night[\s-]*dresses?/g, ' nightdress ')
+    .replace(/western[\s-]*wear/g, ' westernwear ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeImportToken(token) {
+  const aliases = {
+    mens: 'man',
+    man: 'man',
+    male: 'man',
+    womens: 'woman',
+    woman: 'woman',
+    women: 'woman',
+    ladies: 'woman',
+    lady: 'woman',
+    female: 'woman',
+    kids: 'kid',
+    kid: 'kid',
+    child: 'kid',
+    children: 'kid',
+    boys: 'boy',
+    boy: 'boy',
+    girls: 'girl',
+    girl: 'girl',
+    tshirts: 'tshirt',
+    tshirt: 'tshirt',
+    tee: 'tshirt',
+    tees: 'tshirt',
+    shirts: 'shirt',
+    shirt: 'shirt',
+    tops: 'top',
+    top: 'top',
+    pants: 'pant',
+    pant: 'pant',
+    trousers: 'pant',
+    trouser: 'pant',
+    jeans: 'jean',
+    jean: 'jean',
+    cargos: 'cargo',
+    cargo: 'cargo',
+    joggers: 'jogger',
+    jogger: 'jogger',
+    shorts: 'short',
+    short: 'short',
+    dresses: 'dress',
+    dress: 'dress',
+    frocks: 'dress',
+    frock: 'dress',
+    nighties: 'nightdress',
+    nightys: 'nightdress',
+    nighty: 'nightdress',
+    kurtis: 'kurti',
+    kurti: 'kurti',
+    kurthis: 'kurti',
+    kurthi: 'kurti',
+    suits: 'suit',
+    suit: 'suit',
+    oversized: 'oversize',
+    oversize: 'oversize',
+    bagge: 'baggy',
+    baggies: 'baggy',
+    baggy: 'baggy',
+    polos: 'polo',
+    polo: 'polo',
+    coord: 'coord',
+    coords: 'coord',
+    capris: 'threequarter',
+    capri: 'threequarter'
+  }
+
+  return aliases[token] || token
+}
+
+function tokenizeImportText(value) {
+  const normalized = normalizeImportSearchText(value)
+
+  if (!normalized) return []
+
+  return normalized
+    .split(' ')
+    .map(normalizeImportToken)
+    .filter(Boolean)
+}
+
+function toImportTokenSet(value) {
+  return new Set(tokenizeImportText(value))
+}
+
+function getImportAudience(category, gender) {
+  const tokens = toImportTokenSet(category?.category_path || category?.name || '')
+
+  if (tokens.has('boy')) return 'boy'
+  if (tokens.has('girl')) return 'girl'
+  if (gender === 'MEN') return 'man'
+  if (gender === 'WOMEN') return 'woman'
+
+  return 'kid'
+}
+
+function getImportAudienceScore(tokens, audience) {
+  const acceptedMap = {
+    man: ['man'],
+    woman: ['woman'],
+    boy: ['boy', 'kid'],
+    girl: ['girl', 'kid'],
+    kid: ['kid', 'boy', 'girl']
+  }
+
+  const blockedMap = {
+    man: ['woman', 'boy', 'girl', 'kid'],
+    woman: ['man', 'boy', 'girl', 'kid'],
+    boy: ['woman', 'man', 'girl'],
+    girl: ['woman', 'man', 'boy'],
+    kid: ['woman', 'man']
+  }
+
+  const accepted = acceptedMap[audience] || []
+  const blocked = blockedMap[audience] || []
+  const acceptedCount = accepted.filter(token => tokens.has(token)).length
+  const blockedCount = blocked.filter(token => tokens.has(token)).length
+
+  return {
+    acceptedCount,
+    blockedCount,
+    mismatch: blockedCount > 0 && acceptedCount === 0
+  }
+}
+
+function getImportCategoryTokens(category) {
+  const path = cleanText(category?.category_path || category?.name || '')
+  const segments = path.split('>').map(segment => segment.trim()).filter(Boolean)
+  const allTokens = segments.flatMap(tokenizeImportText)
+  const leafTokens = segments.length ? tokenizeImportText(segments[segments.length - 1]) : []
+  const ignored = new Set(['man', 'woman', 'kid', 'boy', 'girl', 'wear', 'product', 'category', 'collection'])
+  const specificTokens = Array.from(new Set(allTokens.filter(token => !ignored.has(token))))
+  const specificLeafTokens = Array.from(new Set(leafTokens.filter(token => !ignored.has(token))))
+
+  return {
+    specificTokens,
+    specificLeafTokens
+  }
+}
+
+function getValidPreparedRecords(preparedRows) {
+  return preparedRows
+    .filter(item => !item.error_msg)
+    .map(item => rowToPreparedRecord(item.raw))
+    .filter(item => item.ProductName && item.BrandName && item.SIZE && item.COLOUR && item.Barcode)
+}
+
+function countTokenMatches(tokens, expectedTokens) {
+  return expectedTokens.reduce((count, token) => count + (tokens.has(token) ? 1 : 0), 0)
+}
+
+function scoreImportWorksheetCandidate({
+  validRecords,
+  preparedRows,
+  worksheetName,
+  fileName,
+  category,
+  gender,
+  conflicts
+}) {
+  const { specificTokens, specificLeafTokens } = getImportCategoryTokens(category)
+  const rowText = validRecords
+    .slice(0, 500)
+    .map(item => [item.ProductName, item.PATTERN, item.FITT, item.MarkCode].filter(Boolean).join(' '))
+    .join(' ')
+
+  const rowTokens = toImportTokenSet(rowText)
+  const sheetTokens = toImportTokenSet(worksheetName)
+  const fileTokens = toImportTokenSet(baseNameNoExt(fileName))
+  const audience = getImportAudience(category, gender)
+  const rowAudience = getImportAudienceScore(rowTokens, audience)
+  const sheetAudience = getImportAudienceScore(sheetTokens, audience)
+  const fileAudience = getImportAudienceScore(fileTokens, audience)
+  const rowCategoryMatches = countTokenMatches(rowTokens, specificTokens)
+  const rowLeafMatches = countTokenMatches(rowTokens, specificLeafTokens)
+  const sheetCategoryMatches = countTokenMatches(sheetTokens, specificTokens)
+  const fileCategoryMatches = countTokenMatches(fileTokens, specificTokens)
+
+  const genericCategoryTokens = new Set([
+    'top',
+    'tshirt',
+    'shirt',
+    'pant',
+    'jean',
+    'cargo',
+    'jogger',
+    'short',
+    'dress',
+    'nightdress',
+    'kurti',
+    'suit',
+    'polo',
+    'coord'
+  ])
+
+  const discriminatingTokens = specificTokens.filter(token => !genericCategoryTokens.has(token))
+  const discriminatingMatches =
+    countTokenMatches(rowTokens, discriminatingTokens) +
+    countTokenMatches(sheetTokens, discriminatingTokens) +
+    countTokenMatches(fileTokens, discriminatingTokens)
+
+  const internalErrorCount = preparedRows.filter(item => item.error_msg).length
+  const audienceMismatch =
+    rowAudience.mismatch ||
+    (
+      rowAudience.acceptedCount === 0 &&
+      sheetAudience.mismatch &&
+      fileAudience.mismatch
+    )
+
+  const categoryEvidence =
+    rowCategoryMatches > 0 ||
+    rowLeafMatches > 0 ||
+    sheetCategoryMatches > 0 ||
+    fileCategoryMatches > 0 ||
+    discriminatingMatches > 0
+
+  const score =
+    rowCategoryMatches * 18 +
+    rowLeafMatches * 10 +
+    sheetCategoryMatches * 8 +
+    fileCategoryMatches * 8 +
+    discriminatingMatches * 20 +
+    rowAudience.acceptedCount * 12 +
+    sheetAudience.acceptedCount * 5 +
+    fileAudience.acceptedCount * 5 +
+    Math.min(validRecords.length, 25) -
+    rowAudience.blockedCount * 40 -
+    sheetAudience.blockedCount * 10 -
+    fileAudience.blockedCount * 10 -
+    internalErrorCount * 3 -
+    conflicts.length * 1000
+
+  return {
+    score,
+    categoryEvidence,
+    audienceMismatch,
+    rowCategoryMatches,
+    rowLeafMatches,
+    sheetCategoryMatches,
+    fileCategoryMatches,
+    discriminatingMatches,
+    audienceAccepted:
+      rowAudience.acceptedCount +
+      sheetAudience.acceptedCount +
+      fileAudience.acceptedCount,
+    internalErrorCount
+  }
+}
+
+async function selectImportWorksheet(
+  workbook,
+  category,
+  gender,
+  createdStatus,
+  errorStatus,
+  fileName
+) {
+  const worksheetNames = Array.isArray(workbook.SheetNames)
+    ? workbook.SheetNames.filter(Boolean)
+    : []
+
+  const candidates = []
+
+  for (const worksheetName of worksheetNames) {
+    const worksheet = workbook.Sheets[worksheetName]
+
+    if (!worksheet) continue
+
+    const rows = XLSX.utils.sheet_to_json(worksheet, {
+      defval: '',
+      raw: true
+    })
+
+    if (!rows.length) continue
+
+    const preparedRows = buildPreparedImportRows(
+      rows,
+      createdStatus,
+      errorStatus
+    )
+
+    const validRecords = getValidPreparedRecords(preparedRows)
+
+    if (!validRecords.length) continue
+
+    const conflicts = await findImportBarcodeConflicts(
+      preparedRows,
+      category.id,
+      gender
+    )
+
+    const scoring = scoreImportWorksheetCandidate({
+      validRecords,
+      preparedRows,
+      worksheetName,
+      fileName,
+      category,
+      gender,
+      conflicts
+    })
+
+    candidates.push({
+      name: worksheetName,
+      rows,
+      preparedRows,
+      validRecords,
+      conflicts,
+      ...scoring
+    })
+  }
+
+  if (!candidates.length) {
+    return {
+      status: 400,
+      error: {
+        message:
+          'No worksheet contains valid rows with ProductName, BrandName, SIZE, COLOUR and Barcode.'
+      }
+    }
+  }
+
+  if (candidates.length === 1) {
+    const candidate = candidates[0]
+
+    if (candidate.conflicts.length) {
+      return {
+        status: 409,
+        error: {
+          message:
+            'One or more barcodes already belong to a different product or category. Import was not created.',
+          detected_worksheet: candidate.name,
+          conflict_count: candidate.conflicts.length,
+          conflicts: candidate.conflicts.slice(0, 50)
+        }
+      }
+    }
+
+    if (candidate.audienceMismatch) {
+      return {
+        status: 422,
+        error: {
+          message:
+            `The uploaded data does not match ${category.category_path}.`,
+          detected_worksheet: candidate.name
+        }
+      }
+    }
+
+    return {
+      selected: candidate
+    }
+  }
+
+  const safeCandidates = candidates
+    .filter(candidate =>
+      candidate.conflicts.length === 0 &&
+      !candidate.audienceMismatch &&
+      categoryCandidateIsSafe(candidate)
+    )
+    .sort((a, b) =>
+      b.score - a.score ||
+      b.discriminatingMatches - a.discriminatingMatches ||
+      b.rowCategoryMatches - a.rowCategoryMatches ||
+      b.fileCategoryMatches - a.fileCategoryMatches ||
+      b.validRecords.length - a.validRecords.length ||
+      a.name.localeCompare(b.name)
+    )
+
+  if (!safeCandidates.length) {
+    const conflictCandidates = candidates
+      .filter(candidate =>
+        candidate.conflicts.length > 0 &&
+        !candidate.audienceMismatch
+      )
+      .sort((a, b) =>
+        b.score - a.score ||
+        a.conflicts.length - b.conflicts.length
+      )
+
+    if (conflictCandidates.length) {
+      const candidate = conflictCandidates[0]
+
+      return {
+        status: 409,
+        error: {
+          message:
+            'The closest worksheet contains barcodes assigned to another product or category.',
+          detected_worksheet: candidate.name,
+          conflict_count: candidate.conflicts.length,
+          conflicts: candidate.conflicts.slice(0, 50)
+        }
+      }
+    }
+
+    return {
+      status: 422,
+      error: {
+        message:
+          `The correct worksheet could not be detected for ${category.category_path}.`,
+        worksheet_analysis: candidates.map(candidate => ({
+          worksheet_name: candidate.name,
+          rows: candidate.validRecords.length,
+          score: candidate.score,
+          category_matches:
+            candidate.rowCategoryMatches +
+            candidate.sheetCategoryMatches +
+            candidate.fileCategoryMatches,
+          discriminating_matches:
+            candidate.discriminatingMatches,
+          audience_mismatch:
+            candidate.audienceMismatch
+        }))
+      }
+    }
+  }
+
+  const top = safeCandidates[0]
+  const second = safeCandidates[1]
+
+  if (second) {
+    const scoreGap = top.score - second.score
+
+    const sameSignals =
+      top.discriminatingMatches === second.discriminatingMatches &&
+      top.rowCategoryMatches === second.rowCategoryMatches &&
+      top.sheetCategoryMatches === second.sheetCategoryMatches &&
+      top.fileCategoryMatches === second.fileCategoryMatches &&
+      top.audienceAccepted === second.audienceAccepted
+
+    if (scoreGap < 5 && sameSignals) {
+      return {
+        status: 422,
+        error: {
+          message:
+            `More than one worksheet appears to match ${category.category_path}.`,
+          worksheet_analysis: safeCandidates
+            .slice(0, 5)
+            .map(candidate => ({
+              worksheet_name: candidate.name,
+              rows: candidate.validRecords.length,
+              score: candidate.score,
+              category_matches:
+                candidate.rowCategoryMatches +
+                candidate.sheetCategoryMatches +
+                candidate.fileCategoryMatches,
+              discriminating_matches:
+                candidate.discriminatingMatches
+            }))
+        }
+      }
+    }
+  }
+
+  return {
+    selected: top
+  }
+}
+
+function categoryCandidateIsSafe(candidate) {
+  if (candidate.categoryEvidence) return true
+
+  return (
+    candidate.audienceAccepted > 0 &&
+    candidate.validRecords.length > 0
   )
 }
 
+async function getAllowedImportRowStatuses() {
+  const result = await pool.query(`SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid WHERE t.typname = 'import_row_status' ORDER BY enumsortorder`)
+  return result.rows.map(row => row.enumlabel)
+}
+
 function resolveCreatedStatus(enumValues) {
-  return enumValues.includes('CREATED')
-    ? 'CREATED'
-    : null
+  return enumValues.includes('CREATED') ? 'CREATED' : null
 }
 
 function resolveOkStatus(enumValues) {
-  return enumValues.includes('OK')
-    ? 'OK'
-    : null
+  return enumValues.includes('OK') ? 'OK' : null
 }
 
 function resolveErrorStatus(enumValues) {
-  return enumValues.includes('ERROR')
-    ? 'ERROR'
-    : null
+  return enumValues.includes('ERROR') ? 'ERROR' : null
 }
 
 async function insertImportRowsInBatches(
@@ -1142,48 +978,24 @@ async function insertImportRowsInBatches(
     let parameterIndex = 1
 
     for (const item of chunk) {
-      values.push(
-        `(
-          $${parameterIndex++},
-          $${parameterIndex++}::jsonb,
-          $${parameterIndex++},
-          $${parameterIndex++},
-          $${parameterIndex++}
-        )`
-      )
+      values.push(`($${parameterIndex++}, $${parameterIndex++}::jsonb, $${parameterIndex++}, $${parameterIndex++}, $${parameterIndex++})`)
 
       params.push(
         jobId,
         JSON.stringify(item.raw),
-        item.status_enum ||
-          createdStatus,
+        item.status_enum || createdStatus,
         item.error_msg || null,
         categoryId
       )
     }
 
-    await client.query(
-      `
-        INSERT INTO import_rows (
-          import_job_id,
-          raw_row_json,
-          status_enum,
-          error_msg,
-          category_id
-        )
-        VALUES ${values.join(',')}
-      `,
-      params
-    )
+    await client.query(`INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg, category_id) VALUES ${values.join(',')}`, params)
   }
 }
 
 function toNumber(value) {
   const numberValue = Number(value)
-
-  return Number.isFinite(numberValue)
-    ? numberValue
-    : 0
+  return Number.isFinite(numberValue) ? numberValue : 0
 }
 
 function uniqueValues(values) {
@@ -1191,8 +1003,7 @@ function uniqueValues(values) {
   const result = []
 
   for (const item of values) {
-    const value =
-      String(item || '').trim()
+    const value = String(item || '').trim()
 
     if (!value) continue
 
@@ -1208,55 +1019,40 @@ function uniqueValues(values) {
 }
 
 function sortVariantValues(values) {
-  return uniqueValues(values).sort(
-    (a, b) => {
-      const aNumber = parseFloat(
-        String(a).replace(/[^\d.]/g, '')
-      )
+  return uniqueValues(values).sort((a, b) => {
+    const aNumber = parseFloat(String(a).replace(/[^\d.]/g, ''))
+    const bNumber = parseFloat(String(b).replace(/[^\d.]/g, ''))
 
-      const bNumber = parseFloat(
-        String(b).replace(/[^\d.]/g, '')
-      )
-
-      if (
-        Number.isFinite(aNumber) &&
-        Number.isFinite(bNumber) &&
-        aNumber !== bNumber
-      ) {
-        return aNumber - bNumber
-      }
-
-      return String(a).localeCompare(
-        String(b),
-        undefined,
-        { numeric: true }
-      )
+    if (
+      Number.isFinite(aNumber) &&
+      Number.isFinite(bNumber) &&
+      aNumber !== bNumber
+    ) {
+      return aNumber - bNumber
     }
-  )
+
+    return String(a).localeCompare(
+      String(b),
+      undefined,
+      { numeric: true }
+    )
+  })
 }
 
 function normalizeImages(images) {
-  if (Array.isArray(images)) {
-    return images
-  }
-
+  if (Array.isArray(images)) return images
   if (!images) return []
 
   try {
     const parsed = JSON.parse(images)
-
-    return Array.isArray(parsed)
-      ? parsed
-      : []
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
 }
 
 function normalizeGroupColour(value) {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
+  return String(value || '').trim().toUpperCase()
 }
 
 function normalizeGroupSize(value) {
@@ -1287,9 +1083,7 @@ function mergeImages(first, second) {
 
     const key = url.toLowerCase()
 
-    if (!url || seen.has(key)) {
-      continue
-    }
+    if (!url || seen.has(key)) continue
 
     seen.add(key)
     output.push(item)
@@ -1332,18 +1126,12 @@ function makeVariantPayload(row) {
     categoryName: row.category_name,
     category_slug: row.category_slug,
     categorySlug: row.category_slug,
-    parent_category_id:
-      row.parent_category_id,
-    parentCategoryId:
-      row.parent_category_id,
-    parent_category_name:
-      row.parent_category_name,
-    parentCategoryName:
-      row.parent_category_name,
-    parent_category_slug:
-      row.parent_category_slug,
-    parentCategorySlug:
-      row.parent_category_slug,
+    parent_category_id: row.parent_category_id,
+    parentCategoryId: row.parent_category_id,
+    parent_category_name: row.parent_category_name,
+    parentCategoryName: row.parent_category_name,
+    parent_category_slug: row.parent_category_slug,
+    parentCategorySlug: row.parent_category_slug,
     category_path: row.category_path,
     categoryPath: row.category_path,
     size: row.size || '',
@@ -1352,105 +1140,63 @@ function makeVariantPayload(row) {
     barcode,
     ean_code: barcode,
     eanCode: barcode,
-    barcodes:
-      barcode ? [barcode] : [],
-    ean_codes:
-      barcode ? [barcode] : [],
-    eanCodes:
-      barcode ? [barcode] : [],
+    barcodes: barcode ? [barcode] : [],
+    ean_codes: barcode ? [barcode] : [],
+    eanCodes: barcode ? [barcode] : [],
     mrp: row.mrp,
-    base_sale_price:
-      row.base_sale_price,
-    original_sale_price:
-      row.original_sale_price,
+    base_sale_price: row.base_sale_price,
+    original_sale_price: row.original_sale_price,
     sale_price: row.sale_price,
     price: row.price,
-    selling_price:
-      row.selling_price,
-    discounted_price:
-      row.discounted_price,
-    mahaveer_price:
-      row.mahaveer_price,
+    selling_price: row.selling_price,
+    discounted_price: row.discounted_price,
+    mahaveer_price: row.mahaveer_price,
     cost_price: row.cost_price,
-    b2c_discount_pct:
-      row.b2c_discount_pct,
-    b2cDiscountPct:
-      row.b2c_discount_pct,
-    b2b_discount_pct:
-      row.b2b_discount_pct,
-    b2bDiscountPct:
-      row.b2b_discount_pct,
-    discount_b2c:
-      row.b2c_discount_pct,
-    discountB2c:
-      row.b2c_discount_pct,
-    discount_b2b:
-      row.b2b_discount_pct,
-    discountB2b:
-      row.b2b_discount_pct,
-    original_price_b2c:
-      row.original_price_b2c,
-    originalPriceB2c:
-      row.original_price_b2c,
-    final_price_b2c:
-      row.final_price_b2c,
-    finalPriceB2c:
-      row.final_price_b2c,
-    original_price_b2b:
-      row.original_price_b2b,
-    originalPriceB2b:
-      row.original_price_b2b,
-    final_price_b2b:
-      row.final_price_b2b,
-    finalPriceB2b:
-      row.final_price_b2b,
-    on_hand:
-      toNumber(row.on_hand),
-    onHand:
-      toNumber(row.on_hand),
-    reserved:
-      toNumber(row.reserved),
-    reserved_qty:
-      toNumber(row.reserved),
-    reservedQty:
-      toNumber(row.reserved),
-    available_qty:
-      toNumber(row.available_qty),
-    availableQty:
-      toNumber(row.available_qty),
-    in_stock:
-      toNumber(row.available_qty) > 0,
-    inStock:
-      toNumber(row.available_qty) > 0,
+    b2c_discount_pct: row.b2c_discount_pct,
+    b2cDiscountPct: row.b2c_discount_pct,
+    b2b_discount_pct: row.b2b_discount_pct,
+    b2bDiscountPct: row.b2b_discount_pct,
+    discount_b2c: row.b2c_discount_pct,
+    discountB2c: row.b2c_discount_pct,
+    discount_b2b: row.b2b_discount_pct,
+    discountB2b: row.b2b_discount_pct,
+    original_price_b2c: row.original_price_b2c,
+    originalPriceB2c: row.original_price_b2c,
+    final_price_b2c: row.final_price_b2c,
+    finalPriceB2c: row.final_price_b2c,
+    original_price_b2b: row.original_price_b2b,
+    originalPriceB2b: row.original_price_b2b,
+    final_price_b2b: row.final_price_b2b,
+    finalPriceB2b: row.final_price_b2b,
+    on_hand: toNumber(row.on_hand),
+    onHand: toNumber(row.on_hand),
+    reserved: toNumber(row.reserved),
+    reserved_qty: toNumber(row.reserved),
+    reservedQty: toNumber(row.reserved),
+    available_qty: toNumber(row.available_qty),
+    availableQty: toNumber(row.available_qty),
+    in_stock: toNumber(row.available_qty) > 0,
+    inStock: toNumber(row.available_qty) > 0,
     stock_sources: [stockSource],
     stockSources: [stockSource],
     image_url: row.image_url,
     imageUrl: row.image_url,
-    front_image_url:
-      row.front_image_url,
-    frontImageUrl:
-      row.front_image_url,
-    back_image_url:
-      row.back_image_url,
-    backImageUrl:
-      row.back_image_url,
-    main_image_url:
-      row.main_image_url,
-    mainImageUrl:
-      row.main_image_url,
+    front_image_url: row.front_image_url,
+    frontImageUrl: row.front_image_url,
+    back_image_url: row.back_image_url,
+    backImageUrl: row.back_image_url,
+    main_image_url: row.main_image_url,
+    mainImageUrl: row.main_image_url,
     images: normalizeImages(row.images)
   }
 }
 
-function mergeVariantPayload(
-  target,
-  source
-) {
+function mergeVariantPayload(target, source) {
   const existingVariantIds =
     new Set(
       (
         target.variant_ids || []
-      ).map((value) => String(value))
+      ).map(value => String(value))
     )
 
   const sourceVariantIds =
@@ -1458,7 +1204,7 @@ function mergeVariantPayload(
 
   const newVariantIds =
     sourceVariantIds.filter(
-      (value) =>
+      value =>
         !existingVariantIds.has(
           String(value)
         )
@@ -1490,9 +1236,9 @@ function mergeVariantPayload(
     ...(target.stock_sources || []),
     ...(
       source.stock_sources || []
-    ).filter((item) =>
+    ).filter(item =>
       newVariantIds.some(
-        (variantId) =>
+        variantId =>
           String(variantId) ===
           String(item.variant_id)
       )
@@ -1712,7 +1458,7 @@ function groupStockRows(rows) {
     const allSizes =
       sortVariantValues(
         variants.map(
-          (variant) =>
+          variant =>
             variant.size
         )
       )
@@ -1720,7 +1466,7 @@ function groupStockRows(rows) {
     const allColours =
       sortVariantValues(
         variants.map(
-          (variant) =>
+          variant =>
             variant.colour
         )
       )
@@ -1728,7 +1474,7 @@ function groupStockRows(rows) {
     const allBarcodes =
       uniqueValues(
         variants.flatMap(
-          (variant) =>
+          variant =>
             variant.barcodes || []
         )
       )
@@ -1820,7 +1566,7 @@ function groupStockRows(rows) {
 
       const imageRow =
         cardRows.find(
-          (row) =>
+          row =>
             row.front_image_url ||
             row.main_image_url ||
             row.image_url
@@ -1829,16 +1575,16 @@ function groupStockRows(rows) {
       const cardVariantIds =
         new Set(
           cardRows.map(
-            (row) =>
+            row =>
               String(row.variant_id)
           )
         )
 
       const cardVariants =
-        variants.filter((variant) =>
+        variants.filter(variant =>
           (
             variant.variant_ids || []
-          ).some((variantId) =>
+          ).some(variantId =>
             cardVariantIds.has(
               String(variantId)
             )
@@ -1848,7 +1594,7 @@ function groupStockRows(rows) {
       const cardSizes =
         sortVariantValues(
           cardVariants.map(
-            (variant) =>
+            variant =>
               variant.size
           )
         )
@@ -1856,7 +1602,7 @@ function groupStockRows(rows) {
       const cardBarcodes =
         uniqueValues(
           cardVariants.flatMap(
-            (variant) =>
+            variant =>
               variant.barcodes || []
           )
         )
@@ -1864,14 +1610,14 @@ function groupStockRows(rows) {
       const cardVariantIdsList =
         uniqueValues(
           cardVariants.flatMap(
-            (variant) =>
+            variant =>
               variant.variant_ids || []
           )
         )
 
       const stockSources =
         cardVariants.flatMap(
-          (variant) =>
+          variant =>
             variant.stock_sources || []
         )
 
@@ -2312,40 +2058,7 @@ router.get(
 
       const result =
         await pool.query(
-          `
-            ${ALL_CATEGORY_PATHS_CTE}
-            SELECT
-              ij.id,
-              ij.file_name,
-              ij.worksheet_name,
-              ij.file_url,
-              ij.uploaded_by,
-              ij.status_enum,
-              ij.rows_total,
-              ij.rows_success,
-              ij.rows_error,
-              ij.uploaded_at,
-              ij.completed_at,
-              ij.branch_id,
-              ij.gender,
-              ij.category_id,
-              c.name AS category_name,
-              c.slug AS category_slug,
-              pc.id AS parent_category_id,
-              pc.name AS parent_category_name,
-              pc.slug AS parent_category_slug,
-              cp.category_path
-            FROM import_jobs ij
-            LEFT JOIN product_categories c
-              ON c.id = ij.category_id
-            LEFT JOIN product_categories pc
-              ON pc.id = c.parent_id
-            LEFT JOIN category_paths cp
-              ON cp.id = ij.category_id
-            WHERE ij.branch_id = $1
-            ORDER BY ij.id DESC
-            LIMIT 100
-          `,
+          `${ALL_CATEGORY_PATHS_CTE} SELECT ij.id, ij.file_name, ij.worksheet_name, ij.file_url, ij.uploaded_by, ij.status_enum, ij.rows_total, ij.rows_success, ij.rows_error, ij.uploaded_at, ij.completed_at, ij.branch_id, ij.gender, ij.category_id, c.name AS category_name, c.slug AS category_slug, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path FROM import_jobs ij LEFT JOIN product_categories c ON c.id = ij.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = ij.category_id WHERE ij.branch_id = $1 ORDER BY ij.id DESC LIMIT 100`,
           [branchId]
         )
 
@@ -2425,26 +2138,7 @@ router.get(
       if (jobId) {
         const result =
           await pool.query(
-            `
-              ${ALL_CATEGORY_PATHS_CTE}
-              SELECT
-                ij.*,
-                c.name AS category_name,
-                c.slug AS category_slug,
-                pc.id AS parent_category_id,
-                pc.name AS parent_category_name,
-                pc.slug AS parent_category_slug,
-                cp.category_path
-              FROM import_jobs ij
-              LEFT JOIN product_categories c
-                ON c.id = ij.category_id
-              LEFT JOIN product_categories pc
-                ON pc.id = c.parent_id
-              LEFT JOIN category_paths cp
-                ON cp.id = ij.category_id
-              WHERE ij.id = $1
-                AND ij.branch_id = $2
-            `,
+            `${ALL_CATEGORY_PATHS_CTE} SELECT ij.*, c.name AS category_name, c.slug AS category_slug, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path FROM import_jobs ij LEFT JOIN product_categories c ON c.id = ij.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = ij.category_id WHERE ij.id = $1 AND ij.branch_id = $2`,
             [jobId, branchId]
           )
 
@@ -2458,27 +2152,7 @@ router.get(
       } else {
         const result =
           await pool.query(
-            `
-              ${ALL_CATEGORY_PATHS_CTE}
-              SELECT
-                ij.*,
-                c.name AS category_name,
-                c.slug AS category_slug,
-                pc.id AS parent_category_id,
-                pc.name AS parent_category_name,
-                pc.slug AS parent_category_slug,
-                cp.category_path
-              FROM import_jobs ij
-              LEFT JOIN product_categories c
-                ON c.id = ij.category_id
-              LEFT JOIN product_categories pc
-                ON pc.id = c.parent_id
-              LEFT JOIN category_paths cp
-                ON cp.id = ij.category_id
-              WHERE ij.branch_id = $1
-              ORDER BY ij.id DESC
-              LIMIT 1
-            `,
+            `${ALL_CATEGORY_PATHS_CTE} SELECT ij.*, c.name AS category_name, c.slug AS category_slug, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path FROM import_jobs ij LEFT JOIN product_categories c ON c.id = ij.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = ij.category_id WHERE ij.branch_id = $1 ORDER BY ij.id DESC LIMIT 1`,
             [branchId]
           )
 
@@ -2495,25 +2169,17 @@ router.get(
       }
 
       const params = [job.id]
-
-      let whereClause =
-        'import_job_id = $1'
+      let whereClause = 'import_job_id = $1'
 
       if (status) {
         params.push(status)
-
         whereClause +=
           ` AND status_enum = $${params.length}`
       }
 
       const totalResult =
         await pool.query(
-          `
-            SELECT
-              COUNT(*)::int AS count
-            FROM import_rows
-            WHERE ${whereClause}
-          `,
+          `SELECT COUNT(*)::int AS count FROM import_rows WHERE ${whereClause}`,
           params
         )
 
@@ -2521,19 +2187,7 @@ router.get(
 
       const rowsResult =
         await pool.query(
-          `
-            SELECT
-              id,
-              status_enum,
-              error_msg,
-              raw_row_json,
-              category_id
-            FROM import_rows
-            WHERE ${whereClause}
-            ORDER BY id ASC
-            LIMIT $${params.length - 1}
-            OFFSET $${params.length}
-          `,
+          `SELECT id, status_enum, error_msg, raw_row_json, category_id FROM import_rows WHERE ${whereClause} ORDER BY id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
           params
         )
 
@@ -2679,99 +2333,38 @@ router.post(
         { type: 'buffer' }
       )
 
-      const worksheetNames =
-        Array.isArray(
-          workbook.SheetNames
-        )
-          ? workbook.SheetNames.filter(
-              Boolean
-            )
-          : []
-
-      if (!worksheetNames.length) {
-        return res.status(400).json({
-          message:
-            'No worksheet in file'
-        })
-      }
-
-      const requestedWorksheetName =
-        cleanText(
-          req.body?.sheet_name ||
-          req.body?.worksheet_name ||
-          req.body?.sheetName ||
-          ''
+      const worksheetSelection =
+        await selectImportWorksheet(
+          workbook,
+          category,
+          gender,
+          createdStatus,
+          errorStatus,
+          req.file.originalname || ''
         )
 
-      let worksheetName = ''
-
-      if (requestedWorksheetName) {
-        worksheetName =
-          worksheetNames.find(
-            (name) =>
-              normalizeLogicalText(
-                name
-              ) ===
-              normalizeLogicalText(
-                requestedWorksheetName
-              )
-          ) || ''
-
-        if (!worksheetName) {
-          return res.status(400).json({
-            message:
-              'Selected worksheet was not found',
-            worksheets:
-              worksheetNames
-          })
-        }
-      } else if (
-        worksheetNames.length === 1
-      ) {
-        worksheetName =
-          worksheetNames[0]
-      } else {
-        return res.status(400).json({
-          message:
-            'Workbook contains multiple worksheets. Send sheet_name with the worksheet to import.',
-          worksheets:
-            worksheetNames
-        })
+      if (!worksheetSelection.selected) {
+        return res
+          .status(
+            worksheetSelection.status ||
+            422
+          )
+          .json(
+            worksheetSelection.error || {
+              message:
+                'Unable to detect matching worksheet'
+            }
+          )
       }
 
-      const rows =
-        XLSX.utils.sheet_to_json(
-          workbook.Sheets[
-            worksheetName
-          ],
-          {
-            defval: '',
-            raw: true
-          }
-        )
-
-      if (!rows.length) {
-        return res.status(400).json({
-          message:
-            'Selected worksheet has no importable rows',
-          worksheet_name:
-            worksheetName
-        })
-      }
+      const worksheetName =
+        worksheetSelection.selected.name
 
       const preparedRows =
-        buildPreparedImportRows(
-          rows,
-          createdStatus,
-          errorStatus
-        )
+        worksheetSelection.selected.preparedRows
 
       const barcodeConflicts =
-        await findImportBarcodeConflicts(
-          preparedRows,
-          category.id,
-          gender
-        )
+        worksheetSelection.selected.conflicts
 
       if (barcodeConflicts.length) {
         return res.status(409).json({
@@ -2791,7 +2384,7 @@ router.post(
 
       const initialErrorCount =
         preparedRows.filter(
-          (row) =>
+          row =>
             row.status_enum ===
             errorStatus
         ).length
@@ -2815,51 +2408,7 @@ router.post(
 
       const result =
         await client.query(
-          `
-            INSERT INTO import_jobs (
-              file_name,
-              worksheet_name,
-              file_url,
-              uploaded_by,
-              status_enum,
-              rows_total,
-              rows_success,
-              rows_error,
-              branch_id,
-              gender,
-              category_id,
-              completed_at
-            )
-            VALUES (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              $6,
-              0,
-              $7,
-              $8,
-              $9,
-              $10,
-              ${completedAtSql}
-            )
-            RETURNING
-              id,
-              file_name,
-              worksheet_name,
-              file_url,
-              uploaded_by,
-              status_enum,
-              rows_total,
-              rows_success,
-              rows_error,
-              uploaded_at,
-              completed_at,
-              branch_id,
-              gender,
-              category_id
-          `,
+          `INSERT INTO import_jobs (file_name, worksheet_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, category_id, completed_at) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8, $9, $10, ${completedAtSql}) RETURNING id, file_name, worksheet_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`,
           [
             fileName,
             worksheetName,
@@ -3009,20 +2558,7 @@ router.post(
 
       const jobResult =
         await pool.query(
-          `
-            SELECT
-              id,
-              file_url,
-              status_enum,
-              rows_total,
-              rows_success,
-              rows_error,
-              gender,
-              category_id
-            FROM import_jobs
-            WHERE id = $1
-              AND branch_id = $2
-          `,
+          `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender, category_id FROM import_jobs WHERE id = $1 AND branch_id = $2`,
           [jobId, branchId]
         )
 
@@ -3072,17 +2608,7 @@ router.post(
       try {
         const batchResult =
           await client.query(
-            `
-              SELECT
-                id,
-                raw_row_json,
-                category_id
-              FROM import_rows
-              WHERE import_job_id = $1
-                AND status_enum = $2
-              ORDER BY id ASC
-              LIMIT $3
-            `,
+            `SELECT id, raw_row_json, category_id FROM import_rows WHERE import_job_id = $1 AND status_enum = $2 ORDER BY id ASC LIMIT $3`,
             [
               jobId,
               createdStatus,
@@ -3096,17 +2622,7 @@ router.post(
         if (!rowsToProcess.length) {
           const countResult =
             await client.query(
-              `
-                SELECT
-                  COUNT(*) FILTER (
-                    WHERE status_enum = $2
-                  )::int AS ok_count,
-                  COUNT(*) FILTER (
-                    WHERE status_enum = $3
-                  )::int AS error_count
-                FROM import_rows
-                WHERE import_job_id = $1
-              `,
+              `SELECT COUNT(*) FILTER (WHERE status_enum = $2)::int AS ok_count, COUNT(*) FILTER (WHERE status_enum = $3)::int AS error_count FROM import_rows WHERE import_job_id = $1`,
               [
                 jobId,
                 okStatus,
@@ -3131,15 +2647,7 @@ router.post(
                 : 'COMPLETE'
 
           await client.query(
-            `
-              UPDATE import_jobs
-              SET
-                rows_success = $1,
-                rows_error = $2,
-                status_enum = $3,
-                completed_at = NOW()
-              WHERE id = $4
-            `,
+            `UPDATE import_jobs SET rows_success = $1, rows_error = $2, status_enum = $3, completed_at = NOW() WHERE id = $4`,
             [
               finalSuccess,
               finalError,
@@ -3203,14 +2711,7 @@ router.post(
               'Missing required fields (ProductName/BrandName/SIZE/COLOUR/Barcode)'
 
             await client.query(
-              `
-                UPDATE import_rows
-                SET
-                  status_enum = $2,
-                  error_msg = $3,
-                  processed_at = NOW()
-                WHERE id = $1
-              `,
+              `UPDATE import_rows SET status_enum = $2, error_msg = $3, processed_at = NOW() WHERE id = $1`,
               [
                 batchRow.id,
                 errorStatus,
@@ -3251,57 +2752,7 @@ router.post(
 
             const existingBarcodeResult =
               await client.query(
-                `
-                  WITH RECURSIVE category_paths AS (
-                    SELECT
-                      c.id,
-                      c.parent_id,
-                      c.name,
-                      c.name::text AS category_path
-                    FROM product_categories c
-                    WHERE c.parent_id IS NULL
-
-                    UNION ALL
-
-                    SELECT
-                      c.id,
-                      c.parent_id,
-                      c.name,
-                      category_paths.category_path ||
-                      ' > ' ||
-                      c.name
-                    FROM product_categories c
-                    JOIN category_paths
-                      ON category_paths.id = c.parent_id
-                  )
-                  SELECT
-                    b.id AS barcode_id,
-                    b.ean_code,
-                    b.variant_id,
-                    v.product_id,
-                    p.name AS product_name,
-                    p.brand_name,
-                    p.pattern_code,
-                    p.gender,
-                    p.category_id,
-                    cp.category_path
-                  FROM barcodes b
-                  JOIN product_variants v
-                    ON v.id = b.variant_id
-                  JOIN products p
-                    ON p.id = v.product_id
-                  LEFT JOIN category_paths cp
-                    ON cp.id = p.category_id
-                  WHERE REGEXP_REPLACE(
-                    UPPER(TRIM(b.ean_code)),
-                    '[^A-Z0-9._-]',
-                    '',
-                    'g'
-                  ) = $1
-                  ORDER BY b.id ASC
-                  LIMIT 1
-                  FOR UPDATE OF b, v, p
-                `,
+                `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT b.id AS barcode_id, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.pattern_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY b.id ASC LIMIT 1 FOR UPDATE OF b, v, p`,
                 [barcode]
               )
 
@@ -3355,22 +2806,7 @@ router.post(
                 existing.variant_id
 
               await client.query(
-                `
-                  UPDATE products
-                  SET
-                    fit_type =
-                      COALESCE(
-                        $1,
-                        fit_type
-                      ),
-                    mark_code =
-                      COALESCE(
-                        $2,
-                        mark_code
-                      ),
-                    updated_at = NOW()
-                  WHERE id = $3
-                `,
+                `UPDATE products SET fit_type = COALESCE($1, fit_type), mark_code = COALESCE($2, mark_code), updated_at = NOW() WHERE id = $3`,
                 [
                   prepared.FITT,
                   prepared.MarkCode,
@@ -3379,20 +2815,7 @@ router.post(
               )
 
               await client.query(
-                `
-                  UPDATE product_variants
-                  SET
-                    size = $1,
-                    colour = $2,
-                    is_active = TRUE,
-                    mrp = $3,
-                    sale_price = $4,
-                    cost_price = $5,
-                    b2c_discount_pct = $6,
-                    b2b_discount_pct = $7,
-                    updated_at = NOW()
-                  WHERE id = $8
-                `,
+                `UPDATE product_variants SET size = $1, colour = $2, is_active = TRUE, mrp = $3, sale_price = $4, cost_price = $5, b2c_discount_pct = $6, b2b_discount_pct = $7, updated_at = NOW() WHERE id = $8`,
                 [
                   prepared.SIZE,
                   prepared.COLOUR,
@@ -3408,26 +2831,7 @@ router.post(
               if (!prepared.PATTERN) {
                 const patternResult =
                   await client.query(
-                    `
-                      SELECT
-                        COUNT(*)::int AS count
-                      FROM products
-                      WHERE category_id = $1
-                        AND gender = $2
-                        AND LOWER(TRIM(name)) =
-                            LOWER(TRIM($3))
-                        AND LOWER(TRIM(brand_name)) =
-                            LOWER(TRIM($4))
-                        AND NULLIF(
-                          TRIM(
-                            COALESCE(
-                              pattern_code,
-                              ''
-                            )
-                          ),
-                          ''
-                        ) IS NOT NULL
-                    `,
+                    `SELECT COUNT(*)::int AS count FROM products WHERE category_id = $1 AND gender = $2 AND LOWER(TRIM(name)) = LOWER(TRIM($3)) AND LOWER(TRIM(brand_name)) = LOWER(TRIM($4)) AND NULLIF(TRIM(COALESCE(pattern_code, '')), '') IS NOT NULL`,
                     [
                       categoryId,
                       gender,
@@ -3450,46 +2854,7 @@ router.post(
 
               const productResult =
                 await client.query(
-                  `
-                    INSERT INTO products (
-                      name,
-                      brand_name,
-                      pattern_code,
-                      fit_type,
-                      mark_code,
-                      gender,
-                      category_id
-                    )
-                    VALUES (
-                      $1,
-                      $2,
-                      $3,
-                      $4,
-                      $5,
-                      $6,
-                      $7
-                    )
-                    ON CONFLICT (
-                      name,
-                      brand_name,
-                      pattern_code,
-                      gender,
-                      category_id
-                    )
-                    DO UPDATE SET
-                      fit_type =
-                        COALESCE(
-                          EXCLUDED.fit_type,
-                          products.fit_type
-                        ),
-                      mark_code =
-                        COALESCE(
-                          EXCLUDED.mark_code,
-                          products.mark_code
-                        ),
-                      updated_at = NOW()
-                    RETURNING id
-                  `,
+                  `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender, category_id) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (name, brand_name, pattern_code, gender, category_id) DO UPDATE SET fit_type = COALESCE(EXCLUDED.fit_type, products.fit_type), mark_code = COALESCE(EXCLUDED.mark_code, products.mark_code), updated_at = NOW() RETURNING id`,
                   [
                     prepared.ProductName,
                     prepared.BrandName,
@@ -3506,35 +2871,7 @@ router.post(
 
               const variantResult =
                 await client.query(
-                  `
-                    INSERT INTO product_variants (
-                      product_id,
-                      size,
-                      colour,
-                      is_active,
-                      mrp,
-                      sale_price,
-                      cost_price,
-                      b2c_discount_pct,
-                      b2b_discount_pct,
-                      created_at,
-                      updated_at
-                    )
-                    VALUES (
-                      $1,
-                      $2,
-                      $3,
-                      TRUE,
-                      $4,
-                      $5,
-                      $6,
-                      $7,
-                      $8,
-                      NOW(),
-                      NOW()
-                    )
-                    RETURNING id
-                  `,
+                  `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct, created_at, updated_at) VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8, NOW(), NOW()) RETURNING id`,
                   [
                     productId,
                     prepared.SIZE,
@@ -3551,13 +2888,7 @@ router.post(
                 variantResult.rows[0].id
 
               await client.query(
-                `
-                  INSERT INTO barcodes (
-                    variant_id,
-                    ean_code
-                  )
-                  VALUES ($1, $2)
-                `,
+                `INSERT INTO barcodes (variant_id, ean_code) VALUES ($1, $2)`,
                 [
                   variantId,
                   barcode
@@ -3566,40 +2897,7 @@ router.post(
             }
 
             await client.query(
-              `
-                INSERT INTO branch_variant_stock (
-                  branch_id,
-                  variant_id,
-                  on_hand,
-                  reserved,
-                  is_active,
-                  created_at,
-                  updated_at
-                )
-                VALUES (
-                  $1,
-                  $2,
-                  $3,
-                  0,
-                  TRUE,
-                  NOW(),
-                  NOW()
-                )
-                ON CONFLICT (
-                  branch_id,
-                  variant_id
-                )
-                DO UPDATE SET
-                  on_hand =
-                    EXCLUDED.on_hand,
-                  reserved =
-                    LEAST(
-                      branch_variant_stock.reserved,
-                      EXCLUDED.on_hand
-                    ),
-                  is_active = TRUE,
-                  updated_at = NOW()
-              `,
+              `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active, created_at, updated_at) VALUES ($1, $2, $3, 0, TRUE, NOW(), NOW()) ON CONFLICT (branch_id, variant_id) DO UPDATE SET on_hand = EXCLUDED.on_hand, reserved = LEAST(branch_variant_stock.reserved, EXCLUDED.on_hand), is_active = TRUE, updated_at = NOW()`,
               [
                 branchId,
                 variantId,
@@ -3608,15 +2906,7 @@ router.post(
             )
 
             await client.query(
-              `
-                UPDATE import_rows
-                SET
-                  status_enum = $2,
-                  error_msg = NULL,
-                  category_id = $3,
-                  processed_at = NOW()
-                WHERE id = $1
-              `,
+              `UPDATE import_rows SET status_enum = $2, error_msg = NULL, category_id = $3, processed_at = NOW() WHERE id = $1`,
               [
                 batchRow.id,
                 okStatus,
@@ -3641,14 +2931,7 @@ router.post(
               ).slice(0, 500)
 
             await client.query(
-              `
-                UPDATE import_rows
-                SET
-                  status_enum = $2,
-                  error_msg = $3,
-                  processed_at = NOW()
-                WHERE id = $1
-              `,
+              `UPDATE import_rows SET status_enum = $2, error_msg = $3, processed_at = NOW() WHERE id = $1`,
               [
                 batchRow.id,
                 errorStatus,
@@ -3683,20 +2966,7 @@ router.post(
 
       const statusResult =
         await pool.query(
-          `
-            SELECT
-              COUNT(*) FILTER (
-                WHERE status_enum = $2
-              )::int AS pending_count,
-              COUNT(*) FILTER (
-                WHERE status_enum = $3
-              )::int AS ok_count,
-              COUNT(*) FILTER (
-                WHERE status_enum = $4
-              )::int AS error_count
-            FROM import_rows
-            WHERE import_job_id = $1
-          `,
+          `SELECT COUNT(*) FILTER (WHERE status_enum = $2)::int AS pending_count, COUNT(*) FILTER (WHERE status_enum = $3)::int AS ok_count, COUNT(*) FILTER (WHERE status_enum = $4)::int AS error_count FROM import_rows WHERE import_job_id = $1`,
           [
             jobId,
             createdStatus,
@@ -3741,25 +3011,7 @@ router.post(
       }
 
       await pool.query(
-        `
-          UPDATE import_jobs
-          SET
-            rows_total = $1,
-            rows_success = $2,
-            rows_error = $3,
-            status_enum = $4,
-            completed_at =
-              CASE
-                WHEN $4 IN (
-                  'COMPLETE',
-                  'PARTIAL',
-                  'FAILED'
-                )
-                THEN NOW()
-                ELSE completed_at
-              END
-          WHERE id = $5
-        `,
+        `UPDATE import_jobs SET rows_total = $1, rows_success = $2, rows_error = $3, status_enum = $4, completed_at = CASE WHEN $4 IN ('COMPLETE', 'PARTIAL', 'FAILED') THEN NOW() ELSE completed_at END WHERE id = $5`,
         [
           job.rows_total || 0,
           okCount,
@@ -3921,36 +3173,7 @@ router.post(
 
           const barcodeResult =
             await client.query(
-              `
-                SELECT
-                  b.ean_code,
-                  b.variant_id,
-                  v.product_id,
-                  v.is_active AS variant_active,
-                  bvs.branch_id,
-                  bvs.is_active AS stock_active,
-                  bvs.on_hand
-                FROM barcodes b
-                JOIN product_variants v
-                  ON v.id = b.variant_id
-                LEFT JOIN branch_variant_stock bvs
-                  ON bvs.variant_id = v.id
-                 AND bvs.branch_id = $2
-                WHERE REGEXP_REPLACE(
-                  UPPER(TRIM(b.ean_code)),
-                  '[^A-Z0-9._-]',
-                  '',
-                  'g'
-                ) = $1
-                ORDER BY
-                  CASE
-                    WHEN bvs.branch_id = $2
-                    THEN 0
-                    ELSE 1
-                  END,
-                  b.id ASC
-                LIMIT 1
-              `,
+              `SELECT b.ean_code, b.variant_id, v.product_id, v.is_active AS variant_active, bvs.branch_id, bvs.is_active AS stock_active, bvs.on_hand FROM barcodes b JOIN product_variants v ON v.id = b.variant_id LEFT JOIN branch_variant_stock bvs ON bvs.variant_id = v.id AND bvs.branch_id = $2 WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY CASE WHEN bvs.branch_id = $2 THEN 0 ELSE 1 END, b.id ASC LIMIT 1`,
               [
                 barcode,
                 branchId
@@ -3997,13 +3220,7 @@ router.post(
             false
           ) {
             await client.query(
-              `
-                UPDATE product_variants
-                SET
-                  is_active = TRUE,
-                  updated_at = NOW()
-                WHERE id = $1
-              `,
+              `UPDATE product_variants SET is_active = TRUE, updated_at = NOW() WHERE id = $1`,
               [matched.variant_id]
             )
           }
@@ -4013,14 +3230,7 @@ router.post(
             false
           ) {
             await client.query(
-              `
-                UPDATE branch_variant_stock
-                SET
-                  is_active = TRUE,
-                  updated_at = NOW()
-                WHERE branch_id = $1
-                  AND variant_id = $2
-              `,
+              `UPDATE branch_variant_stock SET is_active = TRUE, updated_at = NOW() WHERE branch_id = $1 AND variant_id = $2`,
               [
                 branchId,
                 matched.variant_id
@@ -4029,32 +3239,7 @@ router.post(
           }
 
           await client.query(
-            `
-              INSERT INTO product_images (
-                ean_code,
-                image_type,
-                image_url,
-                public_id,
-                uploaded_at
-              )
-              VALUES (
-                $1,
-                $2,
-                $3,
-                $4,
-                NOW()
-              )
-              ON CONFLICT (
-                ean_code,
-                image_type
-              )
-              DO UPDATE SET
-                image_url =
-                  EXCLUDED.image_url,
-                public_id =
-                  EXCLUDED.public_id,
-                uploaded_at = NOW()
-            `,
+            `INSERT INTO product_images (ean_code, image_type, image_url, public_id, uploaded_at) VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (ean_code, image_type) DO UPDATE SET image_url = EXCLUDED.image_url, public_id = EXCLUDED.public_id, uploaded_at = NOW()`,
             [
               matched.ean_code,
               imageType,
@@ -4068,13 +3253,7 @@ router.post(
             imageType === 'main'
           ) {
             await client.query(
-              `
-                UPDATE product_variants
-                SET
-                  image_url = $1,
-                  updated_at = NOW()
-                WHERE id = $2
-              `,
+              `UPDATE product_variants SET image_url = $1, updated_at = NOW() WHERE id = $2`,
               [
                 imageUrl,
                 matched.variant_id
@@ -4082,20 +3261,7 @@ router.post(
             )
           } else {
             await client.query(
-              `
-                UPDATE product_variants
-                SET
-                  image_url =
-                    COALESCE(
-                      NULLIF(
-                        image_url,
-                        ''
-                      ),
-                      $1
-                    ),
-                  updated_at = NOW()
-                WHERE id = $2
-              `,
+              `UPDATE product_variants SET image_url = COALESCE(NULLIF(image_url, ''), $1), updated_at = NOW() WHERE id = $2`,
               [
                 imageUrl,
                 matched.variant_id
@@ -4175,392 +3341,21 @@ router.get(
 
       const params = [branchId]
 
-      let whereClause = `
-        bvs.branch_id = $1
-        AND bvs.is_active = TRUE
-        AND v.is_active = TRUE
-        AND c.is_active = TRUE
-        AND GREATEST(
-          COALESCE(bvs.on_hand, 0) -
-          COALESCE(bvs.reserved, 0),
-          0
-        ) > 0
-      `
+      let whereClause = `bvs.branch_id = $1 AND bvs.is_active = TRUE AND v.is_active = TRUE AND c.is_active = TRUE AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0`
 
       if (gender) {
         params.push(gender)
-
-        whereClause += `
-          AND p.gender =
-              $${params.length}
-        `
+        whereClause += ` AND p.gender = $${params.length}`
       }
 
       if (categoryId) {
         params.push(categoryId)
-
-        whereClause += `
-          AND p.category_id IN (
-            WITH RECURSIVE cats AS (
-              SELECT id
-              FROM product_categories
-              WHERE id =
-                    $${params.length}
-                AND is_active = TRUE
-
-              UNION ALL
-
-              SELECT pc.id
-              FROM product_categories pc
-              JOIN cats c
-                ON pc.parent_id = c.id
-              WHERE pc.is_active = TRUE
-            )
-            SELECT id
-            FROM cats
-          )
-        `
+        whereClause += ` AND p.category_id IN (WITH RECURSIVE cats AS (SELECT id FROM product_categories WHERE id = $${params.length} AND is_active = TRUE UNION ALL SELECT pc.id FROM product_categories pc JOIN cats c ON pc.parent_id = c.id WHERE pc.is_active = TRUE) SELECT id FROM cats)`
       }
 
       const result =
         await pool.query(
-          `
-            WITH RECURSIVE category_paths AS (
-              SELECT
-                c.id,
-                c.parent_id,
-                c.name,
-                c.name::text AS category_path
-              FROM product_categories c
-              WHERE c.parent_id IS NULL
-                AND c.is_active = TRUE
-
-              UNION ALL
-
-              SELECT
-                c.id,
-                c.parent_id,
-                c.name,
-                category_paths.category_path ||
-                ' > ' ||
-                c.name
-              FROM product_categories c
-              JOIN category_paths
-                ON category_paths.id = c.parent_id
-              WHERE c.is_active = TRUE
-            )
-            SELECT
-              p.id AS product_id,
-              p.name AS product_name,
-              p.brand_name,
-              p.pattern_code,
-              p.fit_type,
-              p.mark_code,
-              p.gender,
-              p.category_id,
-              c.name AS category_name,
-              c.slug AS category_slug,
-              c.level AS category_level,
-              pc.id AS parent_category_id,
-              pc.name AS parent_category_name,
-              pc.slug AS parent_category_slug,
-              cp.category_path,
-              v.id AS variant_id,
-              v.size,
-              v.colour,
-              v.mrp::numeric AS mrp,
-              v.sale_price::numeric AS base_sale_price,
-              v.sale_price::numeric AS original_sale_price,
-              v.cost_price::numeric AS cost_price,
-              COALESCE(
-                v.b2c_discount_pct,
-                0
-              )::numeric AS b2c_discount_pct,
-              COALESCE(
-                v.b2b_discount_pct,
-                0
-              )::numeric AS b2b_discount_pct,
-              v.mrp::numeric AS original_price_b2c,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS final_price_b2c,
-              v.mrp::numeric AS original_price_b2b,
-              CASE
-                WHEN COALESCE(
-                  v.b2b_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2b_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.cost_price,
-                    0
-                  ),
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS final_price_b2b,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS sale_price,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS price,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS selling_price,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS discounted_price,
-              CASE
-                WHEN COALESCE(
-                  v.b2c_discount_pct,
-                  0
-                ) > 0
-                THEN ROUND(
-                  v.mrp::numeric *
-                  (
-                    100 -
-                    COALESCE(
-                      v.b2c_discount_pct,
-                      0
-                    )
-                  ) / 100,
-                  2
-                )
-                ELSE COALESCE(
-                  NULLIF(
-                    v.sale_price,
-                    0
-                  ),
-                  v.mrp
-                )::numeric
-              END AS mahaveer_price,
-              bvs.on_hand,
-              bvs.reserved,
-              GREATEST(
-                COALESCE(
-                  bvs.on_hand,
-                  0
-                ) -
-                COALESCE(
-                  bvs.reserved,
-                  0
-                ),
-                0
-              )::int AS available_qty,
-              TRUE AS in_stock,
-              COALESCE(
-                bc.ean_code,
-                ''
-              ) AS barcode,
-              COALESCE(
-                bc.ean_code,
-                ''
-              ) AS ean_code,
-              COALESCE(
-                imgs.front_image_url,
-                imgs.main_image_url,
-                v.image_url,
-                ''
-              ) AS image_url,
-              COALESCE(
-                imgs.front_image_url,
-                ''
-              ) AS front_image_url,
-              COALESCE(
-                imgs.back_image_url,
-                ''
-              ) AS back_image_url,
-              COALESCE(
-                imgs.main_image_url,
-                ''
-              ) AS main_image_url,
-              COALESCE(
-                imgs.images,
-                '[]'::json
-              ) AS images
-            FROM branch_variant_stock bvs
-            JOIN product_variants v
-              ON v.id = bvs.variant_id
-            JOIN products p
-              ON p.id = v.product_id
-            LEFT JOIN product_categories c
-              ON c.id = p.category_id
-            LEFT JOIN product_categories pc
-              ON pc.id = c.parent_id
-            LEFT JOIN category_paths cp
-              ON cp.id = p.category_id
-            LEFT JOIN LATERAL (
-              SELECT ean_code
-              FROM barcodes bc
-              WHERE bc.variant_id = v.id
-              ORDER BY id ASC
-              LIMIT 1
-            ) bc ON TRUE
-            LEFT JOIN LATERAL (
-              SELECT
-                MAX(image_url) FILTER (
-                  WHERE image_type = 'front'
-                ) AS front_image_url,
-                MAX(image_url) FILTER (
-                  WHERE image_type = 'back'
-                ) AS back_image_url,
-                MAX(image_url) FILTER (
-                  WHERE image_type = 'main'
-                ) AS main_image_url,
-                JSON_AGG(
-                  JSON_BUILD_OBJECT(
-                    'image_type',
-                    image_type,
-                    'image_url',
-                    image_url,
-                    'public_id',
-                    public_id
-                  )
-                  ORDER BY
-                    CASE image_type
-                      WHEN 'front' THEN 1
-                      WHEN 'main' THEN 2
-                      WHEN 'back' THEN 3
-                      ELSE 4
-                    END,
-                    id
-                ) AS images
-              FROM product_images pi
-              WHERE pi.ean_code IN (
-                SELECT
-                  barcode.ean_code
-                FROM barcodes barcode
-                WHERE barcode.variant_id = v.id
-              )
-            ) imgs ON TRUE
-            WHERE ${whereClause}
-            ORDER BY
-              p.brand_name,
-              p.name,
-              v.colour,
-              v.size,
-              v.id
-          `,
+          `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL AND c.is_active = TRUE UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id WHERE c.is_active = TRUE) SELECT p.id AS product_id, p.name AS product_name, p.brand_name, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, c.name AS category_name, c.slug AS category_slug, c.level AS category_level, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path, v.id AS variant_id, v.size, v.colour, v.mrp::numeric AS mrp, v.sale_price::numeric AS base_sale_price, v.sale_price::numeric AS original_sale_price, v.cost_price::numeric AS cost_price, COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct, COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct, v.mrp::numeric AS original_price_b2c, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2c, v.mrp::numeric AS original_price_b2b, CASE WHEN COALESCE(v.b2b_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2b, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS sale_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS selling_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS discounted_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS mahaveer_price, bvs.on_hand, bvs.reserved, GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty, TRUE AS in_stock, COALESCE(bc.ean_code, '') AS barcode, COALESCE(bc.ean_code, '') AS ean_code, COALESCE(imgs.front_image_url, imgs.main_image_url, v.image_url, '') AS image_url, COALESCE(imgs.front_image_url, '') AS front_image_url, COALESCE(imgs.back_image_url, '') AS back_image_url, COALESCE(imgs.main_image_url, '') AS main_image_url, COALESCE(imgs.images, '[]'::json) AS images FROM branch_variant_stock bvs JOIN product_variants v ON v.id = bvs.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN product_categories c ON c.id = p.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = p.category_id LEFT JOIN LATERAL (SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1) bc ON TRUE LEFT JOIN LATERAL (SELECT MAX(image_url) FILTER (WHERE image_type = 'front') AS front_image_url, MAX(image_url) FILTER (WHERE image_type = 'back') AS back_image_url, MAX(image_url) FILTER (WHERE image_type = 'main') AS main_image_url, JSON_AGG(JSON_BUILD_OBJECT('image_type', image_type, 'image_url', image_url, 'public_id', public_id) ORDER BY CASE image_type WHEN 'front' THEN 1 WHEN 'main' THEN 2 WHEN 'back' THEN 3 ELSE 4 END, id) AS images FROM product_images pi WHERE pi.ean_code IN (SELECT barcode.ean_code FROM barcodes barcode WHERE barcode.variant_id = v.id)) imgs ON TRUE WHERE ${whereClause} ORDER BY p.brand_name, p.name, v.colour, v.size, v.id`,
           params
         )
 
@@ -4607,39 +3402,7 @@ router.get(
 
       const result =
         await pool.query(
-          `
-            SELECT
-              COALESCE(
-                (
-                  SELECT
-                    v.b2c_discount_pct
-                  FROM product_variants v
-                  JOIN branch_variant_stock bvs
-                    ON bvs.variant_id = v.id
-                  WHERE bvs.branch_id = $1
-                    AND v.b2c_discount_pct IS NOT NULL
-                    AND v.is_active = TRUE
-                    AND bvs.is_active = TRUE
-                  LIMIT 1
-                ),
-                0
-              ) AS b2c_discount_pct,
-              COALESCE(
-                (
-                  SELECT
-                    v.b2b_discount_pct
-                  FROM product_variants v
-                  JOIN branch_variant_stock bvs
-                    ON bvs.variant_id = v.id
-                  WHERE bvs.branch_id = $1
-                    AND v.b2b_discount_pct IS NOT NULL
-                    AND v.is_active = TRUE
-                    AND bvs.is_active = TRUE
-                  LIMIT 1
-                ),
-                0
-              ) AS b2b_discount_pct
-          `,
+          `SELECT COALESCE((SELECT v.b2c_discount_pct FROM product_variants v JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2c_discount_pct IS NOT NULL AND v.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2c_discount_pct, COALESCE((SELECT v.b2b_discount_pct FROM product_variants v JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2b_discount_pct IS NOT NULL AND v.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2b_discount_pct`,
           [branchId]
         )
 
@@ -4716,18 +3479,7 @@ router.post(
       }
 
       await pool.query(
-        `
-          UPDATE product_variants v
-          SET
-            b2c_discount_pct = $2,
-            b2b_discount_pct = $3,
-            updated_at = NOW()
-          FROM branch_variant_stock bvs
-          WHERE bvs.variant_id = v.id
-            AND bvs.branch_id = $1
-            AND v.is_active = TRUE
-            AND bvs.is_active = TRUE
-        `,
+        `UPDATE product_variants v SET b2c_discount_pct = $2, b2b_discount_pct = $3, updated_at = NOW() FROM branch_variant_stock bvs WHERE bvs.variant_id = v.id AND bvs.branch_id = $1 AND v.is_active = TRUE AND bvs.is_active = TRUE`,
         [
           branchId,
           b2cDiscount,
