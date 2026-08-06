@@ -24,6 +24,8 @@ const HEADER_ALIASES = {
   size: ['size'],
   colour: ['colour', 'color'],
   pattern: ['pattern code', 'style', 'style code', 'pattern'],
+  designcode: ['design code', 'design_code', 'designcode', 'design id', 'design_id'],
+  patterntype: ['pattern type', 'pattern_type', 'patterntype', 'print type', 'print_type'],
   fitt: ['fit', 'fit type', 'fitt'],
   b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc'],
   b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
@@ -59,6 +61,21 @@ function cleanText(value) {
 
 function normalizeLogicalText(value) {
   return cleanText(value).toLowerCase()
+}
+
+function normalizeDesignCode(value) {
+  return cleanText(value)
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Z0-9._-]/g, '')
+}
+
+function normalizePatternType(value) {
+  return cleanText(value).toUpperCase()
+}
+
+function buildDefaultDesignCode(productId) {
+  return `P-${String(productId).padStart(6, '0')}-D01`
 }
 
 function normalizeBarcode(value) {
@@ -249,8 +266,12 @@ async function initializeImportRowsTable() {
   await pool.query(`ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES product_categories(id) ON DELETE SET NULL`)
   await pool.query(`ALTER TABLE import_jobs ADD COLUMN IF NOT EXISTS worksheet_name TEXT`)
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS category_id BIGINT REFERENCES product_categories(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS design_code TEXT`)
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS pattern_type TEXT`)
   await pool.query(`ALTER TABLE products DROP CONSTRAINT IF EXISTS products_name_brand_name_pattern_code_gender_key`)
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_products_name_brand_pattern_gender_category ON products (name, brand_name, pattern_code, gender, category_id)`)
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_products_design_code_normalized ON products (LOWER(TRIM(design_code))) WHERE NULLIF(TRIM(COALESCE(design_code, '')), '') IS NOT NULL`)
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_pattern_type_normalized ON products (LOWER(TRIM(pattern_type))) WHERE NULLIF(TRIM(COALESCE(pattern_type, '')), '') IS NOT NULL`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows (import_job_id, status_enum, id)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_branch_uploaded_id ON import_jobs (branch_id, id DESC)`)
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_jobs_category_id ON import_jobs(category_id)`)
@@ -303,6 +324,8 @@ function rowToPreparedRecord(raw) {
     SIZE: cleanText(row.size),
     COLOUR: cleanText(row.colour),
     PATTERN: cleanText(row.pattern) || '',
+    DesignCode: normalizeDesignCode(row.designcode),
+    PatternType: normalizePatternType(row.patterntype) || null,
     FITT: cleanText(row.fitt) || null,
     MarkCode: cleanText(row.markcode) || null,
     MRP: toNumOrNull(row.mrp),
@@ -314,6 +337,200 @@ function rowToPreparedRecord(raw) {
     Barcode: barcode,
     Barcodes: barcode ? [barcode] : []
   }
+}
+
+async function findProductByDesignCode(client, designCode, lock = false) {
+  const normalized = normalizeDesignCode(designCode)
+
+  if (!normalized) return null
+
+  const result = await client.query(
+    `SELECT id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id
+     FROM products
+     WHERE UPPER(TRIM(COALESCE(design_code, ''))) = $1
+     ORDER BY id ASC
+     LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
+    [normalized]
+  )
+
+  return result.rows[0] || null
+}
+
+async function findProductsByLegacyIdentity(client, prepared, categoryId, gender, lock = false) {
+  const result = await client.query(
+    `SELECT id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id
+     FROM products
+     WHERE category_id = $1
+       AND gender = $2
+       AND LOWER(TRIM(name)) = LOWER(TRIM($3))
+       AND LOWER(TRIM(brand_name)) = LOWER(TRIM($4))
+       AND LOWER(TRIM(COALESCE(pattern_code, ''))) = LOWER(TRIM($5))
+     ORDER BY id ASC
+     LIMIT 3${lock ? ' FOR UPDATE' : ''}`,
+    [categoryId, gender, prepared.ProductName, prepared.BrandName, prepared.PATTERN || '']
+  )
+
+  return result.rows
+}
+
+async function findProductsByNameBrand(client, prepared, categoryId, gender, lock = false) {
+  const result = await client.query(
+    `SELECT id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id
+     FROM products
+     WHERE category_id = $1
+       AND gender = $2
+       AND LOWER(TRIM(name)) = LOWER(TRIM($3))
+       AND LOWER(TRIM(brand_name)) = LOWER(TRIM($4))
+     ORDER BY id ASC
+     LIMIT 3${lock ? ' FOR UPDATE' : ''}`,
+    [categoryId, gender, prepared.ProductName, prepared.BrandName]
+  )
+
+  return result.rows
+}
+
+function validateMatchedProduct(product, prepared, categoryId, gender) {
+  if (Number(product.category_id) !== Number(categoryId) || normGender(product.gender) !== gender) {
+    throw new Error(`Design ${prepared.DesignCode || product.design_code || product.id} belongs to another category`)
+  }
+
+  if (
+    normalizeLogicalText(product.name) !== normalizeLogicalText(prepared.ProductName) ||
+    normalizeLogicalText(product.brand_name) !== normalizeLogicalText(prepared.BrandName)
+  ) {
+    throw new Error(`Design ${prepared.DesignCode || product.design_code || product.id} belongs to ${product.name} / ${product.brand_name}`)
+  }
+
+  if (prepared.DesignCode && normalizeDesignCode(product.design_code) !== prepared.DesignCode) {
+    throw new Error(`Design code mismatch for ${prepared.DesignCode}`)
+  }
+}
+
+async function updateProductImportMetadata(client, productId, prepared) {
+  const result = await client.query(
+    `UPDATE products
+     SET fit_type = COALESCE($1, fit_type),
+         mark_code = COALESCE($2, mark_code),
+         pattern_type = COALESCE($3, pattern_type),
+         updated_at = NOW()
+     WHERE id = $4
+     RETURNING id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id`,
+    [prepared.FITT, prepared.MarkCode, prepared.PatternType, productId]
+  )
+
+  return result.rows[0] || null
+}
+
+async function createProductForImport(client, prepared, categoryId, gender) {
+  const requestedDesignCode = prepared.DesignCode || null
+  let legacyPatternCode = prepared.PATTERN || ''
+
+  if (requestedDesignCode) {
+    const legacyMatches = await findProductsByLegacyIdentity(client, prepared, categoryId, gender, true)
+
+    if (legacyMatches.length) {
+      legacyPatternCode = `DESIGN-${requestedDesignCode}`
+    }
+  }
+
+  const inserted = await client.query(
+    `INSERT INTO products (
+       name,
+       brand_name,
+       pattern_code,
+       fit_type,
+       mark_code,
+       gender,
+       category_id,
+       design_code,
+       pattern_type,
+       created_at,
+       updated_at
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+     ON CONFLICT DO NOTHING
+     RETURNING id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id`,
+    [
+      prepared.ProductName,
+      prepared.BrandName,
+      legacyPatternCode,
+      prepared.FITT,
+      prepared.MarkCode,
+      gender,
+      categoryId,
+      requestedDesignCode,
+      prepared.PatternType
+    ]
+  )
+
+  let product = inserted.rows[0] || null
+
+  if (!product && requestedDesignCode) {
+    product = await findProductByDesignCode(client, requestedDesignCode, true)
+  }
+
+  if (!product && !requestedDesignCode) {
+    const legacyMatches = await findProductsByLegacyIdentity(client, prepared, categoryId, gender, true)
+
+    if (legacyMatches.length === 1) {
+      product = legacyMatches[0]
+    }
+  }
+
+  if (!product) {
+    throw new Error(`Unable to create or resolve product for barcode ${prepared.Barcode}`)
+  }
+
+  validateMatchedProduct(product, prepared, categoryId, gender)
+
+  if (!normalizeDesignCode(product.design_code)) {
+    const generatedDesignCode = buildDefaultDesignCode(product.id)
+    const updated = await client.query(
+      `UPDATE products
+       SET design_code = $1,
+           pattern_type = COALESCE($2, pattern_type),
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id`,
+      [generatedDesignCode, prepared.PatternType, product.id]
+    )
+    product = updated.rows[0]
+  }
+
+  return product
+}
+
+async function resolveProductForImport(client, prepared, categoryId, gender) {
+  if (prepared.DesignCode) {
+    const byDesignCode = await findProductByDesignCode(client, prepared.DesignCode, true)
+
+    if (byDesignCode) {
+      validateMatchedProduct(byDesignCode, prepared, categoryId, gender)
+      return updateProductImportMetadata(client, byDesignCode.id, prepared)
+    }
+
+    return createProductForImport(client, prepared, categoryId, gender)
+  }
+
+  const legacyMatches = await findProductsByLegacyIdentity(client, prepared, categoryId, gender, true)
+
+  if (legacyMatches.length > 1) {
+    throw new Error(`design_code is required because multiple products match ${prepared.ProductName} / ${prepared.BrandName}`)
+  }
+
+  if (legacyMatches.length === 1) {
+    return updateProductImportMetadata(client, legacyMatches[0].id, prepared)
+  }
+
+  if (!prepared.PATTERN) {
+    const nameBrandMatches = await findProductsByNameBrand(client, prepared, categoryId, gender, true)
+
+    if (nameBrandMatches.length) {
+      throw new Error(`design_code or pattern_code is required for new barcode ${prepared.Barcode}`)
+    }
+  }
+
+  return createProductForImport(client, prepared, categoryId, gender)
 }
 
 function shouldQueueRow(prepared) {
@@ -351,6 +568,8 @@ function buildPreparedImportRows(rows, createdStatus, errorStatus) {
       normalizeLogicalText(prepared.ProductName),
       normalizeLogicalText(prepared.BrandName),
       normalizeLogicalText(prepared.PATTERN),
+      normalizeLogicalText(prepared.DesignCode),
+      normalizeLogicalText(prepared.PatternType),
       normalizeLogicalText(prepared.SIZE),
       normalizeLogicalText(prepared.COLOUR),
       String(prepared.MRP ?? ''),
@@ -420,7 +639,7 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
 
   if (!barcodes.length) return []
 
-  const result = await pool.query(`WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') AS barcode, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]) ORDER BY b.id ASC`, [barcodes])
+  const result = await pool.query(`WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') AS barcode, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]) ORDER BY b.id ASC`, [barcodes])
 
   const conflicts = []
 
@@ -433,8 +652,9 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
     const genderMismatch = normGender(existing.gender) !== gender
     const productMismatch = normalizeLogicalText(existing.product_name) !== normalizeLogicalText(prepared.ProductName)
     const brandMismatch = normalizeLogicalText(existing.brand_name) !== normalizeLogicalText(prepared.BrandName)
+    const designMismatch = Boolean(prepared.DesignCode) && normalizeDesignCode(existing.design_code) !== prepared.DesignCode
 
-    if (!categoryMismatch && !genderMismatch && !productMismatch && !brandMismatch) {
+    if (!categoryMismatch && !genderMismatch && !productMismatch && !brandMismatch && !designMismatch) {
       continue
     }
 
@@ -447,6 +667,10 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
       existing_product_id: existing.product_id,
       existing_product: existing.product_name,
       existing_brand: existing.brand_name,
+      incoming_design_code: prepared.DesignCode || null,
+      existing_design_code: existing.design_code || null,
+      existing_pattern_type: existing.pattern_type || null,
+      existing_pattern_code: existing.pattern_code || null,
       existing_gender: existing.gender,
       existing_category_id: existing.category_id,
       existing_category_path: existing.category_path
@@ -1120,6 +1344,12 @@ function makeVariantPayload(row) {
     variantIds: [row.variant_id],
     product_id: row.product_id,
     productId: row.product_id,
+    design_code: row.design_code || '',
+    designCode: row.design_code || '',
+    pattern_type: row.pattern_type || '',
+    patternType: row.pattern_type || '',
+    pattern_code: row.pattern_code || '',
+    patternCode: row.pattern_code || '',
     category_id: row.category_id,
     categoryId: row.category_id,
     category_name: row.category_name,
@@ -1328,7 +1558,7 @@ function groupStockRows(rows) {
     Array.isArray(rows) ? rows : []
   ) {
     const productKey = [
-      String(row.product_id || ''),
+      normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id || ''}`,
       String(row.category_id || '')
     ].join('|')
 
@@ -1342,6 +1572,10 @@ function groupStockRows(rows) {
             row.product_name,
           brand_name:
             row.brand_name,
+          design_code:
+            row.design_code || '',
+          pattern_type:
+            row.pattern_type || '',
           pattern_code:
             row.pattern_code || '',
           fit_type:
@@ -1374,14 +1608,7 @@ function groupStockRows(rows) {
     const group =
       productGroups.get(productKey)
 
-    const variantKey = [
-      normalizeGroupColour(
-        row.colour
-      ),
-      normalizeGroupSize(
-        row.size
-      )
-    ].join('|')
+    const variantKey = String(row.variant_id || row.barcode || row.ean_code || '')
 
     const payload =
       makeVariantPayload(row)
@@ -1695,6 +1922,18 @@ function groupStockRows(rows) {
           group.brand_name,
         brand:
           group.brand_name,
+        design_code:
+          group.design_code,
+        designCode:
+          group.design_code,
+        group_key:
+          group.design_code || `PRODUCT-${group.product_id}`,
+        groupKey:
+          group.design_code || `PRODUCT-${group.product_id}`,
+        pattern_type:
+          group.pattern_type,
+        patternType:
+          group.pattern_type,
         pattern_code:
           group.pattern_code,
         patternCode:
@@ -2752,7 +2991,7 @@ router.post(
 
             const existingBarcodeResult =
               await client.query(
-                `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT b.id AS barcode_id, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.pattern_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY b.id ASC LIMIT 1 FOR UPDATE OF b, v, p`,
+                `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT b.id AS barcode_id, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY b.id ASC LIMIT 1 FOR UPDATE OF b, v, p`,
                 [barcode]
               )
 
@@ -2805,13 +3044,14 @@ router.post(
               variantId =
                 existing.variant_id
 
-              await client.query(
-                `UPDATE products SET fit_type = COALESCE($1, fit_type), mark_code = COALESCE($2, mark_code), updated_at = NOW() WHERE id = $3`,
-                [
-                  prepared.FITT,
-                  prepared.MarkCode,
-                  productId
-                ]
+              if (prepared.DesignCode && normalizeDesignCode(existing.design_code) !== prepared.DesignCode) {
+                throw new Error(`Barcode ${barcode} belongs to design ${existing.design_code || 'UNKNOWN'}, not ${prepared.DesignCode}`)
+              }
+
+              await updateProductImportMetadata(
+                client,
+                productId,
+                prepared
               )
 
               await client.query(
@@ -2828,46 +3068,14 @@ router.post(
                 ]
               )
             } else {
-              if (!prepared.PATTERN) {
-                const patternResult =
-                  await client.query(
-                    `SELECT COUNT(*)::int AS count FROM products WHERE category_id = $1 AND gender = $2 AND LOWER(TRIM(name)) = LOWER(TRIM($3)) AND LOWER(TRIM(brand_name)) = LOWER(TRIM($4)) AND NULLIF(TRIM(COALESCE(pattern_code, '')), '') IS NOT NULL`,
-                    [
-                      categoryId,
-                      gender,
-                      prepared.ProductName,
-                      prepared.BrandName
-                    ]
-                  )
+              const product = await resolveProductForImport(
+                client,
+                prepared,
+                categoryId,
+                gender
+              )
 
-                if (
-                  (
-                    patternResult.rows[0]
-                      ?.count || 0
-                  ) > 0
-                ) {
-                  throw new Error(
-                    `Pattern/Style code is required for new barcode ${barcode}`
-                  )
-                }
-              }
-
-              const productResult =
-                await client.query(
-                  `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender, category_id) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (name, brand_name, pattern_code, gender, category_id) DO UPDATE SET fit_type = COALESCE(EXCLUDED.fit_type, products.fit_type), mark_code = COALESCE(EXCLUDED.mark_code, products.mark_code), updated_at = NOW() RETURNING id`,
-                  [
-                    prepared.ProductName,
-                    prepared.BrandName,
-                    prepared.PATTERN,
-                    prepared.FITT,
-                    prepared.MarkCode,
-                    gender,
-                    categoryId
-                  ]
-                )
-
-              productId =
-                productResult.rows[0].id
+              productId = product.id
 
               const variantResult =
                 await client.query(
@@ -3355,7 +3563,7 @@ router.get(
 
       const result =
         await pool.query(
-          `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL AND c.is_active = TRUE UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id WHERE c.is_active = TRUE) SELECT p.id AS product_id, p.name AS product_name, p.brand_name, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, c.name AS category_name, c.slug AS category_slug, c.level AS category_level, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path, v.id AS variant_id, v.size, v.colour, v.mrp::numeric AS mrp, v.sale_price::numeric AS base_sale_price, v.sale_price::numeric AS original_sale_price, v.cost_price::numeric AS cost_price, COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct, COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct, v.mrp::numeric AS original_price_b2c, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2c, v.mrp::numeric AS original_price_b2b, CASE WHEN COALESCE(v.b2b_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2b, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS sale_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS selling_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS discounted_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS mahaveer_price, bvs.on_hand, bvs.reserved, GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty, TRUE AS in_stock, COALESCE(bc.ean_code, '') AS barcode, COALESCE(bc.ean_code, '') AS ean_code, COALESCE(imgs.front_image_url, imgs.main_image_url, v.image_url, '') AS image_url, COALESCE(imgs.front_image_url, '') AS front_image_url, COALESCE(imgs.back_image_url, '') AS back_image_url, COALESCE(imgs.main_image_url, '') AS main_image_url, COALESCE(imgs.images, '[]'::json) AS images FROM branch_variant_stock bvs JOIN product_variants v ON v.id = bvs.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN product_categories c ON c.id = p.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = p.category_id LEFT JOIN LATERAL (SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1) bc ON TRUE LEFT JOIN LATERAL (SELECT MAX(image_url) FILTER (WHERE image_type = 'front') AS front_image_url, MAX(image_url) FILTER (WHERE image_type = 'back') AS back_image_url, MAX(image_url) FILTER (WHERE image_type = 'main') AS main_image_url, JSON_AGG(JSON_BUILD_OBJECT('image_type', image_type, 'image_url', image_url, 'public_id', public_id) ORDER BY CASE image_type WHEN 'front' THEN 1 WHEN 'main' THEN 2 WHEN 'back' THEN 3 ELSE 4 END, id) AS images FROM product_images pi WHERE pi.ean_code IN (SELECT barcode.ean_code FROM barcodes barcode WHERE barcode.variant_id = v.id)) imgs ON TRUE WHERE ${whereClause} ORDER BY p.brand_name, p.name, v.colour, v.size, v.id`,
+          `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL AND c.is_active = TRUE UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id WHERE c.is_active = TRUE) SELECT p.id AS product_id, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, c.name AS category_name, c.slug AS category_slug, c.level AS category_level, pc.id AS parent_category_id, pc.name AS parent_category_name, pc.slug AS parent_category_slug, cp.category_path, v.id AS variant_id, v.size, v.colour, v.mrp::numeric AS mrp, v.sale_price::numeric AS base_sale_price, v.sale_price::numeric AS original_sale_price, v.cost_price::numeric AS cost_price, COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct, COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct, v.mrp::numeric AS original_price_b2c, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2c, v.mrp::numeric AS original_price_b2b, CASE WHEN COALESCE(v.b2b_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2b_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.cost_price, 0), NULLIF(v.sale_price, 0), v.mrp)::numeric END AS final_price_b2b, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS sale_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS selling_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS discounted_price, CASE WHEN COALESCE(v.b2c_discount_pct, 0) > 0 THEN ROUND(v.mrp::numeric * (100 - COALESCE(v.b2c_discount_pct, 0)) / 100, 2) ELSE COALESCE(NULLIF(v.sale_price, 0), v.mrp)::numeric END AS mahaveer_price, bvs.on_hand, bvs.reserved, GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty, TRUE AS in_stock, COALESCE(bc.ean_code, '') AS barcode, COALESCE(bc.ean_code, '') AS ean_code, COALESCE(imgs.front_image_url, imgs.main_image_url, v.image_url, '') AS image_url, COALESCE(imgs.front_image_url, '') AS front_image_url, COALESCE(imgs.back_image_url, '') AS back_image_url, COALESCE(imgs.main_image_url, '') AS main_image_url, COALESCE(imgs.images, '[]'::json) AS images FROM branch_variant_stock bvs JOIN product_variants v ON v.id = bvs.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN product_categories c ON c.id = p.category_id LEFT JOIN product_categories pc ON pc.id = c.parent_id LEFT JOIN category_paths cp ON cp.id = p.category_id LEFT JOIN LATERAL (SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1) bc ON TRUE LEFT JOIN LATERAL (SELECT MAX(image_url) FILTER (WHERE image_type = 'front') AS front_image_url, MAX(image_url) FILTER (WHERE image_type = 'back') AS back_image_url, MAX(image_url) FILTER (WHERE image_type = 'main') AS main_image_url, JSON_AGG(JSON_BUILD_OBJECT('image_type', image_type, 'image_url', image_url, 'public_id', public_id) ORDER BY CASE image_type WHEN 'front' THEN 1 WHEN 'main' THEN 2 WHEN 'back' THEN 3 ELSE 4 END, id) AS images FROM product_images pi WHERE pi.ean_code IN (SELECT barcode.ean_code FROM barcodes barcode WHERE barcode.variant_id = v.id)) imgs ON TRUE WHERE ${whereClause} ORDER BY p.brand_name, p.name, v.colour, v.size, v.id`,
           params
         )
 

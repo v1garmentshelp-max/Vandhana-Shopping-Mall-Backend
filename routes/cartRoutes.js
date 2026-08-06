@@ -264,6 +264,9 @@ router.get('/:userId', async (req, res) => {
           p.name AS product_name,
           p.brand_name AS brand,
           p.gender,
+          p.design_code,
+          p.pattern_code,
+          p.pattern_type,
           v.size,
           v.colour AS color,
           v.mrp::numeric AS mrp,
@@ -294,8 +297,7 @@ router.get('/:userId', async (req, res) => {
           FROM product_variants v2
           JOIN products p2 ON p2.id = v2.product_id
           JOIN barcodes b2 ON b2.variant_id = v2.id
-          WHERE p2.name = p.name
-            AND p2.brand_name = p.brand_name
+          WHERE v2.product_id = v.product_id
             AND v2.size = v.size
             AND v2.colour = v.colour
           ORDER BY b2.id ASC
@@ -323,6 +325,9 @@ router.get('/:userId', async (req, res) => {
           product_name,
           brand,
           gender,
+          design_code,
+          pattern_code,
+          pattern_type,
           color,
           color AS colour,
           size,
@@ -388,6 +393,9 @@ router.get('/:userId', async (req, res) => {
           COALESCE(NULLIF(c.custom_title, ''), 'Custom Product') AS product_name,
           COALESCE(NULLIF(c.custom_brand, ''), 'V1Garments') AS brand,
           'Custom' AS gender,
+          NULL::text AS design_code,
+          NULL::text AS pattern_code,
+          NULL::text AS pattern_type,
           c.selected_color AS color,
           c.selected_color AS colour,
           c.selected_size AS size,
@@ -421,7 +429,14 @@ router.get('/:userId', async (req, res) => {
 
     const { rows } = await pool.query(sql, [uid, cloud, branchId])
 
-    return res.json(rows)
+    return res.json(
+      rows.map(row => ({
+        ...row,
+        designCode: row.design_code || '',
+        patternCode: row.pattern_code || '',
+        patternType: row.pattern_type || ''
+      }))
+    )
   } catch (err) {
     return res.status(500).json({ message: 'Error fetching cart', error: err.message })
   }

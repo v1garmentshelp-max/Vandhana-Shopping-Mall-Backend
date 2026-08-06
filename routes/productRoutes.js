@@ -19,6 +19,10 @@ const toGender = v => {
 
 const cleanValue = v => String(v ?? '').replace(/\s+/g, ' ').trim()
 
+const normalizeDesignCode = value => cleanValue(value).toUpperCase()
+
+const normalizePatternType = value => cleanValue(value).toUpperCase()
+
 const normalizeBarcodeForWrite = v =>
   String(v ?? '')
     .trim()
@@ -232,6 +236,8 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     p.brand_name AS brand_name,
     p.gender,
     p.gender AS category,
+    p.design_code,
+    p.pattern_type,
     p.pattern_code,
     p.fit_type,
     p.mark_code,
@@ -359,6 +365,12 @@ const makeVariantPayload = row => ({
   variantId: row.variant_id,
   product_id: row.product_id,
   productId: row.product_id,
+  design_code: row.design_code || '',
+  designCode: row.design_code || '',
+  pattern_type: row.pattern_type || '',
+  patternType: row.pattern_type || '',
+  pattern_code: row.pattern_code || '',
+  patternCode: row.pattern_code || '',
   category_id: row.category_id,
   categoryId: row.category_id,
   category_name: row.category_name,
@@ -431,7 +443,7 @@ const groupProductRows = rows => {
   for (const row of Array.isArray(rows) ? rows : []) {
     if (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour)) continue
 
-    const key = String(row.product_id)
+    const key = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
 
     if (!groups.has(key)) {
       groups.set(key, {
@@ -440,6 +452,8 @@ const groupProductRows = rows => {
         brand: row.brand,
         brand_name: row.brand_name || row.brand,
         gender: row.gender,
+        design_code: row.design_code || '',
+        pattern_type: row.pattern_type || '',
         pattern_code: row.pattern_code || '',
         fit_type: row.fit_type || null,
         mark_code: row.mark_code || null,
@@ -523,6 +537,12 @@ const groupProductRows = rows => {
       parentCategorySlug: group.parent_category_slug,
       category_path: group.category_path,
       categoryPath: group.category_path,
+      design_code: group.design_code,
+      designCode: group.design_code,
+      group_key: group.design_code || `PRODUCT-${group.product_id}`,
+      groupKey: group.design_code || `PRODUCT-${group.product_id}`,
+      pattern_type: group.pattern_type,
+      patternType: group.pattern_type,
       pattern_code: group.pattern_code,
       patternCode: group.pattern_code,
       fit_type: group.fit_type,
@@ -733,10 +753,23 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
     for (const t of tokens) {
       params.push(`%${t}%`)
       const idx = params.length
-      parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR c.name ILIKE $${idx} OR pc.name ILIKE $${idx} OR cp.category_path ILIKE $${idx})`)
+      parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR p.design_code ILIKE $${idx} OR p.pattern_type ILIKE $${idx} OR p.pattern_code ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR c.name ILIKE $${idx} OR pc.name ILIKE $${idx} OR cp.category_path ILIKE $${idx})`)
     }
 
     where += ` AND (${parts.join(' OR ')})`
+  }
+
+  const designCodeFilter = normalizeDesignCode(req.query.design_code || req.query.designCode || '')
+  const patternTypeFilter = normalizePatternType(req.query.pattern_type || req.query.patternType || '')
+
+  if (designCodeFilter) {
+    params.push(designCodeFilter)
+    where += ` AND UPPER(TRIM(COALESCE(p.design_code, ''))) = $${params.length}`
+  }
+
+  if (patternTypeFilter) {
+    params.push(patternTypeFilter)
+    where += ` AND UPPER(TRIM(COALESCE(p.pattern_type, ''))) = $${params.length}`
   }
 
   if (hasImage) {
@@ -965,15 +998,37 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
 
   const eanCode = normalizeBarcodeForWrite(body?.ean_code || body?.eanCode || body?.barcode || barcodeRow.rows[0]?.ean_code || '')
 
+  const productMetadata = await client.query(
+    `SELECT design_code, pattern_type, pattern_code
+     FROM products
+     WHERE id = $1
+     LIMIT 1`,
+    [productId]
+  )
+
+  const existingMetadata = productMetadata.rows[0] || {}
+  const requestedDesignCode = normalizeDesignCode(body?.design_code || body?.designCode || '')
+  const existingDesignCode = normalizeDesignCode(existingMetadata.design_code || '')
+
+  if (requestedDesignCode && requestedDesignCode !== existingDesignCode) {
+    return { status: 409, payload: { message: 'design_code cannot be changed through the product update endpoint' } }
+  }
+
+  const hasPatternType = Object.prototype.hasOwnProperty.call(body || {}, 'pattern_type') || Object.prototype.hasOwnProperty.call(body || {}, 'patternType')
+  const nextPatternType = hasPatternType
+    ? normalizePatternType(body?.pattern_type ?? body?.patternType) || null
+    : existingMetadata.pattern_type || null
+
   await client.query(
     `UPDATE products
      SET name = $1,
          brand_name = $2,
          gender = $3,
          category_id = $4,
+         pattern_type = $5,
          updated_at = NOW()
-     WHERE id = $5`,
-    [nextName, nextBrand, gender, categoryId, productId]
+     WHERE id = $6`,
+    [nextName, nextBrand, gender, categoryId, nextPatternType, productId]
   )
 
   await client.query(
@@ -1035,6 +1090,12 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
       category: gender,
       gender,
       category_id: categoryId,
+      design_code: existingMetadata.design_code || '',
+      designCode: existingMetadata.design_code || '',
+      pattern_type: nextPatternType || '',
+      patternType: nextPatternType || '',
+      pattern_code: existingMetadata.pattern_code || '',
+      patternCode: existingMetadata.pattern_code || '',
       brand: nextBrand,
       brand_name: nextBrand,
       product_name: nextName,
