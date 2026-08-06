@@ -1286,6 +1286,22 @@ function normalizeGroupSize(value) {
     .replace(/\s+/g, '')
 }
 
+function normalizeStorefrontGroupPart(value) {
+  const normalized = cleanText(value)
+    .toUpperCase()
+    .replace(/&/g, ' AND ')
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || 'UNSPECIFIED'
+}
+
+function buildStorefrontGroupKey(designCode, productId, colour, categoryId) {
+  const base = normalizeDesignCode(designCode) || `PRODUCT-${productId || 'UNKNOWN'}`
+  const category = categoryId ? `-CAT-${categoryId}` : ''
+  return `${base}${category}--COLOR-${normalizeStorefrontGroupPart(colour)}`
+}
+
 function mergeImages(first, second) {
   const seen = new Set()
   const output = []
@@ -1732,10 +1748,10 @@ function groupStockRows(rows) {
         .push(row)
     }
 
-    for (
-      const colourGroup of
-      colourGroups.values()
-    ) {
+    const colourGroupList = Array.from(colourGroups.values())
+
+    for (let cardGroupIndex = 0; cardGroupIndex < colourGroupList.length; cardGroupIndex += 1) {
+      const colourGroup = colourGroupList[cardGroupIndex]
       const cardRows =
         colourGroup.rows
           .slice()
@@ -1883,6 +1899,13 @@ function groupStockRows(rows) {
         selected.colour ||
         ''
 
+      const storefrontGroupKey = buildStorefrontGroupKey(
+        group.design_code,
+        group.product_id,
+        selectedColour,
+        group.category_id
+      )
+
       const selectedImages =
         normalizeImages(
           imageRow.images
@@ -1926,10 +1949,26 @@ function groupStockRows(rows) {
           group.design_code,
         designCode:
           group.design_code,
+        source_design_code:
+          group.design_code,
+        sourceDesignCode:
+          group.design_code,
+        storefront_group_key:
+          storefrontGroupKey,
+        storefrontGroupKey:
+          storefrontGroupKey,
         group_key:
-          group.design_code || `PRODUCT-${group.product_id}`,
+          storefrontGroupKey,
         groupKey:
-          group.design_code || `PRODUCT-${group.product_id}`,
+          storefrontGroupKey,
+        design_key:
+          storefrontGroupKey,
+        designKey:
+          storefrontGroupKey,
+        route_key:
+          storefrontGroupKey,
+        routeKey:
+          storefrontGroupKey,
         pattern_type:
           group.pattern_type,
         patternType:
@@ -2178,9 +2217,9 @@ function groupStockRows(rows) {
         colorVariantCount:
           cardVariants.length,
         card_group_index:
-          0,
+          cardGroupIndex,
         cardGroupIndex:
-          0,
+          cardGroupIndex,
         variants,
         color_variants:
           cardVariants,
