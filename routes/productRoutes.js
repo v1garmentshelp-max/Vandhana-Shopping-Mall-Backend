@@ -211,8 +211,8 @@ const generatedImageSql = cloudIdx => `
 
 const frontImageSql = cloudIdx => `
   COALESCE(
-    NULLIF(v.image_url, ''),
     NULLIF(pi_front.image_url, ''),
+    NULLIF(v.image_url, ''),
     ${generatedImageSql(cloudIdx)},
     ${fallbackImageSql()}
   )
@@ -325,11 +325,26 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     FROM product_images pi
     WHERE pi.ean_code = bc_self.ean_code
       AND COALESCE(pi.image_url, '') <> ''
-      AND pi.image_url NOT ILIKE '%__back__%'
-      AND pi.image_url NOT ILIKE '%/back/%'
-      AND pi.image_url NOT ILIKE '%back_%'
-      AND pi.image_url NOT ILIKE '%back-%'
-    ORDER BY uploaded_at DESC
+      AND (
+        LOWER(TRIM(COALESCE(pi.image_type, ''))) IN ('front', 'main', 'primary', 'default')
+        OR (
+          COALESCE(TRIM(pi.image_type), '') = ''
+          AND pi.image_url NOT ILIKE '%__back__%'
+          AND pi.image_url NOT ILIKE '%/back/%'
+          AND pi.image_url NOT ILIKE '%back_%'
+          AND pi.image_url NOT ILIKE '%back-%'
+        )
+      )
+    ORDER BY
+      CASE LOWER(TRIM(COALESCE(pi.image_type, '')))
+        WHEN 'front' THEN 1
+        WHEN 'main' THEN 2
+        WHEN 'primary' THEN 3
+        WHEN 'default' THEN 4
+        ELSE 5
+      END,
+      uploaded_at DESC,
+      id DESC
     LIMIT 1
   ) pi_front ON TRUE
   LEFT JOIN LATERAL (
@@ -338,12 +353,21 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     WHERE pi.ean_code = bc_self.ean_code
       AND COALESCE(pi.image_url, '') <> ''
       AND (
-        pi.image_url ILIKE '%__back__%'
+        LOWER(TRIM(COALESCE(pi.image_type, ''))) IN ('back', 'rear', 'reverse')
+        OR pi.image_url ILIKE '%__back__%'
         OR pi.image_url ILIKE '%/back/%'
         OR pi.image_url ILIKE '%back_%'
         OR pi.image_url ILIKE '%back-%'
       )
-    ORDER BY uploaded_at DESC
+    ORDER BY
+      CASE LOWER(TRIM(COALESCE(pi.image_type, '')))
+        WHEN 'back' THEN 1
+        WHEN 'rear' THEN 2
+        WHEN 'reverse' THEN 3
+        ELSE 4
+      END,
+      uploaded_at DESC,
+      id DESC
     LIMIT 1
   ) pi_back ON TRUE
   LEFT JOIN LATERAL (

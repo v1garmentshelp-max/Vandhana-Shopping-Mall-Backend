@@ -2191,21 +2191,39 @@ function groupStockRows(rows) {
           stockSources,
         stockSources,
         image_url:
-          imageRow.image_url || '',
+          imageRow.front_image_url ||
+          imageRow.main_image_url ||
+          imageRow.image_url ||
+          '',
         imageUrl:
-          imageRow.image_url || '',
+          imageRow.front_image_url ||
+          imageRow.main_image_url ||
+          imageRow.image_url ||
+          '',
         front_image_url:
-          imageRow.front_image_url || '',
+          imageRow.front_image_url ||
+          imageRow.main_image_url ||
+          imageRow.image_url ||
+          '',
         frontImageUrl:
-          imageRow.front_image_url || '',
+          imageRow.front_image_url ||
+          imageRow.main_image_url ||
+          imageRow.image_url ||
+          '',
         back_image_url:
           imageRow.back_image_url || '',
         backImageUrl:
           imageRow.back_image_url || '',
         main_image_url:
-          imageRow.main_image_url || '',
+          imageRow.main_image_url ||
+          imageRow.front_image_url ||
+          imageRow.image_url ||
+          '',
         mainImageUrl:
-          imageRow.main_image_url || '',
+          imageRow.main_image_url ||
+          imageRow.front_image_url ||
+          imageRow.image_url ||
+          '',
         images:
           selectedImages,
         variant_count:
