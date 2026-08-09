@@ -22,26 +22,9 @@ const asPositiveInt = (value, fallback) => {
   return n
 }
 
-const requireSuperAdmin = (req, res, next) => {
-  const role = String(
-    req.user?.role_enum ||
-      req.user?.role ||
-      ''
-  ).toUpperCase()
-
-  if (role !== 'SUPER_ADMIN') {
-    return res.status(403).json({
-      message: 'Forbidden'
-    })
-  }
-
-  return next()
-}
-
 router.get(
   '/admin/summary',
   requireAuth,
-  requireSuperAdmin,
   async (req, res) => {
     try {
       await expireLots(pool)
@@ -67,7 +50,8 @@ router.get(
       )
 
       const customerQ = await pool.query(
-        `SELECT COUNT(*)::int AS total_b2c_customers
+        `SELECT
+           COUNT(*)::int AS total_b2c_customers
          FROM vandana_users
          WHERE UPPER(COALESCE(type, 'B2C')) = 'B2C'`
       )
@@ -178,7 +162,6 @@ router.get(
 router.get(
   '/admin/users',
   requireAuth,
-  requireSuperAdmin,
   async (req, res) => {
     try {
       await expireLots(pool)
@@ -312,8 +295,7 @@ router.get(
           total > 0
             ? Math.ceil(total / limit)
             : 1,
-        warning_days:
-          settings.warning_days,
+        warning_days: settings.warning_days,
         users: q.rows.map(row => ({
           id: Number(row.id),
           name: row.name,
@@ -334,8 +316,9 @@ router.get(
             row.days_remaining == null
               ? null
               : Number(row.days_remaining),
-          hurry_up:
-            Boolean(row.hurry_up),
+          hurry_up: Boolean(
+            row.hurry_up
+          ),
           transaction_count: Number(
             row.transaction_count || 0
           ),
@@ -358,7 +341,6 @@ router.get(
 router.get(
   '/admin/users/:userId',
   requireAuth,
-  requireSuperAdmin,
   async (req, res) => {
     try {
       const userId = Number(
@@ -495,8 +477,7 @@ router.post(
     try {
       const result =
         await previewRedemption({
-          userId:
-            req.customer.id,
+          userId: req.customer.id,
           requestedPoints:
             req.body?.reward_points ??
             req.body?.points ??
