@@ -23,123 +23,454 @@ const defaultOrigins = [
   'https://www.v1garments.com'
 ]
 
-const envOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map(value => value.trim())
-  .filter(Boolean)
+const envOrigins =
+  (
+    process.env.CORS_ORIGINS ||
+    ''
+  )
+    .split(',')
+    .map(
+      value =>
+        value.trim()
+    )
+    .filter(Boolean)
 
-const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins
+const allowedOrigins =
+  envOrigins.length
+    ? envOrigins
+    : defaultOrigins
 
 const corsOptions = {
-  origin(origin, callback) {
-    if (!origin) return callback(null, true)
-    if (allowedOrigins.includes('*')) return callback(null, true)
-    if (allowedOrigins.includes(origin)) return callback(null, true)
-    return callback(new Error('Not allowed by CORS'))
+  origin(
+    origin,
+    callback
+  ) {
+    if (!origin) {
+      return callback(
+        null,
+        true
+      )
+    }
+
+    if (
+      allowedOrigins.includes(
+        '*'
+      )
+    ) {
+      return callback(
+        null,
+        true
+      )
+    }
+
+    if (
+      allowedOrigins.includes(
+        origin
+      )
+    ) {
+      return callback(
+        null,
+        true
+      )
+    }
+
+    return callback(
+      new Error(
+        'Not allowed by CORS'
+      )
+    )
   },
-  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['authorization', 'content-type', 'x-api-key'],
+  methods: [
+    'GET',
+    'HEAD',
+    'PUT',
+    'PATCH',
+    'POST',
+    'DELETE',
+    'OPTIONS'
+  ],
+  allowedHeaders: [
+    'authorization',
+    'content-type',
+    'x-api-key'
+  ],
   credentials: true
 }
 
-const shiprocketPublicRoutes = require('./routes/shiprocketPublicRoutes')
-const transactionRoutes = require('./routes/transactionRoutes')
+const shiprocketPublicRoutes =
+  require(
+    './routes/shiprocketPublicRoutes'
+  )
 
-app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
-  res.set('Pragma', 'no-cache')
-  res.set('Expires', '0')
-  next()
-})
+const transactionRoutes =
+  require(
+    './routes/transactionRoutes'
+  )
 
-app.use(cors(corsOptions))
-app.options('*', cors(corsOptions))
-app.use(express.json({ limit: '10mb' }))
-app.use(express.urlencoded({ extended: true, limit: '10mb' }))
-
-app.use('/api', shiprocketPublicRoutes)
-app.use('/api/upload', require('./routes/uploadRoutes'))
-app.use('/api/categories', require('./routes/categoryRoutes'))
-app.use('/api/products', require('./routes/productRoutes'))
-app.use('/api/product-design-review', require('./routes/productDesignReviewRoutes'))
-app.use('/api/b2b-customers', require('./routes/b2bCustomerRoutes'))
-app.use('/api/b2c-customers', require('./routes/b2cCustomerRoutes'))
-app.use('/api/signup', require('./routes/b2cCustomerRoutes'))
-app.use('/api/auth', require('./routes/authRoutes'))
-app.use('/api/wishlist', require('./routes/wishlistRoutes'))
-app.use('/api/cart', require('./routes/cartRoutes'))
-app.use('/api/user', require('./routes/userRoutes'))
-app.use('/api/orders', require('./routes/orderRoutes'))
-app.use('/api/auth-branch', require('./routes/authBranchRoutes'))
-app.use('/api/barcodes', require('./routes/barcodeRoutes'))
-app.use('/api/branch', require('./routes/branchInventoryRoutes'))
-app.use('/api/inventory', require('./routes/inventoryRoutes'))
-app.use('/api/sales', require('./routes/salesRoutes'))
-app.use('/api/transactions', transactionRoutes)
-app.use('/api', require('./routes/shiprocketRoutes'))
-app.use('/api', require('./routes/shipmentRoutes'))
-app.use('/api', require('./routes/returnsRoutes'))
-app.use('/api/razorpay', require('./routes/razorpayRoutes'))
-app.use('/api/homepage-images', require('./routes/homepageImageRoutes'))
-
-app.get('/', (req, res) => res.status(200).send('Vandana Shopping Mall API is running'))
-app.get('/healthz', (req, res) => res.status(200).send('ok'))
-
-app.get('/api/debug/jwt', (req, res) => {
-  res.json({ jwtSecretPresent: Boolean(process.env.JWT_SECRET) })
-})
-
-app.get('/api/debug/db', async (req, res) => {
-  const pool = require('./db')
-  const schema = process.env.DB_SCHEMA || 'public'
-
-  try {
-    const dbInfo = await pool.query(
-      'SELECT current_database() AS db, current_schema() AS current_schema'
-    )
-    const tableInfo = await pool.query(
-      `SELECT table_schema, table_name
-       FROM information_schema.tables
-       WHERE table_name = 'vandana_users'
-       ORDER BY table_schema, table_name`
-    )
-    const rowInfo = await pool.query(
-      `SELECT COUNT(*)::int AS count FROM "${schema}"."vandana_users"`
+app.use(
+  (req, res, next) => {
+    res.set(
+      'Cache-Control',
+      'no-store, no-cache, must-revalidate, proxy-revalidate'
     )
 
-    res.json({
-      dbOk: true,
-      database: dbInfo.rows[0],
-      vandanaUsersTables: tableInfo.rows,
-      vandanaUsersCount: rowInfo.rows[0].count
-    })
-  } catch (error) {
-    res.status(500).json({
-      dbOk: false,
-      error: error.message,
-      detail: error.detail || null,
-      code: error.code || null,
-      table: error.table || null,
-      constraint: error.constraint || null
-    })
+    res.set(
+      'Pragma',
+      'no-cache'
+    )
+
+    res.set(
+      'Expires',
+      '0'
+    )
+
+    next()
   }
-})
+)
 
-app.use((error, req, res, next) => {
-  if (error && error.message === 'Not allowed by CORS') {
-    return res.status(403).json({ message: 'CORS blocked' })
-  }
+app.use(
+  cors(corsOptions)
+)
 
-  const status = error.status || error.statusCode || 500
+app.options(
+  '*',
+  cors(corsOptions)
+)
 
-  return res.status(status).json({
-    message:
-      process.env.DEBUG_ERRORS === '1'
-        ? error.message || 'Server error'
-        : 'Server error'
+app.use(
+  express.json({
+    limit: '10mb'
   })
-})
+)
 
-app.use((req, res) => res.status(404).json({ message: 'Not found' }))
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: '10mb'
+  })
+)
+
+app.use(
+  '/api',
+  shiprocketPublicRoutes
+)
+
+app.use(
+  '/api/upload',
+  require(
+    './routes/uploadRoutes'
+  )
+)
+
+app.use(
+  '/api/categories',
+  require(
+    './routes/categoryRoutes'
+  )
+)
+
+app.use(
+  '/api/products',
+  require(
+    './routes/productRoutes'
+  )
+)
+
+app.use(
+  '/api/product-design-review',
+  require(
+    './routes/productDesignReviewRoutes'
+  )
+)
+
+app.use(
+  '/api/b2b-customers',
+  require(
+    './routes/b2bCustomerRoutes'
+  )
+)
+
+app.use(
+  '/api/b2c-customers',
+  require(
+    './routes/b2cCustomerRoutes'
+  )
+)
+
+app.use(
+  '/api/signup',
+  require(
+    './routes/b2cCustomerRoutes'
+  )
+)
+
+app.use(
+  '/api/auth',
+  require(
+    './routes/authRoutes'
+  )
+)
+
+app.use(
+  '/api/rewards',
+  require(
+    './routes/rewardPointsRoutes'
+  )
+)
+
+app.use(
+  '/api/wishlist',
+  require(
+    './routes/wishlistRoutes'
+  )
+)
+
+app.use(
+  '/api/cart',
+  require(
+    './routes/cartRoutes'
+  )
+)
+
+app.use(
+  '/api/user',
+  require(
+    './routes/userRoutes'
+  )
+)
+
+app.use(
+  '/api/orders',
+  require(
+    './routes/orderRoutes'
+  )
+)
+
+app.use(
+  '/api/auth-branch',
+  require(
+    './routes/authBranchRoutes'
+  )
+)
+
+app.use(
+  '/api/barcodes',
+  require(
+    './routes/barcodeRoutes'
+  )
+)
+
+app.use(
+  '/api/branch',
+  require(
+    './routes/branchInventoryRoutes'
+  )
+)
+
+app.use(
+  '/api/inventory',
+  require(
+    './routes/inventoryRoutes'
+  )
+)
+
+app.use(
+  '/api/sales',
+  require(
+    './routes/salesRoutes'
+  )
+)
+
+app.use(
+  '/api/transactions',
+  transactionRoutes
+)
+
+app.use(
+  '/api',
+  require(
+    './routes/shiprocketRoutes'
+  )
+)
+
+app.use(
+  '/api',
+  require(
+    './routes/shipmentRoutes'
+  )
+)
+
+app.use(
+  '/api',
+  require(
+    './routes/returnsRoutes'
+  )
+)
+
+app.use(
+  '/api/razorpay',
+  require(
+    './routes/razorpayRoutes'
+  )
+)
+
+app.use(
+  '/api/homepage-images',
+  require(
+    './routes/homepageImageRoutes'
+  )
+)
+
+app.get(
+  '/',
+  (req, res) =>
+    res
+      .status(200)
+      .send(
+        'Vandana Shopping Mall API is running'
+      )
+)
+
+app.get(
+  '/healthz',
+  (req, res) =>
+    res
+      .status(200)
+      .send('ok')
+)
+
+app.get(
+  '/api/debug/jwt',
+  (req, res) => {
+    res.json({
+      jwtSecretPresent:
+        Boolean(
+          process.env
+            .JWT_SECRET
+        )
+    })
+  }
+)
+
+app.get(
+  '/api/debug/db',
+  async (req, res) => {
+    const pool =
+      require('./db')
+
+    const schema =
+      process.env
+        .DB_SCHEMA ||
+      'public'
+
+    try {
+      const dbInfo =
+        await pool.query(
+          `SELECT
+             current_database() AS db,
+             current_schema() AS current_schema`
+        )
+
+      const tableInfo =
+        await pool.query(
+          `SELECT
+             table_schema,
+             table_name
+           FROM information_schema.tables
+           WHERE table_name = 'vandana_users'
+           ORDER BY
+             table_schema,
+             table_name`
+        )
+
+      const rowInfo =
+        await pool.query(
+          `SELECT
+             COUNT(*)::int AS count
+           FROM "${schema}"."vandana_users"`
+        )
+
+      res.json({
+        dbOk: true,
+        database:
+          dbInfo.rows[0],
+        vandanaUsersTables:
+          tableInfo.rows,
+        vandanaUsersCount:
+          rowInfo.rows[0]
+            .count
+      })
+    } catch (error) {
+      res
+        .status(500)
+        .json({
+          dbOk: false,
+          error:
+            error.message,
+          detail:
+            error.detail ||
+            null,
+          code:
+            error.code ||
+            null,
+          table:
+            error.table ||
+            null,
+          constraint:
+            error.constraint ||
+            null
+        })
+    }
+  }
+)
+
+app.use(
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
+    if (
+      error &&
+      error.message ===
+        'Not allowed by CORS'
+    ) {
+      return res
+        .status(403)
+        .json({
+          message:
+            'CORS blocked'
+        })
+    }
+
+    const status =
+      error.status ||
+      error.statusCode ||
+      500
+
+    return res
+      .status(status)
+      .json({
+        message:
+          process.env
+            .DEBUG_ERRORS ===
+          '1'
+            ? error.message ||
+              'Server error'
+            : 'Server error'
+      })
+  }
+)
+
+app.use(
+  (req, res) =>
+    res
+      .status(404)
+      .json({
+        message:
+          'Not found'
+      })
+)
 
 module.exports = app
