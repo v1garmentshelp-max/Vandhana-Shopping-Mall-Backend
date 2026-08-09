@@ -54,7 +54,12 @@ async function candidateBranches(db, variantId, qty) {
        s.reserved::int AS reserved
      FROM branch_variant_stock s
      JOIN branches b ON b.id = s.branch_id
+     JOIN product_variants v ON v.id = s.variant_id
+     JOIN products p ON p.id = v.product_id
      WHERE s.variant_id=$1
+       AND s.is_active = TRUE
+       AND v.is_active = TRUE
+       AND p.is_active = TRUE
        AND (s.on_hand - s.reserved) >= $2
        AND EXISTS (SELECT 1 FROM shiprocket_warehouses w WHERE w.branch_id = b.id)`,
     [variantId, qty]
@@ -109,6 +114,24 @@ function normalizeShipItem(it) {
     image_url: it.image_url ?? null,
     ean_code: it.ean_code ?? it.ean ?? it.barcode_value ?? null,
     name: it.name ?? it.product_name ?? null
+  }
+}
+
+function groupCommittedSale(sale) {
+  const branchId = Number(sale?.branch_id || 0)
+  if (!branchId) throw new Error('branch_id is required for committed shipment fulfillment')
+
+  const items = (sale.items || []).map(normalizeShipItem)
+
+  for (const item of items) {
+    if (!item.variant_id || !item.qty || item.qty <= 0) {
+      throw new Error(`Invalid item for variant ${item.variant_id || 'UNKNOWN'}`)
+    }
+  }
+
+  return {
+    groups: [{ branch_id: branchId, items }],
+    decremented: []
   }
 }
 
@@ -222,7 +245,9 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   let decremented = []
 
   try {
-    const planned = await planShipmentsAndDecrementStock(sale, pool)
+    const planned = sale?.stock_already_committed
+      ? groupCommittedSale(sale)
+      : await planShipmentsAndDecrementStock(sale, pool)
     decremented = planned.decremented || []
 
     const groups = planned.groups || []
