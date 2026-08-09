@@ -412,9 +412,12 @@ async function updateProductImportMetadata(client, productId, prepared) {
      SET fit_type = COALESCE($1, fit_type),
          mark_code = COALESCE($2, mark_code),
          pattern_type = COALESCE($3, pattern_type),
+         is_active = TRUE,
+         deleted_at = NULL,
+         delete_batch_id = NULL,
          updated_at = NOW()
      WHERE id = $4
-     RETURNING id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id`,
+     RETURNING id, name, brand_name, design_code, pattern_type, pattern_code, fit_type, mark_code, gender, category_id, is_active`,
     [prepared.FITT, prepared.MarkCode, prepared.PatternType, productId]
   )
 
@@ -3606,7 +3609,7 @@ router.get(
 
       const params = [branchId]
 
-      let whereClause = `bvs.branch_id = $1 AND bvs.is_active = TRUE AND v.is_active = TRUE AND c.is_active = TRUE AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0`
+      let whereClause = `bvs.branch_id = $1 AND bvs.is_active = TRUE AND v.is_active = TRUE AND p.is_active = TRUE AND c.is_active = TRUE AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0`
 
       if (gender) {
         params.push(gender)
@@ -3667,7 +3670,7 @@ router.get(
 
       const result =
         await pool.query(
-          `SELECT COALESCE((SELECT v.b2c_discount_pct FROM product_variants v JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2c_discount_pct IS NOT NULL AND v.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2c_discount_pct, COALESCE((SELECT v.b2b_discount_pct FROM product_variants v JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2b_discount_pct IS NOT NULL AND v.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2b_discount_pct`,
+          `SELECT COALESCE((SELECT v.b2c_discount_pct FROM product_variants v JOIN products p ON p.id = v.product_id JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2c_discount_pct IS NOT NULL AND v.is_active = TRUE AND p.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2c_discount_pct, COALESCE((SELECT v.b2b_discount_pct FROM product_variants v JOIN products p ON p.id = v.product_id JOIN branch_variant_stock bvs ON bvs.variant_id = v.id WHERE bvs.branch_id = $1 AND v.b2b_discount_pct IS NOT NULL AND v.is_active = TRUE AND p.is_active = TRUE AND bvs.is_active = TRUE LIMIT 1), 0) AS b2b_discount_pct`,
           [branchId]
         )
 
@@ -3744,7 +3747,7 @@ router.post(
       }
 
       await pool.query(
-        `UPDATE product_variants v SET b2c_discount_pct = $2, b2b_discount_pct = $3, updated_at = NOW() FROM branch_variant_stock bvs WHERE bvs.variant_id = v.id AND bvs.branch_id = $1 AND v.is_active = TRUE AND bvs.is_active = TRUE`,
+        `UPDATE product_variants v SET b2c_discount_pct = $2, b2b_discount_pct = $3, updated_at = NOW() FROM branch_variant_stock bvs, products p WHERE bvs.variant_id = v.id AND p.id = v.product_id AND bvs.branch_id = $1 AND v.is_active = TRUE AND p.is_active = TRUE AND bvs.is_active = TRUE`,
         [
           branchId,
           b2cDiscount,

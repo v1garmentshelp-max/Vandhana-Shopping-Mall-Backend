@@ -1,5 +1,6 @@
 const express = require('express')
 const pool = require('../db')
+const { deleteProducts, getDeletedBy } = require('../services/productDeleteService')
 
 const router = express.Router()
 
@@ -184,11 +185,12 @@ const priceSql = () => `
   END
 `
 
-const productWhere = () => `
-  v.is_active = TRUE
+const productWhere = ({ includeOutOfStock = false } = {}) => `
+  p.is_active = TRUE
+  AND v.is_active = TRUE
   AND c.is_active = TRUE
-  AND COALESCE(bvs.is_active, FALSE) = TRUE
-  AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
+  ${includeOutOfStock ? '' : 'AND COALESCE(bvs.is_active, FALSE) = TRUE'}
+  ${includeOutOfStock ? '' : 'AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0'}
   AND COALESCE(v.size, '') NOT LIKE '%,%'
   AND COALESCE(v.colour, '') NOT LIKE '%,%'
 `
@@ -846,7 +848,8 @@ const addCategoryFilter = ({ req, params, where }) => {
 
 const fetchProducts = async ({ req, gender, category, brand, q, id, productId, variantId, limit, offset, random, hasImage }) => {
   const params = []
-  let where = productWhere()
+  const includeOutOfStock = ['true', '1', 'yes'].includes(String(req.query.include_out_of_stock || req.query.includeOutOfStock || req.query.admin || '').trim().toLowerCase())
+  let where = productWhere({ includeOutOfStock })
   const genderQ = toGender(gender || category || '')
 
   if (genderQ) {
@@ -945,7 +948,10 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byBodyVariant = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
+       JOIN products p ON p.id = v.product_id
        WHERE v.id = $1
+         AND v.is_active = TRUE
+         AND p.is_active = TRUE
        LIMIT 1`,
       [bodyVariantId]
     )
@@ -958,7 +964,10 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
       `SELECT v.id AS variant_id, v.product_id
        FROM barcodes b
        JOIN product_variants v ON v.id = b.variant_id
+       JOIN products p ON p.id = v.product_id
        WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
+         AND v.is_active = TRUE
+         AND p.is_active = TRUE
        ORDER BY b.id ASC
        LIMIT 1`,
       [barcode]
@@ -971,7 +980,10 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byVariant = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
+       JOIN products p ON p.id = v.product_id
        WHERE v.id = $1
+         AND v.is_active = TRUE
+         AND p.is_active = TRUE
        LIMIT 1`,
       [numericId]
     )
@@ -983,9 +995,11 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byProduct = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
+       JOIN products p ON p.id = v.product_id
        LEFT JOIN barcodes b ON b.variant_id = v.id
        WHERE v.product_id = $1
          AND v.is_active = TRUE
+         AND p.is_active = TRUE
        ORDER BY
          CASE WHEN $2::text <> '' AND REGEXP_REPLACE(UPPER(TRIM(COALESCE(b.ean_code, ''))), '[^A-Z0-9._-]', '', 'g') = $2 THEN 0 ELSE 1 END,
          v.id ASC
@@ -1000,7 +1014,7 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
 }
 
 const getProductCategoryId = async (client, productId) => {
-  const { rows } = await client.query(`SELECT category_id FROM products WHERE id = $1 LIMIT 1`, [productId])
+  const { rows } = await client.query(`SELECT category_id FROM products WHERE id = $1 AND is_active = TRUE LIMIT 1`, [productId])
   return rows[0]?.category_id || null
 }
 
@@ -1135,6 +1149,7 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     `SELECT design_code, pattern_type, pattern_code
      FROM products
      WHERE id = $1
+       AND is_active = TRUE
      LIMIT 1`,
     [productId]
   )
@@ -1610,6 +1625,31 @@ const updateBarcodeHandler = async (req, res) => {
 router.put('/barcode/:barcode', updateBarcodeHandler)
 router.patch('/barcode/:barcode', updateBarcodeHandler)
 
+router.post('/bulk-delete', async (req, res) => {
+  try {
+    noStore(res)
+
+    const scope = String(req.body?.scope || '').trim().toLowerCase() === 'all' ? 'all' : 'selected'
+    const productIds = req.body?.product_ids || req.body?.productIds || req.body?.ids || []
+    const filters = req.body?.filters && typeof req.body.filters === 'object' ? req.body.filters : req.body || {}
+
+    if (scope !== 'all' && (!Array.isArray(productIds) || productIds.length === 0)) {
+      return res.status(400).json({ message: 'product_ids are required' })
+    }
+
+    const result = await deleteProducts({
+      productIds,
+      scope,
+      filters,
+      deletedBy: getDeletedBy(req)
+    })
+
+    return res.json(result)
+  } catch (err) {
+    return res.status(500).json({ message: 'Error deleting products', error: err.message })
+  }
+})
+
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     noStore(res)
@@ -1680,73 +1720,69 @@ router.put('/:id(\\d+)', updateProductHandler)
 router.patch('/:id(\\d+)', updateProductHandler)
 
 router.delete('/:id(\\d+)', async (req, res) => {
-  const client = await pool.connect()
-
   try {
     noStore(res)
 
     const id = parseInt(req.params.id, 10)
-    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ message: 'Invalid product id' })
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ message: 'Invalid product id' })
+    }
 
     const scope = String(req.query.scope || req.query.type || '').trim().toLowerCase()
 
-    await client.query('BEGIN')
-
     if (scope === 'variant') {
-      const result = await deleteVariantById({ client, req, variantId: id })
+      const client = await pool.connect()
 
-      if (result.status !== 200) {
-        await client.query('ROLLBACK')
-        return res.status(result.status).json(result.payload)
+      try {
+        await client.query('BEGIN')
+
+        const result = await deleteVariantById({ client, req, variantId: id })
+
+        if (result.status !== 200) {
+          await client.query('ROLLBACK')
+          return res.status(result.status).json(result.payload)
+        }
+
+        await client.query('COMMIT')
+        return res.json(result.payload)
+      } catch (err) {
+        try {
+          await client.query('ROLLBACK')
+        } catch {}
+        return res.status(500).json({ message: 'Error deleting variant', error: err.message })
+      } finally {
+        client.release()
       }
-
-      await client.query('COMMIT')
-      return res.json(result.payload)
     }
 
-    const product = await client.query(`SELECT id FROM products WHERE id = $1 LIMIT 1`, [id])
+    const result = await deleteProducts({
+      productIds: [id],
+      scope: 'single',
+      deletedBy: getDeletedBy(req)
+    })
 
-    if (product.rows.length) {
-      const variants = await client.query(`SELECT id FROM product_variants WHERE product_id = $1`, [id])
-      const variantIds = variants.rows.map(r => r.id)
-
-      await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE product_id = $1`, [id])
-
-      if (variantIds.length) {
-        await client.query(
-          `UPDATE branch_variant_stock
-           SET is_active = FALSE,
-               on_hand = 0,
-               updated_at = NOW()
-           WHERE variant_id = ANY($1::int[])`,
-          [variantIds]
-        )
-      }
-
-      await client.query('COMMIT')
-
+    if (result.deleted_count === 1) {
       return res.json({
         message: 'Product deleted successfully',
-        id,
-        product_id: id,
-        deleted_variants: variantIds
+        ...result
       })
     }
 
-    const result = await deleteVariantById({ client, req, variantId: id })
+    const blocked = result.blocked_products?.[0]
 
-    if (result.status !== 200) {
-      await client.query('ROLLBACK')
-      return res.status(result.status).json({ message: 'Product not found' })
+    if (blocked?.reason === 'RESERVED_STOCK') {
+      return res.status(409).json({
+        message: 'Product has reserved stock and cannot be deleted',
+        ...result
+      })
     }
 
-    await client.query('COMMIT')
-    return res.json(result.payload)
+    return res.status(404).json({
+      message: 'Product not found or already deleted',
+      ...result
+    })
   } catch (err) {
-    await client.query('ROLLBACK')
     return res.status(500).json({ message: 'Error deleting product', error: err.message })
-  } finally {
-    client.release()
   }
 })
 

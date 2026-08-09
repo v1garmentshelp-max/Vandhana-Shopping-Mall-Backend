@@ -60,6 +60,8 @@ router.get('/:ean', async (req, res) => {
          LIMIT 1
        ) pi ON TRUE
        WHERE b.ean_code = $1
+         AND pv.is_active = TRUE
+         AND p.is_active = TRUE
        LIMIT 1`,
       [ean, CLOUD_NAME]
     )

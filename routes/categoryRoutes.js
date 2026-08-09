@@ -230,6 +230,7 @@ const getCategoryRows = async ({
           COUNT(*)::int AS product_count
         FROM products p
         WHERE p.category_id = category_tree.id
+          AND p.is_active = TRUE
       ) product_usage
         ON TRUE
       LEFT JOIN LATERAL (
@@ -343,6 +344,7 @@ const getCategoryImpact = async categoryId => {
           SELECT id
           FROM subtree
         )
+          AND p.is_active = TRUE
       ),
       import_job_summary AS (
         SELECT
@@ -755,6 +757,7 @@ router.post('/', async (req, res) => {
             SELECT 1
             FROM products
             WHERE category_id = $1
+              AND is_active = TRUE
           ) AS has_products
         `,
         [parentId]
@@ -1116,6 +1119,7 @@ router.put(
                 SELECT 1
                 FROM products
                 WHERE category_id = $1
+                  AND is_active = TRUE
               ) AS has_products
             `,
             [parentId]

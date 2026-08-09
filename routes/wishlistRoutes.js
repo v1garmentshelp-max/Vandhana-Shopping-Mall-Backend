@@ -33,12 +33,18 @@ router.post('/', async (req, res) => {
     }
 
     const variant = await pool.query(
-      'SELECT 1 FROM product_variants WHERE id = $1 AND is_active = TRUE',
+      `SELECT v.id
+       FROM product_variants v
+       JOIN products p ON p.id = v.product_id
+       WHERE v.id = $1
+         AND v.is_active = TRUE
+         AND p.is_active = TRUE
+       LIMIT 1`,
       [vid]
     )
 
     if (!variant.rowCount) {
-      return res.status(400).json({ message: 'Invalid variant_id' })
+      return res.status(400).json({ message: 'Product is no longer available' })
     }
 
     await pool.query(
@@ -134,6 +140,8 @@ router.get('/:user_id', async (req, res) => {
           WHERE pix.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
         ) pi ON TRUE
         WHERE w.user_id = $2
+          AND v.is_active = TRUE
+          AND p.is_active = TRUE
       )
       SELECT
         user_id,

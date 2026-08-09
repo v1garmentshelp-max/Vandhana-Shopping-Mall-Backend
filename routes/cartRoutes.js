@@ -101,7 +101,13 @@ router.post('/vandana-cart', async (req, res) => {
     }
 
     const exists = await pool.query(
-      `SELECT id FROM product_variants WHERE id=$1 LIMIT 1`,
+      `SELECT v.id
+       FROM product_variants v
+       JOIN products p ON p.id = v.product_id
+       WHERE v.id = $1
+         AND v.is_active = TRUE
+         AND p.is_active = TRUE
+       LIMIT 1`,
       [vid]
     )
 
@@ -166,10 +172,22 @@ router.put('/vandana-cart', async (req, res) => {
 
     if (cartItemId) {
       result = await pool.query(
-        `UPDATE vandana_cart
+        `UPDATE vandana_cart c
          SET quantity=$3, updated_at=CURRENT_TIMESTAMP
-         WHERE id=$1 AND user_id=$2
-         RETURNING id`,
+         WHERE c.id=$1
+           AND c.user_id=$2
+           AND (
+             COALESCE(c.is_custom, FALSE) = TRUE
+             OR EXISTS (
+               SELECT 1
+               FROM product_variants v
+               JOIN products p ON p.id = v.product_id
+               WHERE v.id = c.product_id
+                 AND v.is_active = TRUE
+                 AND p.is_active = TRUE
+             )
+           )
+         RETURNING c.id`,
         [cartItemId, uid, qty]
       )
     } else {
@@ -178,14 +196,22 @@ router.put('/vandana-cart', async (req, res) => {
       }
 
       result = await pool.query(
-        `UPDATE vandana_cart
+        `UPDATE vandana_cart c
          SET quantity=$5, updated_at=CURRENT_TIMESTAMP
-         WHERE user_id=$1
-           AND product_id=$2
-           AND selected_size=$3
-           AND selected_color=$4
-           AND is_custom=FALSE
-         RETURNING id`,
+         WHERE c.user_id=$1
+           AND c.product_id=$2
+           AND c.selected_size=$3
+           AND c.selected_color=$4
+           AND c.is_custom=FALSE
+           AND EXISTS (
+             SELECT 1
+             FROM product_variants v
+             JOIN products p ON p.id = v.product_id
+             WHERE v.id = c.product_id
+               AND v.is_active = TRUE
+               AND p.is_active = TRUE
+           )
+         RETURNING c.id`,
         [uid, vid, size, color, qty]
       )
     }
@@ -209,9 +235,18 @@ router.get('/count/:userId', async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS count
-       FROM vandana_cart
-       WHERE user_id=$1`,
+      `SELECT COALESCE(SUM(c.quantity), 0)::int AS count
+       FROM vandana_cart c
+       LEFT JOIN product_variants v
+         ON v.id = c.product_id
+        AND COALESCE(c.is_custom, FALSE) = FALSE
+       LEFT JOIN products p
+         ON p.id = v.product_id
+       WHERE c.user_id=$1
+         AND (
+           COALESCE(c.is_custom, FALSE) = TRUE
+           OR (v.is_active = TRUE AND p.is_active = TRUE)
+         )`,
       [uid]
     )
 
@@ -314,6 +349,8 @@ router.get('/:userId', async (req, res) => {
         ) pi ON TRUE
         WHERE c.user_id = $1
           AND COALESCE(c.is_custom, FALSE) = FALSE
+          AND v.is_active = TRUE
+          AND p.is_active = TRUE
       ),
       normal_items AS (
         SELECT
