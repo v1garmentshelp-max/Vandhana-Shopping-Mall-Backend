@@ -763,19 +763,11 @@ router.post('/', async (req, res) => {
         [parentId]
       )
 
-    if (
-      parentProducts.rows[0]
-        ?.has_products
-    ) {
-      await client.query(
-        'ROLLBACK'
+    const parentHasProducts =
+      Boolean(
+        parentProducts.rows[0]
+          ?.has_products
       )
-
-      return res.status(400).json({
-        message:
-          'This parent category already contains products'
-      })
-    }
 
     const duplicateResult =
       await client.query(
@@ -803,6 +795,119 @@ router.post('/', async (req, res) => {
         message:
           'A category with this name already exists under the selected parent'
       })
+    }
+
+    let existingProductsCategoryId = null
+
+    if (
+      parentHasProducts &&
+      slug !== 'uncategorized'
+    ) {
+      const existingProductsCategoryResult =
+        await client.query(
+          `
+            SELECT
+              id,
+              is_active
+            FROM product_categories
+            WHERE parent_id = $1
+              AND LOWER(slug) = 'uncategorized'
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [parentId]
+        )
+
+      const existingProductsCategory =
+        existingProductsCategoryResult.rows[0]
+
+      if (existingProductsCategory) {
+        existingProductsCategoryId =
+          existingProductsCategory.id
+
+        if (!existingProductsCategory.is_active) {
+          await client.query(
+            `
+              UPDATE product_categories
+              SET
+                is_active = TRUE,
+                gender = $2,
+                level = $3,
+                updated_at = NOW()
+              WHERE id = $1
+            `,
+            [
+              existingProductsCategoryId,
+              parent.gender,
+              Number(parent.level || 0) + 1
+            ]
+          )
+        }
+      } else {
+        const fallbackSortResult =
+          await client.query(
+            `
+              SELECT
+                COALESCE(
+                  MIN(sort_order),
+                  10
+                ) - 10 AS fallback_sort_order
+              FROM product_categories
+              WHERE parent_id = $1
+            `,
+            [parentId]
+          )
+
+        const fallbackInsertResult =
+          await client.query(
+            `
+              INSERT INTO product_categories (
+                parent_id,
+                gender,
+                name,
+                slug,
+                level,
+                sort_order,
+                is_active
+              )
+              VALUES (
+                $1,
+                $2,
+                'Uncategorized',
+                'uncategorized',
+                $3,
+                $4,
+                TRUE
+              )
+              RETURNING id
+            `,
+            [
+              parentId,
+              parent.gender,
+              Number(parent.level || 0) + 1,
+              Number(
+                fallbackSortResult.rows[0]
+                  ?.fallback_sort_order ||
+                0
+              )
+            ]
+          )
+
+        existingProductsCategoryId =
+          fallbackInsertResult.rows[0].id
+      }
+
+      await client.query(
+        `
+          UPDATE products
+          SET category_id = $2
+          WHERE category_id = $1
+        `,
+        [
+          parentId,
+          existingProductsCategoryId
+        ]
+      )
     }
 
     let sortOrder =
@@ -865,6 +970,23 @@ router.post('/', async (req, res) => {
           sortOrder
         ]
       )
+
+    if (
+      parentHasProducts &&
+      slug === 'uncategorized'
+    ) {
+      await client.query(
+        `
+          UPDATE products
+          SET category_id = $2
+          WHERE category_id = $1
+        `,
+        [
+          parentId,
+          insertResult.rows[0].id
+        ]
+      )
+    }
 
     await client.query('COMMIT')
 
