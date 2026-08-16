@@ -47,6 +47,21 @@ function normalizeSection(value) {
   return text ? text.toLowerCase() : null
 }
 
+function isValidSectionSetting(page, section) {
+  return ['men', 'women'].includes(page) && section === 'offer'
+}
+
+function shapeSectionSetting(row) {
+  return {
+    page: row.page,
+    section: row.section,
+    enabled: row.is_enabled,
+    updatedBy: row.updated_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
 function normalizeSlotOrder(value) {
   if (value === undefined || value === null || value === '') return null
   const number = Number(value)
@@ -121,6 +136,12 @@ function shapeHistory(row) {
   }
 }
 
+function noStore(res) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
+}
+
 async function uploadToCloudinary(file, slotId, page, section) {
   const safePage = safeValue(page) || 'website'
   const safeSection = safeValue(section) || 'poster'
@@ -160,6 +181,7 @@ async function uploadToCloudinary(file, slotId, page, section) {
 }
 
 router.get('/', async (req, res) => {
+  noStore(res)
   const page = normalizePage(req.query.page)
   const section = normalizeSection(req.query.section)
   const conditions = []
@@ -189,6 +211,60 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('homepage images load failed', error)
     return res.status(500).json({ message: 'Failed to load homepage images' })
+  }
+})
+
+router.get('/settings', async (req, res) => {
+  noStore(res)
+  const page = normalizePage(req.query.page)
+  const values = []
+  const where = page ? 'WHERE page=$1' : ''
+
+  if (page) values.push(page)
+
+  try {
+    const result = await pool.query(
+      `SELECT page,section,is_enabled,updated_by,created_at,updated_at
+       FROM homepage_section_settings
+       ${where}
+       ORDER BY page,section`,
+      values
+    )
+    return res.json(result.rows.map(shapeSectionSetting))
+  } catch (error) {
+    console.error('homepage section settings load failed', error)
+    return res.status(500).json({ message: 'Failed to load homepage section settings' })
+  }
+})
+
+router.patch('/settings/:page/:section', requireAuth, async (req, res) => {
+  const page = normalizePage(req.params.page)
+  const section = normalizeSection(req.params.section)
+  const enabled = req.body?.enabled
+
+  if (!isValidSectionSetting(page, section)) {
+    return res.status(400).json({ message: 'Invalid homepage section' })
+  }
+
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ message: 'enabled must be true or false' })
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO homepage_section_settings(page,section,is_enabled,updated_by,updated_at)
+       VALUES($1,$2,$3,$4,NOW())
+       ON CONFLICT(page,section) DO UPDATE SET
+       is_enabled=EXCLUDED.is_enabled,
+       updated_by=EXCLUDED.updated_by,
+       updated_at=NOW()
+       RETURNING page,section,is_enabled,updated_by,created_at,updated_at`,
+      [page,section,enabled,req.user.id]
+    )
+    return res.json(shapeSectionSetting(result.rows[0]))
+  } catch (error) {
+    console.error('homepage section setting update failed', error)
+    return res.status(500).json({ message: 'Failed to update homepage section setting' })
   }
 })
 
