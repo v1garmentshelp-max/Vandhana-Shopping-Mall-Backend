@@ -1,6 +1,5 @@
 const express = require('express')
 const pool = require('../db')
-const { deleteProducts, getDeletedBy } = require('../services/productDeleteService')
 
 const router = express.Router()
 
@@ -185,12 +184,11 @@ const priceSql = () => `
   END
 `
 
-const productWhere = ({ includeOutOfStock = false } = {}) => `
-  p.is_active = TRUE
-  AND v.is_active = TRUE
+const productWhere = () => `
+  v.is_active = TRUE
   AND c.is_active = TRUE
-  ${includeOutOfStock ? '' : 'AND COALESCE(bvs.is_active, FALSE) = TRUE'}
-  ${includeOutOfStock ? '' : 'AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0'}
+  AND COALESCE(bvs.is_active, FALSE) = TRUE
+  AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
   AND COALESCE(v.size, '') NOT LIKE '%,%'
   AND COALESCE(v.colour, '') NOT LIKE '%,%'
 `
@@ -213,8 +211,8 @@ const generatedImageSql = cloudIdx => `
 
 const frontImageSql = cloudIdx => `
   COALESCE(
-    NULLIF(pi_front.image_url, ''),
     NULLIF(v.image_url, ''),
+    NULLIF(pi_front.image_url, ''),
     ${generatedImageSql(cloudIdx)},
     ${fallbackImageSql()}
   )
@@ -327,26 +325,11 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     FROM product_images pi
     WHERE pi.ean_code = bc_self.ean_code
       AND COALESCE(pi.image_url, '') <> ''
-      AND (
-        LOWER(TRIM(COALESCE(pi.image_type, ''))) IN ('front', 'main', 'primary', 'default')
-        OR (
-          COALESCE(TRIM(pi.image_type), '') = ''
-          AND pi.image_url NOT ILIKE '%__back__%'
-          AND pi.image_url NOT ILIKE '%/back/%'
-          AND pi.image_url NOT ILIKE '%back_%'
-          AND pi.image_url NOT ILIKE '%back-%'
-        )
-      )
-    ORDER BY
-      CASE LOWER(TRIM(COALESCE(pi.image_type, '')))
-        WHEN 'front' THEN 1
-        WHEN 'main' THEN 2
-        WHEN 'primary' THEN 3
-        WHEN 'default' THEN 4
-        ELSE 5
-      END,
-      uploaded_at DESC,
-      id DESC
+      AND pi.image_url NOT ILIKE '%__back__%'
+      AND pi.image_url NOT ILIKE '%/back/%'
+      AND pi.image_url NOT ILIKE '%back_%'
+      AND pi.image_url NOT ILIKE '%back-%'
+    ORDER BY uploaded_at DESC
     LIMIT 1
   ) pi_front ON TRUE
   LEFT JOIN LATERAL (
@@ -355,21 +338,12 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
     WHERE pi.ean_code = bc_self.ean_code
       AND COALESCE(pi.image_url, '') <> ''
       AND (
-        LOWER(TRIM(COALESCE(pi.image_type, ''))) IN ('back', 'rear', 'reverse')
-        OR pi.image_url ILIKE '%__back__%'
+        pi.image_url ILIKE '%__back__%'
         OR pi.image_url ILIKE '%/back/%'
         OR pi.image_url ILIKE '%back_%'
         OR pi.image_url ILIKE '%back-%'
       )
-    ORDER BY
-      CASE LOWER(TRIM(COALESCE(pi.image_type, '')))
-        WHEN 'back' THEN 1
-        WHEN 'rear' THEN 2
-        WHEN 'reverse' THEN 3
-        ELSE 4
-      END,
-      uploaded_at DESC,
-      id DESC
+    ORDER BY uploaded_at DESC
     LIMIT 1
   ) pi_back ON TRUE
   LEFT JOIN LATERAL (
@@ -463,40 +437,16 @@ const makeVariantPayload = row => ({
   images: Array.isArray(row.images) ? row.images.filter(Boolean) : [row.front_image_url || row.image_url, row.back_image_url].filter(Boolean)
 })
 
-const normalizeGroupMode = value => {
-  const normalized = cleanValue(value).toLowerCase()
-  return ['color', 'colour', 'design-color', 'design-colour'].includes(normalized) ? 'color' : 'design'
-}
-
-const normalizeStorefrontGroupPart = value => {
-  const normalized = cleanValue(value)
-    .toUpperCase()
-    .replace(/&/g, ' AND ')
-    .replace(/[^A-Z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-
-  return normalized || 'UNSPECIFIED'
-}
-
-const buildStorefrontGroupKey = (designCode, productId, colour, categoryId) => {
-  const base = normalizeDesignCode(designCode) || `PRODUCT-${productId || 'UNKNOWN'}`
-  const category = categoryId ? `-CAT-${categoryId}` : ''
-  return `${base}${category}--COLOR-${normalizeStorefrontGroupPart(colour)}`
-}
-
-const groupProductRows = (rows, groupMode = 'design') => {
+const groupProductRows = rows => {
   const groups = new Map()
-  const mode = normalizeGroupMode(groupMode)
 
   for (const row of Array.isArray(rows) ? rows : []) {
     if (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour)) continue
 
-    const sourceKey = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
-    const key = `${sourceKey}|${row.category_id || ''}`
+    const key = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
 
     if (!groups.has(key)) {
       groups.set(key, {
-        source_key: sourceKey,
         product_id: row.product_id,
         product_name: row.product_name,
         brand: row.brand,
@@ -515,236 +465,152 @@ const groupProductRows = (rows, groupMode = 'design') => {
         parent_category_slug: row.parent_category_slug,
         category_path: row.category_path,
         variants: [],
-        rows: []
+        _rows: []
       })
     }
 
     const group = groups.get(key)
 
-    if (!group.variants.some(variant => String(variant.variant_id) === String(row.variant_id))) {
+    if (!group.variants.some(v => String(v.variant_id) === String(row.variant_id))) {
       group.variants.push(makeVariantPayload(row))
     }
 
-    group.rows.push(row)
+    group._rows.push(row)
   }
 
-  const output = []
+  const out = []
 
   for (const group of groups.values()) {
-    group.variants.sort((firstVariant, secondVariant) => {
-      const colourCompare = String(firstVariant.color || '').localeCompare(String(secondVariant.color || ''), undefined, { numeric: true })
-      if (colourCompare !== 0) return colourCompare
-
-      const sizeCompare = String(firstVariant.size || '').localeCompare(String(secondVariant.size || ''), undefined, { numeric: true })
-      if (sizeCompare !== 0) return sizeCompare
-
-      return String(firstVariant.variant_id || '').localeCompare(String(secondVariant.variant_id || ''), undefined, { numeric: true })
+    group.variants.sort((a, b) => {
+      const colorCompare = String(a.color || '').localeCompare(String(b.color || ''), undefined, { numeric: true })
+      if (colorCompare !== 0) return colorCompare
+      return String(a.size || '').localeCompare(String(b.size || ''), undefined, { numeric: true })
     })
 
-    const allSizes = sortVariantValues(group.variants.map(variant => variant.size))
-    const allColors = sortVariantValues(group.variants.map(variant => variant.color || variant.colour))
-    const allBarcodes = uniqueValues(group.variants.map(variant => variant.barcode || variant.ean_code))
-    const colorGroups = new Map()
+    const rowsSorted = group._rows.slice().sort((a, b) => {
+      const aq = toNumber(a.available_qty)
+      const bq = toNumber(b.available_qty)
 
-    for (const row of group.rows) {
-      const colour = cleanValue(row.color || row.colour)
-      const key = normalizeStorefrontGroupPart(colour)
+      if (bq !== aq) return bq - aq
 
-      if (!colorGroups.has(key)) {
-        colorGroups.set(key, {
-          colour,
-          rows: []
-        })
-      }
+      return String(a.variant_id).localeCompare(String(b.variant_id), undefined, { numeric: true })
+    })
 
-      colorGroups.get(key).rows.push(row)
-    }
+    const selected = rowsSorted[0] || group._rows[0] || {}
+    const imageRow = selected || group._rows.find(r => r.image_url) || {}
+    const sizes = sortVariantValues(group.variants.map(v => v.size))
+    const colors = sortVariantValues(group.variants.map(v => v.color))
+    const barcodes = uniqueValues(group.variants.map(v => v.barcode || v.ean_code))
+    const totalOnHand = group.variants.reduce((sum, v) => sum + toNumber(v.on_hand), 0)
+    const totalReserved = group.variants.reduce((sum, v) => sum + toNumber(v.reserved), 0)
+    const totalAvailable = group.variants.reduce((sum, v) => sum + toNumber(v.available_qty), 0)
+    const selectedVariant = group.variants.find(v => String(v.variant_id) === String(selected.variant_id)) || group.variants[0] || {}
 
-    const cardGroups = mode === 'color'
-      ? Array.from(colorGroups.values())
-      : [{ colour: '', rows: group.rows }]
-
-    for (let cardGroupIndex = 0; cardGroupIndex < cardGroups.length; cardGroupIndex += 1) {
-      const cardGroup = cardGroups[cardGroupIndex]
-      const cardRows = cardGroup.rows.slice().sort((firstRow, secondRow) => {
-        const stockCompare = toNumber(secondRow.available_qty) - toNumber(firstRow.available_qty)
-        if (stockCompare !== 0) return stockCompare
-
-        const secondHasImage = Boolean(secondRow.front_image_url || secondRow.main_image_url || secondRow.image_url)
-        const firstHasImage = Boolean(firstRow.front_image_url || firstRow.main_image_url || firstRow.image_url)
-        if (secondHasImage !== firstHasImage) return Number(secondHasImage) - Number(firstHasImage)
-
-        return String(firstRow.variant_id || '').localeCompare(String(secondRow.variant_id || ''), undefined, { numeric: true })
-      })
-
-      const selected = cardRows[0] || group.rows[0] || {}
-      const selectedColour = cleanValue(cardGroup.colour || selected.color || selected.colour)
-      const selectedVariantIds = new Set(cardRows.map(row => String(row.variant_id)))
-      const cardVariants = group.variants.filter(variant => selectedVariantIds.has(String(variant.variant_id)))
-      const effectiveCardVariants = cardVariants.length ? cardVariants : group.variants
-      const selectedVariant = effectiveCardVariants.find(variant => String(variant.variant_id) === String(selected.variant_id)) || effectiveCardVariants[0] || {}
-      const imageRow = cardRows.find(row => row.front_image_url || row.main_image_url || row.image_url) || selected
-      const cardSizes = sortVariantValues(effectiveCardVariants.map(variant => variant.size))
-      const cardBarcodes = uniqueValues(effectiveCardVariants.map(variant => variant.barcode || variant.ean_code))
-      const cardVariantIds = uniqueValues(effectiveCardVariants.map(variant => variant.variant_id))
-      const totalOnHand = effectiveCardVariants.reduce((sum, variant) => sum + toNumber(variant.on_hand), 0)
-      const totalReserved = effectiveCardVariants.reduce((sum, variant) => sum + toNumber(variant.reserved), 0)
-      const totalAvailable = effectiveCardVariants.reduce((sum, variant) => sum + toNumber(variant.available_qty), 0)
-      const storefrontGroupKey = mode === 'color'
-        ? buildStorefrontGroupKey(group.design_code, group.product_id, selectedColour, group.category_id)
-        : group.source_key
-
-      output.push({
-        id: selectedVariant.variant_id || group.product_id,
-        product_id: group.product_id,
-        productId: group.product_id,
-        primary_variant_id: selectedVariant.variant_id,
-        primaryVariantId: selectedVariant.variant_id,
-        variant_id: selectedVariant.variant_id,
-        variantId: selectedVariant.variant_id,
-        variant_ids: cardVariantIds,
-        variantIds: cardVariantIds,
-        product_name: group.product_name,
-        productName: group.product_name,
-        name: group.product_name,
-        title: group.product_name,
-        brand: group.brand,
-        brand_name: group.brand_name,
-        brandName: group.brand_name,
-        gender: group.gender,
-        category: group.gender,
-        category_id: group.category_id,
-        categoryId: group.category_id,
-        category_name: group.category_name,
-        categoryName: group.category_name,
-        category_slug: group.category_slug,
-        categorySlug: group.category_slug,
-        parent_category_id: group.parent_category_id,
-        parentCategoryId: group.parent_category_id,
-        parent_category_name: group.parent_category_name,
-        parentCategoryName: group.parent_category_name,
-        parent_category_slug: group.parent_category_slug,
-        parentCategorySlug: group.parent_category_slug,
-        category_path: group.category_path,
-        categoryPath: group.category_path,
-        design_code: group.design_code,
-        designCode: group.design_code,
-        source_design_code: group.design_code,
-        sourceDesignCode: group.design_code,
-        storefront_group_key: storefrontGroupKey,
-        storefrontGroupKey,
-        group_key: storefrontGroupKey,
-        groupKey: storefrontGroupKey,
-        design_key: storefrontGroupKey,
-        designKey: storefrontGroupKey,
-        route_key: storefrontGroupKey,
-        routeKey: storefrontGroupKey,
-        pattern_type: group.pattern_type,
-        patternType: group.pattern_type,
-        pattern_code: group.pattern_code,
-        patternCode: group.pattern_code,
-        fit_type: group.fit_type,
-        fitType: group.fit_type,
-        mark_code: group.mark_code,
-        markCode: group.mark_code,
-        size: selectedVariant.size || '',
-        color: selectedColour || selectedVariant.color || '',
-        colour: selectedColour || selectedVariant.colour || selectedVariant.color || '',
-        selected_color: selectedColour || selectedVariant.color || '',
-        selectedColor: selectedColour || selectedVariant.color || '',
-        selected_colour: selectedColour || selectedVariant.colour || selectedVariant.color || '',
-        selectedColour: selectedColour || selectedVariant.colour || selectedVariant.color || '',
-        size_summary: allSizes.join(', '),
-        sizeSummary: allSizes.join(', '),
-        color_summary: allColors.join(', '),
-        colorSummary: allColors.join(', '),
-        colour_summary: allColors.join(', '),
-        colourSummary: allColors.join(', '),
-        display_size: cardSizes.join(', '),
-        displaySize: cardSizes.join(', '),
-        display_color: selectedColour || allColors.join(', '),
-        displayColor: selectedColour || allColors.join(', '),
-        sizes: cardSizes,
-        all_sizes: allSizes,
-        allSizes,
-        colors: allColors,
-        colours: allColors,
-        barcodes: cardBarcodes,
-        ean_codes: cardBarcodes,
-        eanCodes: cardBarcodes,
-        all_barcodes: allBarcodes,
-        allBarcodes,
-        barcode: selectedVariant.barcode || '',
-        ean_code: selectedVariant.ean_code || selectedVariant.barcode || '',
-        eanCode: selectedVariant.ean_code || selectedVariant.barcode || '',
-        mrp: selectedVariant.mrp,
-        original_price: selectedVariant.original_price,
-        original_price_b2c: selectedVariant.original_price_b2c,
-        original_price_b2b: selectedVariant.original_price_b2b,
-        base_sale_price: selectedVariant.base_sale_price,
-        original_sale_price: selectedVariant.original_sale_price,
-        sale_price: selectedVariant.sale_price,
-        price: selectedVariant.price,
-        selling_price: selectedVariant.selling_price,
-        final_price: selectedVariant.final_price,
-        discounted_price: selectedVariant.discounted_price,
-        mahaveer_price: selectedVariant.mahaveer_price,
-        cost_price: selectedVariant.cost_price,
-        b2c_discount_pct: selectedVariant.b2c_discount_pct,
-        b2b_discount_pct: selectedVariant.b2b_discount_pct,
-        discount_b2c: selectedVariant.discount_b2c,
-        discount_b2b: selectedVariant.discount_b2b,
-        discount: selectedVariant.discount,
-        discount_percentage: selectedVariant.discount_percentage,
-        discount_percent: selectedVariant.discount_percent,
-        final_price_b2c: selectedVariant.final_price_b2c,
-        final_price_b2b: selectedVariant.final_price_b2b,
-        b2c_final_price: selectedVariant.b2c_final_price,
-        b2b_final_price: selectedVariant.b2b_final_price,
-        on_hand: totalOnHand,
-        reserved: totalReserved,
-        available_qty: totalAvailable,
-        total_count: totalOnHand,
-        in_stock: totalAvailable > 0,
-        image_url: selectedVariant.image_url || imageRow.image_url || '',
-        imageUrl: selectedVariant.image_url || imageRow.image_url || '',
-        front_image_url: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
-        frontImageUrl: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
-        back_image_url: selectedVariant.back_image_url || imageRow.back_image_url || '',
-        backImageUrl: selectedVariant.back_image_url || imageRow.back_image_url || '',
-        main_image_url: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
-        mainImageUrl: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
-        images: Array.isArray(selectedVariant.images) ? selectedVariant.images.filter(Boolean) : [selectedVariant.front_image_url || selectedVariant.image_url || imageRow.image_url, selectedVariant.back_image_url || imageRow.back_image_url].filter(Boolean),
-        variant_count: group.variants.length,
-        variantCount: group.variants.length,
-        color_variant_count: effectiveCardVariants.length,
-        colorVariantCount: effectiveCardVariants.length,
-        card_group_index: cardGroupIndex,
-        cardGroupIndex,
-        variants: group.variants,
-        color_variants: effectiveCardVariants,
-        colorVariants: effectiveCardVariants
-      })
-    }
+    out.push({
+      id: group.product_id,
+      product_id: group.product_id,
+      productId: group.product_id,
+      primary_variant_id: selectedVariant.variant_id,
+      primaryVariantId: selectedVariant.variant_id,
+      variant_id: selectedVariant.variant_id,
+      variantId: selectedVariant.variant_id,
+      product_name: group.product_name,
+      productName: group.product_name,
+      name: group.product_name,
+      title: group.product_name,
+      brand: group.brand,
+      brand_name: group.brand_name,
+      brandName: group.brand_name,
+      gender: group.gender,
+      category: group.gender,
+      category_id: group.category_id,
+      categoryId: group.category_id,
+      category_name: group.category_name,
+      categoryName: group.category_name,
+      category_slug: group.category_slug,
+      categorySlug: group.category_slug,
+      parent_category_id: group.parent_category_id,
+      parentCategoryId: group.parent_category_id,
+      parent_category_name: group.parent_category_name,
+      parentCategoryName: group.parent_category_name,
+      parent_category_slug: group.parent_category_slug,
+      parentCategorySlug: group.parent_category_slug,
+      category_path: group.category_path,
+      categoryPath: group.category_path,
+      design_code: group.design_code,
+      designCode: group.design_code,
+      group_key: group.design_code || `PRODUCT-${group.product_id}`,
+      groupKey: group.design_code || `PRODUCT-${group.product_id}`,
+      pattern_type: group.pattern_type,
+      patternType: group.pattern_type,
+      pattern_code: group.pattern_code,
+      patternCode: group.pattern_code,
+      fit_type: group.fit_type,
+      fitType: group.fit_type,
+      mark_code: group.mark_code,
+      markCode: group.mark_code,
+      size: selectedVariant.size || '',
+      color: selectedVariant.color || '',
+      colour: selectedVariant.color || '',
+      size_summary: sizes.join(', '),
+      color_summary: colors.join(', '),
+      colour_summary: colors.join(', '),
+      display_size: sizes.join(', '),
+      display_color: colors.join(', '),
+      sizes,
+      colors,
+      colours: colors,
+      barcodes,
+      ean_codes: barcodes,
+      eanCodes: barcodes,
+      barcode: selectedVariant.barcode || '',
+      ean_code: selectedVariant.ean_code || selectedVariant.barcode || '',
+      eanCode: selectedVariant.ean_code || selectedVariant.barcode || '',
+      mrp: selectedVariant.mrp,
+      original_price: selectedVariant.original_price,
+      original_price_b2c: selectedVariant.original_price_b2c,
+      original_price_b2b: selectedVariant.original_price_b2b,
+      base_sale_price: selectedVariant.base_sale_price,
+      original_sale_price: selectedVariant.original_sale_price,
+      sale_price: selectedVariant.sale_price,
+      price: selectedVariant.price,
+      selling_price: selectedVariant.selling_price,
+      final_price: selectedVariant.final_price,
+      discounted_price: selectedVariant.discounted_price,
+      mahaveer_price: selectedVariant.mahaveer_price,
+      cost_price: selectedVariant.cost_price,
+      b2c_discount_pct: selectedVariant.b2c_discount_pct,
+      b2b_discount_pct: selectedVariant.b2b_discount_pct,
+      discount_b2c: selectedVariant.discount_b2c,
+      discount_b2b: selectedVariant.discount_b2b,
+      discount: selectedVariant.discount,
+      discount_percentage: selectedVariant.discount_percentage,
+      discount_percent: selectedVariant.discount_percent,
+      final_price_b2c: selectedVariant.final_price_b2c,
+      final_price_b2b: selectedVariant.final_price_b2b,
+      b2c_final_price: selectedVariant.b2c_final_price,
+      b2b_final_price: selectedVariant.b2b_final_price,
+      on_hand: totalOnHand,
+      reserved: totalReserved,
+      available_qty: totalAvailable,
+      total_count: totalOnHand,
+      in_stock: totalAvailable > 0,
+      image_url: selectedVariant.image_url || imageRow.image_url || '',
+      imageUrl: selectedVariant.image_url || imageRow.image_url || '',
+      front_image_url: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
+      frontImageUrl: selectedVariant.front_image_url || selectedVariant.image_url || imageRow.front_image_url || imageRow.image_url || '',
+      back_image_url: selectedVariant.back_image_url || imageRow.back_image_url || '',
+      backImageUrl: selectedVariant.back_image_url || imageRow.back_image_url || '',
+      main_image_url: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
+      mainImageUrl: selectedVariant.main_image_url || selectedVariant.image_url || imageRow.main_image_url || imageRow.image_url || '',
+      images: Array.isArray(selectedVariant.images) ? selectedVariant.images.filter(Boolean) : [selectedVariant.front_image_url || selectedVariant.image_url || imageRow.image_url, selectedVariant.back_image_url || imageRow.back_image_url].filter(Boolean),
+      variant_count: group.variants.length,
+      variantCount: group.variants.length,
+      variants: group.variants
+    })
   }
 
-  output.sort((firstProduct, secondProduct) => {
-    const categoryCompare = String(firstProduct.category_path || '').localeCompare(String(secondProduct.category_path || ''), undefined, { numeric: true })
-    if (categoryCompare !== 0) return categoryCompare
-
-    const brandCompare = String(firstProduct.brand_name || '').localeCompare(String(secondProduct.brand_name || ''), undefined, { numeric: true })
-    if (brandCompare !== 0) return brandCompare
-
-    const nameCompare = String(firstProduct.product_name || '').localeCompare(String(secondProduct.product_name || ''), undefined, { numeric: true })
-    if (nameCompare !== 0) return nameCompare
-
-    const colourCompare = String(firstProduct.colour || '').localeCompare(String(secondProduct.colour || ''), undefined, { numeric: true })
-    if (colourCompare !== 0) return colourCompare
-
-    return String(firstProduct.variant_id || '').localeCompare(String(secondProduct.variant_id || ''), undefined, { numeric: true })
-  })
-
-  return output
+  return out
 }
 
 const addCategoryFilter = ({ req, params, where }) => {
@@ -848,8 +714,7 @@ const addCategoryFilter = ({ req, params, where }) => {
 
 const fetchProducts = async ({ req, gender, category, brand, q, id, productId, variantId, limit, offset, random, hasImage }) => {
   const params = []
-  const includeOutOfStock = ['true', '1', 'yes'].includes(String(req.query.include_out_of_stock || req.query.includeOutOfStock || req.query.admin || '').trim().toLowerCase())
-  let where = productWhere({ includeOutOfStock })
+  let where = productWhere()
   const genderQ = toGender(gender || category || '')
 
   if (genderQ) {
@@ -935,8 +800,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   `
 
   const { rows } = await pool.query(sql, params)
-  const groupMode = normalizeGroupMode(req.query.group_by || req.query.groupBy || 'design')
-  return groupProductRows(rows, groupMode)
+  return groupProductRows(rows)
 }
 
 const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFromBody, mode = 'auto' }) => {
@@ -948,10 +812,7 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byBodyVariant = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
-       JOIN products p ON p.id = v.product_id
        WHERE v.id = $1
-         AND v.is_active = TRUE
-         AND p.is_active = TRUE
        LIMIT 1`,
       [bodyVariantId]
     )
@@ -964,10 +825,7 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
       `SELECT v.id AS variant_id, v.product_id
        FROM barcodes b
        JOIN product_variants v ON v.id = b.variant_id
-       JOIN products p ON p.id = v.product_id
        WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1
-         AND v.is_active = TRUE
-         AND p.is_active = TRUE
        ORDER BY b.id ASC
        LIMIT 1`,
       [barcode]
@@ -980,10 +838,7 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byVariant = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
-       JOIN products p ON p.id = v.product_id
        WHERE v.id = $1
-         AND v.is_active = TRUE
-         AND p.is_active = TRUE
        LIMIT 1`,
       [numericId]
     )
@@ -995,11 +850,9 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
     const byProduct = await client.query(
       `SELECT v.id AS variant_id, v.product_id
        FROM product_variants v
-       JOIN products p ON p.id = v.product_id
        LEFT JOIN barcodes b ON b.variant_id = v.id
        WHERE v.product_id = $1
          AND v.is_active = TRUE
-         AND p.is_active = TRUE
        ORDER BY
          CASE WHEN $2::text <> '' AND REGEXP_REPLACE(UPPER(TRIM(COALESCE(b.ean_code, ''))), '[^A-Z0-9._-]', '', 'g') = $2 THEN 0 ELSE 1 END,
          v.id ASC
@@ -1014,7 +867,7 @@ const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFr
 }
 
 const getProductCategoryId = async (client, productId) => {
-  const { rows } = await client.query(`SELECT category_id FROM products WHERE id = $1 AND is_active = TRUE LIMIT 1`, [productId])
+  const { rows } = await client.query(`SELECT category_id FROM products WHERE id = $1 LIMIT 1`, [productId])
   return rows[0]?.category_id || null
 }
 
@@ -1149,7 +1002,6 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     `SELECT design_code, pattern_type, pattern_code
      FROM products
      WHERE id = $1
-       AND is_active = TRUE
      LIMIT 1`,
     [productId]
   )
@@ -1625,31 +1477,6 @@ const updateBarcodeHandler = async (req, res) => {
 router.put('/barcode/:barcode', updateBarcodeHandler)
 router.patch('/barcode/:barcode', updateBarcodeHandler)
 
-router.post('/bulk-delete', async (req, res) => {
-  try {
-    noStore(res)
-
-    const scope = String(req.body?.scope || '').trim().toLowerCase() === 'all' ? 'all' : 'selected'
-    const productIds = req.body?.product_ids || req.body?.productIds || req.body?.ids || []
-    const filters = req.body?.filters && typeof req.body.filters === 'object' ? req.body.filters : req.body || {}
-
-    if (scope !== 'all' && (!Array.isArray(productIds) || productIds.length === 0)) {
-      return res.status(400).json({ message: 'product_ids are required' })
-    }
-
-    const result = await deleteProducts({
-      productIds,
-      scope,
-      filters,
-      deletedBy: getDeletedBy(req)
-    })
-
-    return res.json(result)
-  } catch (err) {
-    return res.status(500).json({ message: 'Error deleting products', error: err.message })
-  }
-})
-
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     noStore(res)
@@ -1720,69 +1547,73 @@ router.put('/:id(\\d+)', updateProductHandler)
 router.patch('/:id(\\d+)', updateProductHandler)
 
 router.delete('/:id(\\d+)', async (req, res) => {
+  const client = await pool.connect()
+
   try {
     noStore(res)
 
     const id = parseInt(req.params.id, 10)
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ message: 'Invalid product id' })
-    }
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ message: 'Invalid product id' })
 
     const scope = String(req.query.scope || req.query.type || '').trim().toLowerCase()
 
+    await client.query('BEGIN')
+
     if (scope === 'variant') {
-      const client = await pool.connect()
+      const result = await deleteVariantById({ client, req, variantId: id })
 
-      try {
-        await client.query('BEGIN')
-
-        const result = await deleteVariantById({ client, req, variantId: id })
-
-        if (result.status !== 200) {
-          await client.query('ROLLBACK')
-          return res.status(result.status).json(result.payload)
-        }
-
-        await client.query('COMMIT')
-        return res.json(result.payload)
-      } catch (err) {
-        try {
-          await client.query('ROLLBACK')
-        } catch {}
-        return res.status(500).json({ message: 'Error deleting variant', error: err.message })
-      } finally {
-        client.release()
+      if (result.status !== 200) {
+        await client.query('ROLLBACK')
+        return res.status(result.status).json(result.payload)
       }
+
+      await client.query('COMMIT')
+      return res.json(result.payload)
     }
 
-    const result = await deleteProducts({
-      productIds: [id],
-      scope: 'single',
-      deletedBy: getDeletedBy(req)
-    })
+    const product = await client.query(`SELECT id FROM products WHERE id = $1 LIMIT 1`, [id])
 
-    if (result.deleted_count === 1) {
+    if (product.rows.length) {
+      const variants = await client.query(`SELECT id FROM product_variants WHERE product_id = $1`, [id])
+      const variantIds = variants.rows.map(r => r.id)
+
+      await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE product_id = $1`, [id])
+
+      if (variantIds.length) {
+        await client.query(
+          `UPDATE branch_variant_stock
+           SET is_active = FALSE,
+               on_hand = 0,
+               updated_at = NOW()
+           WHERE variant_id = ANY($1::int[])`,
+          [variantIds]
+        )
+      }
+
+      await client.query('COMMIT')
+
       return res.json({
         message: 'Product deleted successfully',
-        ...result
+        id,
+        product_id: id,
+        deleted_variants: variantIds
       })
     }
 
-    const blocked = result.blocked_products?.[0]
+    const result = await deleteVariantById({ client, req, variantId: id })
 
-    if (blocked?.reason === 'RESERVED_STOCK') {
-      return res.status(409).json({
-        message: 'Product has reserved stock and cannot be deleted',
-        ...result
-      })
+    if (result.status !== 200) {
+      await client.query('ROLLBACK')
+      return res.status(result.status).json({ message: 'Product not found' })
     }
 
-    return res.status(404).json({
-      message: 'Product not found or already deleted',
-      ...result
-    })
+    await client.query('COMMIT')
+    return res.json(result.payload)
   } catch (err) {
+    await client.query('ROLLBACK')
     return res.status(500).json({ message: 'Error deleting product', error: err.message })
+  } finally {
+    client.release()
   }
 })
 
