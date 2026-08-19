@@ -63,6 +63,10 @@ function normalizeLogicalText(value) {
   return cleanText(value).toLowerCase()
 }
 
+function isUncategorizedCategoryPath(value) {
+  return /(^|>)\s*uncategorized\s*$/i.test(cleanText(value))
+}
+
 function normalizeDesignCode(value) {
   return cleanText(value)
     .toUpperCase()
@@ -656,8 +660,22 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
     const productMismatch = normalizeLogicalText(existing.product_name) !== normalizeLogicalText(prepared.ProductName)
     const brandMismatch = normalizeLogicalText(existing.brand_name) !== normalizeLogicalText(prepared.BrandName)
     const designMismatch = Boolean(prepared.DesignCode) && normalizeDesignCode(existing.design_code) !== prepared.DesignCode
+    const safeCategoryMove =
+      categoryMismatch &&
+      isUncategorizedCategoryPath(existing.category_path) &&
+      !genderMismatch &&
+      !productMismatch &&
+      !brandMismatch &&
+      !designMismatch
 
-    if (!categoryMismatch && !genderMismatch && !productMismatch && !brandMismatch && !designMismatch) {
+    const hardConflict =
+      genderMismatch ||
+      productMismatch ||
+      brandMismatch ||
+      designMismatch ||
+      (categoryMismatch && !safeCategoryMove)
+
+    if (!hardConflict) {
       continue
     }
 
@@ -3065,36 +3083,64 @@ router.post(
                 existingBarcodeResult
                   .rows[0]
 
-              if (
-                Number(
-                  existing.category_id
-                ) !==
-                  Number(categoryId) ||
-                normGender(
-                  existing.gender
-                ) !== gender
-              ) {
+              const categoryMismatch =
+                Number(existing.category_id) !==
+                Number(categoryId)
+
+              const genderMismatch =
+                normGender(existing.gender) !==
+                gender
+
+              const productMismatch =
+                normalizeLogicalText(existing.product_name) !==
+                normalizeLogicalText(prepared.ProductName)
+
+              const brandMismatch =
+                normalizeLogicalText(existing.brand_name) !==
+                normalizeLogicalText(prepared.BrandName)
+
+              const designMismatch =
+                Boolean(prepared.DesignCode) &&
+                normalizeDesignCode(existing.design_code) !==
+                  prepared.DesignCode
+
+              const safeCategoryMove =
+                categoryMismatch &&
+                isUncategorizedCategoryPath(existing.category_path) &&
+                !genderMismatch &&
+                !productMismatch &&
+                !brandMismatch &&
+                !designMismatch
+
+              if (genderMismatch) {
+                throw new Error(
+                  `Barcode ${barcode} belongs to gender ${existing.gender}, not ${gender}`
+                )
+              }
+
+              if (productMismatch || brandMismatch) {
+                throw new Error(
+                  `Barcode ${barcode} belongs to ${existing.product_name} / ${existing.brand_name}`
+                )
+              }
+
+              if (designMismatch) {
+                throw new Error(`Barcode ${barcode} belongs to design ${existing.design_code || 'UNKNOWN'}, not ${prepared.DesignCode}`)
+              }
+
+              if (categoryMismatch && !safeCategoryMove) {
                 throw new Error(
                   `Barcode ${barcode} belongs to ${existing.category_path || existing.category_id}, not ${category.category_path}`
                 )
               }
 
-              if (
-                normalizeLogicalText(
-                  existing.product_name
-                ) !==
-                  normalizeLogicalText(
-                    prepared.ProductName
-                  ) ||
-                normalizeLogicalText(
-                  existing.brand_name
-                ) !==
-                  normalizeLogicalText(
-                    prepared.BrandName
-                  )
-              ) {
-                throw new Error(
-                  `Barcode ${barcode} belongs to ${existing.product_name} / ${existing.brand_name}`
+              if (safeCategoryMove) {
+                await client.query(
+                  `UPDATE products
+                   SET category_id = $1,
+                       updated_at = NOW()
+                   WHERE id = $2`,
+                  [categoryId, existing.product_id]
                 )
               }
 
@@ -3103,10 +3149,6 @@ router.post(
 
               variantId =
                 existing.variant_id
-
-              if (prepared.DesignCode && normalizeDesignCode(existing.design_code) !== prepared.DesignCode) {
-                throw new Error(`Barcode ${barcode} belongs to design ${existing.design_code || 'UNKNOWN'}, not ${prepared.DesignCode}`)
-              }
 
               await updateProductImportMetadata(
                 client,
