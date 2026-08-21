@@ -441,11 +441,11 @@ const makeVariantPayload = row => ({
   images: Array.isArray(row.images) ? row.images.filter(Boolean) : [row.front_image_url || row.image_url, row.back_image_url].filter(Boolean)
 })
 
-const groupProductRows = rows => {
+const groupProductRows = (rows, { includeGroupedValues = false } = {}) => {
   const groups = new Map()
 
   for (const row of Array.isArray(rows) ? rows : []) {
-    if (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour)) continue
+    if (!includeGroupedValues && (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour))) continue
 
     const key = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
 
@@ -806,7 +806,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   `
 
   const { rows } = await pool.query(sql, params)
-  return groupProductRows(rows)
+  return groupProductRows(rows, { includeGroupedValues })
 }
 
 const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFromBody, mode = 'auto' }) => {
