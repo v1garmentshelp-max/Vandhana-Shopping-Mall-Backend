@@ -184,13 +184,17 @@ const priceSql = () => `
   END
 `
 
-const productWhere = () => `
+const productWhere = ({ includeGroupedValues = false, includeOutOfStock = false } = {}) => `
   v.is_active = TRUE
   AND c.is_active = TRUE
+  ${includeOutOfStock ? '' : `
   AND COALESCE(bvs.is_active, FALSE) = TRUE
   AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
+  `}
+  ${includeGroupedValues ? '' : `
   AND COALESCE(v.size, '') NOT LIKE '%,%'
   AND COALESCE(v.colour, '') NOT LIKE '%,%'
+  `}
 `
 
 const fallbackImageSql = () => `
@@ -714,7 +718,9 @@ const addCategoryFilter = ({ req, params, where }) => {
 
 const fetchProducts = async ({ req, gender, category, brand, q, id, productId, variantId, limit, offset, random, hasImage }) => {
   const params = []
-  let where = productWhere()
+  const includeGroupedValues = String(req.query.include_grouped_values || req.query.includeGroupedValues || '').trim().toLowerCase() === 'true'
+  const includeOutOfStock = String(req.query.include_out_of_stock || req.query.includeOutOfStock || '').trim().toLowerCase() === 'true'
+  let where = productWhere({ includeGroupedValues, includeOutOfStock })
   const genderQ = toGender(gender || category || '')
 
   if (genderQ) {
