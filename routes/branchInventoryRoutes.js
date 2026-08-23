@@ -646,7 +646,7 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
 
   if (!barcodes.length) return []
 
-  const result = await pool.query(`WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') AS barcode, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]) ORDER BY b.id ASC`, [barcodes])
+  const result = await pool.query(`WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') AS barcode, b.ean_code, b.variant_id, v.product_id, v.is_active AS variant_active, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.gender, p.category_id, cp.category_path, NOT EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = TRUE) AS all_variants_inactive, NOT EXISTS (SELECT 1 FROM product_variants pv JOIN branch_variant_stock pbs ON pbs.variant_id = pv.id WHERE pv.product_id = p.id AND pbs.is_active = TRUE AND GREATEST(COALESCE(pbs.on_hand, 0) - COALESCE(pbs.reserved, 0), 0) > 0) AS no_active_stock, NOT EXISTS (SELECT 1 FROM product_variants pv JOIN barcodes pb ON pb.variant_id = pv.id WHERE pv.product_id = p.id AND NOT (REGEXP_REPLACE(UPPER(TRIM(pb.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]))) AS all_product_barcodes_in_import FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($1::text[]) ORDER BY b.id ASC`, [barcodes])
 
   const conflicts = []
 
@@ -660,9 +660,14 @@ async function findImportBarcodeConflicts(preparedRows, categoryId, gender) {
     const productMismatch = normalizeLogicalText(existing.product_name) !== normalizeLogicalText(prepared.ProductName)
     const brandMismatch = normalizeLogicalText(existing.brand_name) !== normalizeLogicalText(prepared.BrandName)
     const designMismatch = Boolean(prepared.DesignCode) && normalizeDesignCode(existing.design_code) !== prepared.DesignCode
+    const inactiveCategoryMove =
+      categoryMismatch &&
+      existing.all_variants_inactive === true &&
+      existing.no_active_stock === true &&
+      existing.all_product_barcodes_in_import === true
     const safeCategoryMove =
       categoryMismatch &&
-      isUncategorizedCategoryPath(existing.category_path) &&
+      (isUncategorizedCategoryPath(existing.category_path) || inactiveCategoryMove) &&
       !genderMismatch &&
       !productMismatch &&
       !brandMismatch &&
@@ -3007,6 +3012,19 @@ router.post(
           })
         }
 
+        const jobBarcodeRows = await client.query(
+          `SELECT raw_row_json FROM import_rows WHERE import_job_id = $1`,
+          [jobId]
+        )
+
+        const jobBarcodes = Array.from(
+          new Set(
+            jobBarcodeRows.rows
+              .map(item => rowToPreparedRecord(item.raw_row_json || {}).Barcode)
+              .filter(Boolean)
+          )
+        )
+
         for (
           const batchRow of
           rowsToProcess
@@ -3069,8 +3087,8 @@ router.post(
 
             const existingBarcodeResult =
               await client.query(
-                `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT b.id AS barcode_id, b.ean_code, b.variant_id, v.product_id, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, cp.category_path FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY b.id ASC LIMIT 1 FOR UPDATE OF b, v, p`,
-                [barcode]
+                `WITH RECURSIVE category_paths AS (SELECT c.id, c.parent_id, c.name, c.name::text AS category_path FROM product_categories c WHERE c.parent_id IS NULL UNION ALL SELECT c.id, c.parent_id, c.name, category_paths.category_path || ' > ' || c.name FROM product_categories c JOIN category_paths ON category_paths.id = c.parent_id) SELECT b.id AS barcode_id, b.ean_code, b.variant_id, v.product_id, v.is_active AS variant_active, p.name AS product_name, p.brand_name, p.design_code, p.pattern_type, p.pattern_code, p.fit_type, p.mark_code, p.gender, p.category_id, cp.category_path, NOT EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_active = TRUE) AS all_variants_inactive, NOT EXISTS (SELECT 1 FROM product_variants pv JOIN branch_variant_stock pbs ON pbs.variant_id = pv.id WHERE pv.product_id = p.id AND pbs.is_active = TRUE AND GREATEST(COALESCE(pbs.on_hand, 0) - COALESCE(pbs.reserved, 0), 0) > 0) AS no_active_stock, NOT EXISTS (SELECT 1 FROM product_variants pv JOIN barcodes pb ON pb.variant_id = pv.id WHERE pv.product_id = p.id AND NOT (REGEXP_REPLACE(UPPER(TRIM(pb.ean_code)), '[^A-Z0-9._-]', '', 'g') = ANY($2::text[]))) AS all_product_barcodes_in_import FROM barcodes b JOIN product_variants v ON v.id = b.variant_id JOIN products p ON p.id = v.product_id LEFT JOIN category_paths cp ON cp.id = p.category_id WHERE REGEXP_REPLACE(UPPER(TRIM(b.ean_code)), '[^A-Z0-9._-]', '', 'g') = $1 ORDER BY b.id ASC LIMIT 1 FOR UPDATE OF b, v, p`,
+                [barcode, jobBarcodes]
               )
 
             let productId
@@ -3104,9 +3122,15 @@ router.post(
                 normalizeDesignCode(existing.design_code) !==
                   prepared.DesignCode
 
+              const inactiveCategoryMove =
+                categoryMismatch &&
+                existing.all_variants_inactive === true &&
+                existing.no_active_stock === true &&
+                existing.all_product_barcodes_in_import === true
+
               const safeCategoryMove =
                 categoryMismatch &&
-                isUncategorizedCategoryPath(existing.category_path) &&
+                (isUncategorizedCategoryPath(existing.category_path) || inactiveCategoryMove) &&
                 !genderMismatch &&
                 !productMismatch &&
                 !brandMismatch &&
@@ -3138,6 +3162,9 @@ router.post(
                 await client.query(
                   `UPDATE products
                    SET category_id = $1,
+                       is_active = TRUE,
+                       deleted_at = NULL,
+                       delete_batch_id = NULL,
                        updated_at = NOW()
                    WHERE id = $2`,
                   [categoryId, existing.product_id]

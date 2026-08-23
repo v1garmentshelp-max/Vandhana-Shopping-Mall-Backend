@@ -1175,10 +1175,26 @@ const deleteVariantById = async ({ client, req, variantId }) => {
     )
   }
 
+  await client.query(
+    `UPDATE products p
+     SET is_active = FALSE,
+         deleted_at = NOW(),
+         delete_batch_id = NULL,
+         updated_at = NOW()
+     WHERE p.id = $1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM product_variants v
+         WHERE v.product_id = p.id
+           AND v.is_active = TRUE
+       )`,
+    [existingVariant.rows[0].product_id]
+  )
+
   return {
     status: 200,
     payload: {
-      message: 'Variant deleted successfully',
+      message: 'Variant deactivated successfully',
       variant_id: variantId,
       product_id: existingVariant.rows[0].product_id,
       size: existingVariant.rows[0].size,
@@ -1585,6 +1601,16 @@ router.delete('/:id(\\d+)', async (req, res) => {
 
       await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE product_id = $1`, [id])
 
+      await client.query(
+        `UPDATE products
+         SET is_active = FALSE,
+             deleted_at = NOW(),
+             delete_batch_id = NULL,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [id]
+      )
+
       if (variantIds.length) {
         await client.query(
           `UPDATE branch_variant_stock
@@ -1599,7 +1625,7 @@ router.delete('/:id(\\d+)', async (req, res) => {
       await client.query('COMMIT')
 
       return res.json({
-        message: 'Product deleted successfully',
+        message: 'Product deactivated successfully',
         id,
         product_id: id,
         deleted_variants: variantIds
