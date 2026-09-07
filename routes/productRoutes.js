@@ -1126,79 +1126,91 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
   }
 }
 
-const deleteVariantById = async ({ client, req, variantId }) => {
-  const branchId = getBranchIdFromReq(req)
-
+const deleteVariantById = async ({ client, variantId }) => {
   const existingVariant = await client.query(
-    `SELECT id, product_id, size, colour
-     FROM product_variants
-     WHERE id = $1
-     LIMIT 1`,
+    `SELECT v.id, v.product_id, v.size, v.colour
+     FROM product_variants v
+     JOIN products p ON p.id = v.product_id
+     WHERE v.id = $1
+     FOR UPDATE OF p, v`,
     [variantId]
   )
 
-  if (!existingVariant.rows.length) return { status: 404, payload: { message: 'Variant not found' } }
+  if (!existingVariant.rows.length) {
+    return { status: 404, payload: { message: 'Variant not found' } }
+  }
 
-  if (branchId) {
+  const variant = existingVariant.rows[0]
+
+  const barcodeRows = await client.query(
+    `SELECT TRIM(ean_code) AS ean_code
+     FROM barcodes
+     WHERE variant_id = $1`,
+    [variantId]
+  )
+
+  const eanCodes = barcodeRows.rows
+    .map(row => cleanValue(row.ean_code))
+    .filter(Boolean)
+
+  if (eanCodes.length) {
     await client.query(
-      `UPDATE branch_variant_stock
-       SET is_active = FALSE,
-           on_hand = 0,
-           updated_at = NOW()
-       WHERE variant_id = $1
-         AND branch_id = $2`,
-      [variantId, branchId]
-    )
-
-    const activeStock = await client.query(
-      `SELECT 1
-       FROM branch_variant_stock
-       WHERE variant_id = $1
-         AND is_active = TRUE
-         AND on_hand > 0
-       LIMIT 1`,
-      [variantId]
-    )
-
-    if (!activeStock.rows.length) {
-      await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE id = $1`, [variantId])
-    }
-  } else {
-    await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE id = $1`, [variantId])
-    await client.query(
-      `UPDATE branch_variant_stock
-       SET is_active = FALSE,
-           on_hand = 0,
-           updated_at = NOW()
-       WHERE variant_id = $1`,
-      [variantId]
+      `DELETE FROM product_images
+       WHERE TRIM(ean_code) = ANY($1::text[])`,
+      [eanCodes]
     )
   }
 
   await client.query(
-    `UPDATE products p
-     SET is_active = FALSE,
-         deleted_at = NOW(),
-         delete_batch_id = NULL,
-         updated_at = NOW()
-     WHERE p.id = $1
-       AND NOT EXISTS (
-         SELECT 1
-         FROM product_variants v
-         WHERE v.product_id = p.id
-           AND v.is_active = TRUE
-       )`,
-    [existingVariant.rows[0].product_id]
+    `DELETE FROM product_design_mapping_review
+     WHERE variant_id = $1`,
+    [variantId]
   )
+
+  await client.query(
+    `DELETE FROM product_variants
+     WHERE id = $1`,
+    [variantId]
+  )
+
+  const remainingVariants = await client.query(
+    `SELECT 1
+     FROM product_variants
+     WHERE product_id = $1
+     LIMIT 1`,
+    [variant.product_id]
+  )
+
+  let productDeleted = false
+
+  if (!remainingVariants.rows.length) {
+    await client.query(
+      `DELETE FROM product_design_mapping_review
+       WHERE product_id = $1`,
+      [variant.product_id]
+    )
+
+    await client.query(
+      `DELETE FROM products
+       WHERE id = $1`,
+      [variant.product_id]
+    )
+
+    productDeleted = true
+  }
 
   return {
     status: 200,
     payload: {
-      message: 'Variant deactivated successfully',
+      message: productDeleted
+        ? 'Variant and product permanently deleted successfully'
+        : 'Variant permanently deleted successfully',
       variant_id: variantId,
-      product_id: existingVariant.rows[0].product_id,
-      size: existingVariant.rows[0].size,
-      colour: existingVariant.rows[0].colour
+      product_id: variant.product_id,
+      size: variant.size,
+      colour: variant.colour,
+      deleted_barcodes: eanCodes,
+      product_deleted: productDeleted
     }
   }
 }
@@ -1593,42 +1605,66 @@ router.delete('/:id(\\d+)', async (req, res) => {
       return res.json(result.payload)
     }
 
-    const product = await client.query(`SELECT id FROM products WHERE id = $1 LIMIT 1`, [id])
+    const product = await client.query(
+      `SELECT id
+       FROM products
+       WHERE id = $1
+       FOR UPDATE`,
+      [id]
+    )
 
     if (product.rows.length) {
-      const variants = await client.query(`SELECT id FROM product_variants WHERE product_id = $1`, [id])
+      const variants = await client.query(
+        `SELECT id
+         FROM product_variants
+         WHERE product_id = $1
+         ORDER BY id`,
+        [id]
+      )
       const variantIds = variants.rows.map(r => r.id)
 
-      await client.query(`UPDATE product_variants SET is_active = FALSE, updated_at = NOW() WHERE product_id = $1`, [id])
+      const barcodeRows = variantIds.length
+        ? await client.query(
+            `SELECT TRIM(ean_code) AS ean_code
+             FROM barcodes
+             WHERE variant_id = ANY($1::bigint[])`,
+            [variantIds]
+          )
+        : { rows: [] }
+
+      const eanCodes = barcodeRows.rows
+        .map(row => cleanValue(row.ean_code))
+        .filter(Boolean)
+
+      if (eanCodes.length) {
+        await client.query(
+          `DELETE FROM product_images
+           WHERE TRIM(ean_code) = ANY($1::text[])`,
+          [eanCodes]
+        )
+      }
 
       await client.query(
-        `UPDATE products
-         SET is_active = FALSE,
-             deleted_at = NOW(),
-             delete_batch_id = NULL,
-             updated_at = NOW()
+        `DELETE FROM product_design_mapping_review
+         WHERE product_id = $1
+            OR variant_id = ANY($2::bigint[])`,
+        [id, variantIds]
+      )
+
+      await client.query(
+        `DELETE FROM products
          WHERE id = $1`,
         [id]
       )
 
-      if (variantIds.length) {
-        await client.query(
-          `UPDATE branch_variant_stock
-           SET is_active = FALSE,
-               on_hand = 0,
-               updated_at = NOW()
-           WHERE variant_id = ANY($1::int[])`,
-          [variantIds]
-        )
-      }
-
       await client.query('COMMIT')
 
       return res.json({
-        message: 'Product deactivated successfully',
+        message: 'Product permanently deleted successfully',
         id,
         product_id: id,
-        deleted_variants: variantIds
+        deleted_variants: variantIds,
+        deleted_barcodes: eanCodes
       })
     }
 
