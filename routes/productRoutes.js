@@ -144,6 +144,22 @@ const noStore = res => {
   res.set('Expires', '0')
 }
 
+const storefrontCache = (req, res) => {
+  const bypass =
+    String(req.query.include_out_of_stock || req.query.includeOutOfStock || '').toLowerCase() === 'true' ||
+    String(req.query.include_grouped_values || req.query.includeGroupedValues || '').toLowerCase() === 'true' ||
+    String(req.query.no_cache || req.query.noCache || '').toLowerCase() === 'true'
+
+  if (bypass) {
+    noStore(res)
+    return
+  }
+
+  res.set('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=300')
+  res.set('CDN-Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
+  res.vary('Accept-Encoding')
+}
+
 
 const ACTIVE_CATEGORY_PATHS_CTE = `
   WITH RECURSIVE category_paths AS (
@@ -185,6 +201,8 @@ const priceSql = () => `
 `
 
 const productWhere = ({ includeGroupedValues = false, includeOutOfStock = false } = {}) => `
+  p.is_active = TRUE
+  AND
   v.is_active = TRUE
   AND c.is_active = TRUE
   ${includeOutOfStock ? '' : `
@@ -1217,7 +1235,7 @@ const deleteVariantById = async ({ client, variantId }) => {
 
 router.get('/', async (req, res) => {
   try {
-    noStore(res)
+    storefrontCache(req, res)
 
     const rows = await fetchProducts({
       req,
