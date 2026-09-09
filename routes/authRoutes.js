@@ -3,6 +3,7 @@ const pool = require('../db')
 const bcrypt = require('bcryptjs')
 const nodemailer = require('nodemailer')
 const jwt = require('jsonwebtoken')
+const crypto = require('crypto')
 const {
   creditSignupBonus
 } = require('../services/rewardPointsService')
@@ -19,6 +20,26 @@ const DB_SCHEMA =
 
 const USERS_TABLE =
   `"${DB_SCHEMA}"."vandana_users"`
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000
+const OTP_RESEND_SECONDS = 60
+const OTP_MAX_ATTEMPTS = 5
+
+const getPasswordResetSecret = () => {
+  const secret = String(process.env.PASSWORD_RESET_SECRET || '').trim()
+
+  if (!secret) {
+    throw new Error('PASSWORD_RESET_SECRET is not configured')
+  }
+
+  return secret
+}
+
+const getOtpReference = value =>
+  crypto
+    .createHash('sha256')
+    .update(String(value || ''))
+    .digest('hex')
 
 const transporter =
   nodemailer.createTransport({
@@ -722,9 +743,12 @@ router.post(
         await pool.query(
           `SELECT
              id,
-             type
+             name,
+             type,
+             otp_last_sent_at
            FROM ${USERS_TABLE}
-           WHERE lower(email) = $1`,
+           WHERE lower(email) = $1
+           LIMIT 1`,
           [cleanEmail]
         )
 
@@ -733,60 +757,92 @@ router.post(
         0
       ) {
         return res
-          .status(404)
           .json({
             message:
-              'You are a new user. Please register'
+              'If an account exists for this email, an OTP has been sent'
+          })
+      }
+
+      const user = result.rows[0]
+      const lastSentAt = user.otp_last_sent_at
+        ? new Date(user.otp_last_sent_at).getTime()
+        : 0
+      const elapsedSeconds = Math.floor((Date.now() - lastSentAt) / 1000)
+
+      if (lastSentAt && elapsedSeconds < OTP_RESEND_SECONDS) {
+        return res
+          .status(429)
+          .json({
+            message: `Please wait ${OTP_RESEND_SECONDS - elapsedSeconds} seconds before requesting another OTP`,
+            retry_after: OTP_RESEND_SECONDS - elapsedSeconds
           })
       }
 
       const otp =
-        Math.floor(
-          100000 +
-            Math.random() *
-              900000
+        crypto.randomInt(
+          100000,
+          1000000
         ).toString()
+
+      const otpHash =
+        await bcrypt.hash(
+          otp,
+          10
+        )
 
       const expiresAt =
         new Date(
           Date.now() +
-            10 *
-              60 *
-              1000
+            OTP_EXPIRY_MS
         )
 
-      await pool.query(
-        `UPDATE ${USERS_TABLE}
-         SET
-           otp = $1,
-           otp_expiry = $2,
-           updated_at = NOW()
-         WHERE lower(email) = $3`,
-        [
-          otp,
-          expiresAt,
-          cleanEmail
-        ]
-      )
+      const client = await pool.connect()
 
-      await transporter.sendMail({
-        from:
-          process.env
-            .FROM_EMAIL ||
-          process.env
-            .SMTP_USER,
-        to: cleanEmail,
-        subject:
-          'Your Vandana Shopping Mall OTP',
-        text:
-          `Your OTP is ${otp}. It is valid for 10 minutes.`,
-        html:
-          `<div style="font-family:Arial,sans-serif;font-size:16px;color:#111"><p>Your OTP is <strong>${otp}</strong></p><p>This code is valid for 10 minutes.</p></div>`
-      })
+      try {
+        await client.query('BEGIN')
+
+        await client.query(
+          `UPDATE ${USERS_TABLE}
+           SET
+             otp = $1,
+             otp_expiry = $2,
+             otp_attempts = 0,
+             otp_last_sent_at = NOW(),
+             updated_at = NOW()
+           WHERE id = $3`,
+          [
+            otpHash,
+            expiresAt,
+            user.id
+          ]
+        )
+
+        await transporter.sendMail({
+          from:
+            process.env.FROM_EMAIL ||
+            process.env.SMTP_USER,
+          to: cleanEmail,
+          subject:
+            'V1 Garments password reset OTP',
+          text:
+            `Your V1 Garments password reset OTP is ${otp}. It is valid for 10 minutes.`,
+          html:
+            `<div style="font-family:Arial,sans-serif;color:#111;max-width:520px;margin:auto;padding:24px"><h2 style="margin:0 0 16px">Reset your V1 Garments password</h2><p>Use the OTP below to continue:</p><div style="font-size:32px;font-weight:700;letter-spacing:8px;margin:24px 0">${otp}</div><p>This OTP is valid for 10 minutes. Do not share it with anyone.</p></div>`
+        })
+
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK')
+        throw err
+      } finally {
+        client.release()
+      }
 
       return res.json({
         message:
-          'OTP sent'
+          'If an account exists for this email, an OTP has been sent',
+        expires_in: Math.floor(OTP_EXPIRY_MS / 1000),
+        resend_after: OTP_RESEND_SECONDS
       })
     } catch (err) {
       return res
@@ -839,15 +895,23 @@ router.post(
         })
     }
 
+    const client = await pool.connect()
+
     try {
+      await client.query('BEGIN')
+
       const result =
-        await pool.query(
+        await client.query(
           `SELECT
+             id,
+             email,
              otp,
-             otp_expiry
+             otp_expiry,
+             otp_attempts
            FROM ${USERS_TABLE}
            WHERE lower(email) = $1
-           LIMIT 1`,
+           LIMIT 1
+           FOR UPDATE`,
           [cleanEmail]
         )
 
@@ -855,6 +919,8 @@ router.post(
         result.rows.length ===
         0
       ) {
+        await client.query('ROLLBACK')
+
         return res
           .status(400)
           .json({
@@ -867,25 +933,26 @@ router.post(
         result.rows[0]
 
       if (
-        String(
-          user.otp || ''
-        ) !== cleanOtp
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              'Invalid OTP'
-          })
-      }
-
-      if (
         !user.otp_expiry ||
         new Date(
           user.otp_expiry
         ).getTime() <
           Date.now()
       ) {
+        await client.query(
+          `UPDATE ${USERS_TABLE}
+           SET
+             otp = NULL,
+             otp_expiry = NULL,
+             otp_attempts = 0,
+             otp_last_sent_at = NULL,
+             updated_at = NOW()
+           WHERE id = $1`,
+          [user.id]
+        )
+
+        await client.query('COMMIT')
+
         return res
           .status(400)
           .json({
@@ -894,11 +961,87 @@ router.post(
           })
       }
 
+      if (
+        Number(user.otp_attempts || 0) >=
+        OTP_MAX_ATTEMPTS
+      ) {
+        await client.query('ROLLBACK')
+
+        return res
+          .status(400)
+          .json({
+            message:
+              'Too many incorrect attempts. Request a new OTP'
+          })
+      }
+
+      const isMatch =
+        await bcrypt.compare(
+          cleanOtp,
+          String(user.otp || '')
+        )
+
+      if (!isMatch) {
+        const attempts =
+          Number(user.otp_attempts || 0) + 1
+
+        await client.query(
+          `UPDATE ${USERS_TABLE}
+           SET
+             otp_attempts = $1,
+             updated_at = NOW()
+           WHERE id = $2`,
+          [attempts, user.id]
+        )
+
+        await client.query('COMMIT')
+
+        return res
+          .status(400)
+          .json({
+            message:
+              attempts >= OTP_MAX_ATTEMPTS
+                ? 'Too many incorrect attempts. Request a new OTP'
+                : 'Invalid OTP',
+            attempts_remaining:
+              Math.max(0, OTP_MAX_ATTEMPTS - attempts)
+          })
+      }
+
+      const resetToken =
+        jwt.sign(
+          {
+            purpose: 'password-reset',
+            userId: user.id,
+            email: cleanEmail,
+            otpRef: getOtpReference(user.otp)
+          },
+          getPasswordResetSecret(),
+          { expiresIn: '10m' }
+        )
+
+      await client.query(
+        `UPDATE ${USERS_TABLE}
+         SET
+           otp_attempts = 0,
+           updated_at = NOW()
+         WHERE id = $1`,
+        [user.id]
+      )
+
+      await client.query('COMMIT')
+
       return res.json({
         message:
-          'OTP verified'
+          'OTP verified',
+        reset_token: resetToken,
+        expires_in: 600
       })
     } catch (err) {
+      try {
+        await client.query('ROLLBACK')
+      } catch {}
+
       return res
         .status(500)
         .json({
@@ -913,6 +1056,8 @@ router.post(
             err.code ||
             null
         })
+    } finally {
+      client.release()
     }
   }
 )
@@ -921,22 +1066,18 @@ router.post(
   '/forgot/reset',
   async (req, res) => {
     const {
-      email,
-      otp,
+      reset_token,
+      resetToken,
       newPassword
     } = req.body || {}
 
-    const cleanEmail =
+    const cleanResetToken =
       String(
-        email || ''
+        reset_token ||
+          resetToken ||
+          ''
       )
         .trim()
-        .toLowerCase()
-
-    const cleanOtp =
-      String(
-        otp || ''
-      ).trim()
 
     const cleanNewPassword =
       String(
@@ -945,15 +1086,14 @@ router.post(
       ).trim()
 
     if (
-      !cleanEmail ||
-      !cleanOtp ||
+      !cleanResetToken ||
       !cleanNewPassword
     ) {
       return res
         .status(400)
         .json({
           message:
-            'Email, OTP, and new password are required'
+            'Reset token and new password are required'
         })
     }
 
@@ -969,100 +1109,92 @@ router.post(
         })
     }
 
+    let decoded
+
     try {
-      const result =
-        await pool.query(
-          `SELECT
-             otp,
-             otp_expiry
-           FROM ${USERS_TABLE}
-           WHERE lower(email) = $1
-           LIMIT 1`,
-          [cleanEmail]
-        )
+      decoded = jwt.verify(
+        cleanResetToken,
+        getPasswordResetSecret()
+      )
+    } catch {
+      return res.status(400).json({
+        message: 'Reset session is invalid or expired'
+      })
+    }
 
-      if (
-        result.rows.length ===
-        0
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              'Invalid or expired OTP'
-          })
-      }
+    if (
+      decoded?.purpose !== 'password-reset' ||
+      !decoded?.userId ||
+      !decoded?.email ||
+      !decoded?.otpRef
+    ) {
+      return res.status(400).json({
+        message: 'Reset session is invalid or expired'
+      })
+    }
 
-      const user =
-        result.rows[0]
+    const client = await pool.connect()
 
-      if (
-        String(
-          user.otp || ''
-        ) !== cleanOtp
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              'Invalid OTP'
-          })
-      }
+    try {
+      await client.query('BEGIN')
 
-      if (
-        !user.otp_expiry ||
-        new Date(
-          user.otp_expiry
-        ).getTime() <
-          Date.now()
-      ) {
-        return res
-          .status(400)
-          .json({
-            message:
-              'OTP expired'
-          })
-      }
-
-      const hashedPassword =
-        await bcrypt.hash(
-          cleanNewPassword,
-          10
-        )
-
-      await pool.query(
-        `UPDATE ${USERS_TABLE}
-         SET
-           password = $1,
-           otp = NULL,
-           otp_expiry = NULL,
-           updated_at = NOW()
-         WHERE lower(email) = $2`,
-        [
-          hashedPassword,
-          cleanEmail
-        ]
+      const result = await client.query(
+        `SELECT id, email, otp, otp_expiry
+         FROM ${USERS_TABLE}
+         WHERE id = $1
+           AND lower(email) = $2
+         LIMIT 1
+         FOR UPDATE`,
+        [decoded.userId, String(decoded.email).trim().toLowerCase()]
       )
 
+      const user = result.rows[0]
+      const validSession =
+        user &&
+        user.otp &&
+        user.otp_expiry &&
+        new Date(user.otp_expiry).getTime() >= Date.now() &&
+        getOtpReference(user.otp) === decoded.otpRef
+
+      if (!validSession) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({
+          message: 'Reset session is invalid or expired'
+        })
+      }
+
+      const hashedPassword = await bcrypt.hash(cleanNewPassword, 10)
+
+      await client.query(
+        `UPDATE ${USERS_TABLE}
+         SET password = $1,
+             otp = NULL,
+             otp_expiry = NULL,
+             otp_attempts = 0,
+             otp_last_sent_at = NULL,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [hashedPassword, user.id]
+      )
+
+      await client.query('COMMIT')
+
       return res.json({
-        message:
-          'Password updated successfully'
+        message: 'Password updated successfully'
       })
     } catch (err) {
-      return res
-        .status(500)
-        .json({
-          message:
-            'Password reset failed',
-          error:
-            err.message,
-          detail:
-            err.detail ||
-            null,
-          code:
-            err.code ||
-            null
-        })
+      try {
+        await client.query('ROLLBACK')
+      } catch {}
+
+      return res.status(500).json({
+        message: 'Password reset failed',
+        error: err.message,
+        detail: err.detail || null,
+        code: err.code || null
+      })
+    } finally {
+      client.release()
     }
   }
 )
