@@ -144,6 +144,22 @@ const noStore = res => {
   res.set('Expires', '0')
 }
 
+const storefrontCache = (req, res) => {
+  const bypass =
+    String(req.query.include_out_of_stock || req.query.includeOutOfStock || '').toLowerCase() === 'true' ||
+    String(req.query.include_grouped_values || req.query.includeGroupedValues || '').toLowerCase() === 'true' ||
+    String(req.query.no_cache || req.query.noCache || '').toLowerCase() === 'true'
+
+  if (bypass) {
+    noStore(res)
+    return
+  }
+
+  res.set('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=300')
+  res.set('CDN-Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
+  res.vary('Accept-Encoding')
+}
+
 
 const ACTIVE_CATEGORY_PATHS_CTE = `
   WITH RECURSIVE category_paths AS (
@@ -185,6 +201,8 @@ const priceSql = () => `
 `
 
 const productWhere = ({ includeGroupedValues = false, includeOutOfStock = false } = {}) => `
+  p.is_active = TRUE
+  AND
   v.is_active = TRUE
   AND c.is_active = TRUE
   ${includeOutOfStock ? '' : `
@@ -441,17 +459,23 @@ const makeVariantPayload = row => ({
   images: Array.isArray(row.images) ? row.images.filter(Boolean) : [row.front_image_url || row.image_url, row.back_image_url].filter(Boolean)
 })
 
-const groupProductRows = (rows, { includeGroupedValues = false } = {}) => {
+const groupProductRows = (rows, { includeGroupedValues = false, groupBy = 'design' } = {}) => {
   const groups = new Map()
+  const normalizedGroupBy = ['color', 'colour'].includes(String(groupBy || '').trim().toLowerCase())
+    ? 'color'
+    : 'design'
 
   for (const row of Array.isArray(rows) ? rows : []) {
     if (!includeGroupedValues && (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour))) continue
 
-    const key = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
+    const designKey = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
+    const colorKey = normalizeText(row.color || row.colour || '') || `VARIANT-${row.variant_id}`
+    const key = normalizedGroupBy === 'color' ? `${designKey}::COLOR::${colorKey}` : designKey
 
     if (!groups.has(key)) {
       groups.set(key, {
         product_id: row.product_id,
+        storefront_group_key: key,
         product_name: row.product_name,
         brand: row.brand,
         brand_name: row.brand_name || row.brand,
@@ -543,8 +567,14 @@ const groupProductRows = (rows, { includeGroupedValues = false } = {}) => {
       categoryPath: group.category_path,
       design_code: group.design_code,
       designCode: group.design_code,
-      group_key: group.design_code || `PRODUCT-${group.product_id}`,
-      groupKey: group.design_code || `PRODUCT-${group.product_id}`,
+      storefront_group_key: group.storefront_group_key,
+      storefrontGroupKey: group.storefront_group_key,
+      group_key: group.storefront_group_key,
+      groupKey: group.storefront_group_key,
+      design_key: group.storefront_group_key,
+      designKey: group.storefront_group_key,
+      route_key: group.storefront_group_key,
+      routeKey: group.storefront_group_key,
       pattern_type: group.pattern_type,
       patternType: group.pattern_type,
       pattern_code: group.pattern_code,
@@ -720,6 +750,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   const params = []
   const includeGroupedValues = String(req.query.include_grouped_values || req.query.includeGroupedValues || '').trim().toLowerCase() === 'true'
   const includeOutOfStock = String(req.query.include_out_of_stock || req.query.includeOutOfStock || '').trim().toLowerCase() === 'true'
+  const groupBy = String(req.query.group_by || req.query.groupBy || 'design').trim().toLowerCase()
   let where = productWhere({ includeGroupedValues, includeOutOfStock })
   const genderQ = toGender(gender || category || '')
 
@@ -806,7 +837,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   `
 
   const { rows } = await pool.query(sql, params)
-  return groupProductRows(rows, { includeGroupedValues })
+  return groupProductRows(rows, { includeGroupedValues, groupBy })
 }
 
 const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFromBody, mode = 'auto' }) => {
@@ -1217,7 +1248,7 @@ const deleteVariantById = async ({ client, variantId }) => {
 
 router.get('/', async (req, res) => {
   try {
-    noStore(res)
+    storefrontCache(req, res)
 
     const rows = await fetchProducts({
       req,
@@ -1292,7 +1323,7 @@ router.get('/suggest', async (req, res) => {
 
 router.get('/category/:category', async (req, res) => {
   try {
-    noStore(res)
+    storefrontCache(req, res)
 
     const rows = await fetchProducts({
       req,
@@ -1311,7 +1342,7 @@ router.get('/category/:category', async (req, res) => {
 
 router.get('/gender/:gender', async (req, res) => {
   try {
-    noStore(res)
+    storefrontCache(req, res)
 
     const rows = await fetchProducts({
       req,
@@ -1372,7 +1403,7 @@ router.get('/hero-images', async (req, res) => {
 
 router.get('/section-images', async (req, res) => {
   try {
-    noStore(res)
+    storefrontCache(req, res)
 
     const limitHero = Math.max(1, Math.min(120, parseInt(req.query.limitHero || '30', 10)))
     const limitGender = Math.max(1, Math.min(80, parseInt(req.query.limitGender || '40', 10)))
