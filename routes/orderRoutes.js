@@ -137,7 +137,7 @@ const createShiprocketOrder = async ({
     `INSERT INTO shipments
        (id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, current_location, status, raw_status, status_synced_at, last_tracking_payload, awb_assigned_at)
      VALUES
-       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6 IS NOT NULL THEN now() ELSE NULL END)`,
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6::text IS NOT NULL THEN now() ELSE NULL END)`,
     [
       uuid(),
       saleId,

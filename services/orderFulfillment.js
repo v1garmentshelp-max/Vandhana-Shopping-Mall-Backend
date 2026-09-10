@@ -335,7 +335,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
            last_tracking_payload,
            awb_assigned_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6 IS NOT NULL THEN now() ELSE NULL END)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6::text IS NOT NULL THEN now() ELSE NULL END)`,
         [
           sid,
           sale.id,
