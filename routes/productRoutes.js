@@ -200,7 +200,7 @@ const priceSql = () => `
   END
 `
 
-const productWhere = ({ includeGroupedValues = false, includeOutOfStock = false } = {}) => `
+const productWhere = ({ includeOutOfStock = false } = {}) => `
   p.is_active = TRUE
   AND
   v.is_active = TRUE
@@ -208,10 +208,6 @@ const productWhere = ({ includeGroupedValues = false, includeOutOfStock = false 
   ${includeOutOfStock ? '' : `
   AND COALESCE(bvs.is_active, FALSE) = TRUE
   AND GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) > 0
-  `}
-  ${includeGroupedValues ? '' : `
-  AND COALESCE(v.size, '') NOT LIKE '%,%'
-  AND COALESCE(v.colour, '') NOT LIKE '%,%'
   `}
 `
 
@@ -466,8 +462,6 @@ const groupProductRows = (rows, { includeGroupedValues = false, groupBy = 'desig
     : 'design'
 
   for (const row of Array.isArray(rows) ? rows : []) {
-    if (!includeGroupedValues && (hasGroupedVariantValue(row.size) || hasGroupedVariantValue(row.color || row.colour))) continue
-
     const designKey = normalizeDesignCode(row.design_code) || `PRODUCT-${row.product_id}`
     const colorKey = normalizeText(row.color || row.colour || '') || `VARIANT-${row.variant_id}`
     const key = normalizedGroupBy === 'color' ? `${designKey}::COLOR::${colorKey}` : designKey
@@ -751,7 +745,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
   const includeGroupedValues = String(req.query.include_grouped_values || req.query.includeGroupedValues || '').trim().toLowerCase() === 'true'
   const includeOutOfStock = String(req.query.include_out_of_stock || req.query.includeOutOfStock || '').trim().toLowerCase() === 'true'
   const groupBy = String(req.query.group_by || req.query.groupBy || 'design').trim().toLowerCase()
-  let where = productWhere({ includeGroupedValues, includeOutOfStock })
+  let where = productWhere({ includeOutOfStock })
   const genderQ = toGender(gender || category || '')
 
   if (genderQ) {
@@ -1011,8 +1005,8 @@ const updateVariantRecord = async ({ client, req, id, body, mode = 'auto' }) => 
     return { status: 400, payload: { message: 'Product name, brand, color and size are required' } }
   }
 
-  if (hasGroupedVariantValue(nextSize) || hasGroupedVariantValue(nextColor)) {
-    return { status: 400, payload: { message: 'Size and color must be one value only. Do not send grouped summary values.' } }
+  if (hasGroupedVariantValue(nextSize)) {
+    return { status: 400, payload: { message: 'Size must be one value only. Do not send a grouped size summary.' } }
   }
 
   const originalB2C = toNumber(body?.original_price_b2c ?? body?.b2c_original_price ?? body?.original_price ?? body?.mrp ?? body?.price)
