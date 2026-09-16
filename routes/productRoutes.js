@@ -1066,6 +1066,78 @@ const deleteVariantById = async ({ client, variantId }) => {
         }
     };
 };
+router.get('/category-previews', async (req, res) => {
+    const branchId = Number(req.query.branch_id || WEB_BRANCH_ID || 3);
+    if (!Number.isSafeInteger(branchId) || branchId <= 0) {
+        return res.status(400).json({ message: 'Invalid branch id' });
+    }
+    try {
+        const result = await pool.query(`
+            WITH RECURSIVE active_tree AS (
+                SELECT c.id, c.parent_id, c.name, c.slug, c.gender,
+                       ARRAY[c.id] AS path_ids, ARRAY[c.name::text] AS path_names
+                FROM product_categories c
+                WHERE c.parent_id IS NULL AND c.is_active = TRUE
+                UNION ALL
+                SELECT c.id, c.parent_id, c.name, c.slug, c.gender,
+                       t.path_ids || c.id, t.path_names || c.name::text
+                FROM product_categories c
+                JOIN active_tree t ON t.id = c.parent_id
+                WHERE c.is_active = TRUE AND NOT c.id = ANY(t.path_ids)
+            ), cards AS (
+                SELECT t.*, CASE
+                    WHEN UPPER(t.path_names[1]) = 'KIDS' THEN t.path_names[2]
+                    ELSE NULL END AS audience
+                FROM active_tree t
+                WHERE (UPPER(t.path_names[1]) IN ('MEN', 'WOMEN') AND cardinality(t.path_ids) = 2)
+                   OR (UPPER(t.path_names[1]) = 'KIDS' AND cardinality(t.path_ids) = 3
+                       AND UPPER(t.path_names[2]) IN ('BOYS', 'GIRLS'))
+            )
+            SELECT c.id::text, c.name, c.slug, UPPER(c.path_names[1]) AS gender,
+                   c.audience, array_to_string(c.path_names, ' > ') AS category_path,
+                   COALESCE(previews.images, '[]'::jsonb) AS images
+            FROM cards c
+            LEFT JOIN LATERAL (
+                SELECT jsonb_agg(chosen.image_url ORDER BY chosen.priority, chosen.image_url) AS images
+                FROM (
+                    SELECT images.image_url, MIN(images.priority) AS priority
+                    FROM active_tree leaf
+                    JOIN products p ON p.category_id = leaf.id AND p.is_active = TRUE
+                    JOIN product_variants v ON v.product_id = p.id AND v.is_active = TRUE
+                    CROSS JOIN LATERAL (
+                        SELECT TRIM(pi.image_url) AS image_url,
+                               CASE WHEN LOWER(COALESCE(pi.image_type, '')) = 'front' THEN 0 ELSE 1 END AS priority
+                        FROM barcodes b
+                        JOIN product_images pi ON TRIM(pi.ean_code) = TRIM(b.ean_code)
+                        WHERE b.variant_id = v.id
+                        UNION ALL
+                        SELECT TRIM(v.image_url), 2
+                    ) images
+                    WHERE c.id = ANY(leaf.path_ids)
+                      AND UPPER(p.gender) = UPPER(c.path_names[1])
+                      AND images.image_url ~* '^https?://'
+                      AND images.image_url NOT ILIKE '%placeholder%'
+                      AND EXISTS (
+                          SELECT 1 FROM branch_variant_stock stock
+                          WHERE stock.variant_id = v.id AND stock.branch_id = $1::bigint
+                            AND stock.is_active = TRUE
+                            AND COALESCE(stock.on_hand, 0) - COALESCE(stock.reserved, 0) > 0
+                      )
+                    GROUP BY images.image_url
+                    ORDER BY MIN(images.priority), images.image_url
+                    LIMIT 3
+                ) chosen
+            ) previews ON TRUE
+            ORDER BY c.path_names[1], c.audience NULLS FIRST, c.name, c.id
+        `, [branchId]);
+        res.set('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=300');
+        return res.json(result.rows);
+    } catch (error) {
+        console.error('Category previews failed:', error.message);
+        return res.status(500).json({ message: 'Unable to load category previews' });
+    }
+});
+
 router.get('/', async (req, res) => {
     try {
         storefrontCache(req, res);
