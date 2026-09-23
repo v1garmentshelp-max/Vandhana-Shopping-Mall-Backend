@@ -208,7 +208,7 @@ router.post('/web/place', async (req, res) => {
     return {
       product_id: productId,
       variant_id: variantId,
-      qty: Math.max(1, Number(it.qty || it.quantity || 1) || 1),
+      qty: Number(it.qty ?? it.quantity ?? 1),
       price: Number(it.price || 0) || 0,
       mrp: Number(it.mrp || it.original_price || it.price || 0) || 0,
       size: it.size != null ? String(it.size) : it.selected_size != null ? String(it.selected_size) : null,
@@ -228,7 +228,7 @@ router.post('/web/place', async (req, res) => {
     }
   })
 
-  if (normalizedItems.some((it) => !it.variant_id || it.qty <= 0)) {
+  if (normalizedItems.some((it) => !Number.isSafeInteger(it.variant_id) || it.variant_id <= 0 || !Number.isSafeInteger(it.qty) || it.qty <= 0)) {
     return res.status(400).json({ message: 'Invalid items (variant_id/qty)' })
   }
 
@@ -260,7 +260,9 @@ router.post('/web/place', async (req, res) => {
       FROM branch_variant_stock bvs
       JOIN cart c ON c.variant_id = bvs.variant_id
       WHERE bvs.branch_id = $2
-        AND COALESCE(bvs.on_hand, 0) >= c.qty
+        AND bvs.is_active = TRUE
+        AND EXISTS (SELECT 1 FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = bvs.variant_id AND v.is_active = TRUE AND p.is_active = TRUE)
+        AND COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) >= c.qty
       GROUP BY bvs.branch_id
       HAVING COUNT(*) = (SELECT COUNT(*) FROM cart)
       LIMIT 1
@@ -277,14 +279,15 @@ router.post('/web/place', async (req, res) => {
       })
     }
 
-    for (const [variantId, qty] of stockMap.entries()) {
+    for (const [variantId, qty] of [...stockMap.entries()].sort((a, b) => a[0] - b[0])) {
       const upd = await client.query(
         `
         UPDATE branch_variant_stock
         SET on_hand = COALESCE(on_hand, 0) - $3
         WHERE branch_id = $1
           AND variant_id = $2
-          AND COALESCE(on_hand, 0) >= $3
+          AND is_active = TRUE
+          AND COALESCE(on_hand, 0) - COALESCE(reserved, 0) >= $3
         RETURNING on_hand
         `,
         [chosenBranchId, variantId, qty]

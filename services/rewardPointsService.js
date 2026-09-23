@@ -1,6 +1,7 @@
 const pool = require('../db')
 
 const asInt = value => {
+  if (value == null || String(value).trim() === '') return null
   const n = Number(value)
   return Number.isInteger(n) ? n : null
 }
@@ -41,7 +42,7 @@ async function getSettings(db = pool) {
   const raw = Object.fromEntries(q.rows.map(row => [row.setting_key, row.setting_value]))
 
   return {
-    enabled: String(raw.enabled || 'false').toLowerCase() === 'true',
+    enabled: ['true', '1', 'yes', 'on'].includes(String(raw.enabled || 'false').trim().toLowerCase()),
     signup_bonus_points: asNonNegativeInt(raw.signup_bonus_points) ?? 1000,
     validity_days: asPositiveInt(raw.validity_days) ?? 90,
     warning_days: asNonNegativeInt(raw.warning_days) ?? 10
@@ -88,6 +89,18 @@ async function expireLots(db = pool, userId = null) {
 }
 
 async function creditSignupBonus(userId, db = pool) {
+  if (db === pool) {
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await creditSignupBonus(userId, client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally { client.release() }
+  }
   const uid = asPositiveInt(userId)
   if (!uid) throw Object.assign(new Error('Invalid user id'), { status: 400 })
 
@@ -98,7 +111,7 @@ async function creditSignupBonus(userId, db = pool) {
     `SELECT id, type
      FROM vandana_users
      WHERE id = $1
-     LIMIT 1`,
+     FOR UPDATE`,
     [uid]
   )
 

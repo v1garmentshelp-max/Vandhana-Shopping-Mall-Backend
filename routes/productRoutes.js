@@ -1107,7 +1107,7 @@ WITH RECURSIVE active_tree AS (
            CASE WHEN LOWER(COALESCE(pi.image_type, '')) = 'front' THEN 0 ELSE 1 END AS priority
     FROM eligible e
     JOIN barcodes b ON b.variant_id = e.id
-    JOIN product_images pi ON TRIM(pi.ean_code) = TRIM(b.ean_code)
+    JOIN product_images pi ON pi.ean_code = b.ean_code
     UNION ALL
     SELECT path_ids, gender, TRIM(image_url), 2 FROM eligible
 ), candidates AS (
@@ -1123,7 +1123,7 @@ WITH RECURSIVE active_tree AS (
     FROM candidates
 ), previews AS (
     SELECT category_id, jsonb_agg(image_url ORDER BY priority, image_url) AS images
-    FROM ranked WHERE position <= 3 GROUP BY category_id
+    FROM ranked WHERE position <= 6 GROUP BY category_id
 )
 SELECT c.id::text, c.name, c.slug, UPPER(c.path_names[1]) AS gender,
        c.audience, array_to_string(c.path_names, ' > ') AS category_path,

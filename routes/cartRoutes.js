@@ -1,6 +1,7 @@
 const express = require('express')
 const pool = require('../db')
 const router = express.Router()
+const { writeStockCart } = require('../services/cartStockService')
 
 const toInt = (v) => {
   const n = Number(v)
@@ -34,12 +35,12 @@ router.post('/vandana-cart', async (req, res) => {
   } = req.body || {}
 
   const uid = toInt(user_id)
-  const qty = Math.max(1, toInt(quantity) || 1)
+  const qty = quantity == null ? 1 : toInt(quantity)
   const size = toText(selected_size)
   const color = toText(selected_color)
   const isCustom = toBool(is_custom)
 
-  if (!uid || !size || !color) {
+  if (!uid || !size || !color || !qty || qty < 1) {
     return res.status(400).json({ message: 'Missing cart fields' })
   }
 
@@ -100,129 +101,26 @@ router.post('/vandana-cart', async (req, res) => {
       return res.status(400).json({ message: 'Missing variant_id' })
     }
 
-    const exists = await pool.query(
-      `SELECT v.id
-       FROM product_variants v
-       JOIN products p ON p.id = v.product_id
-       WHERE v.id = $1
-         AND v.is_active = TRUE
-         AND p.is_active = TRUE
-       LIMIT 1`,
-      [vid]
-    )
-
-    if (exists.rowCount === 0) {
-      return res.status(404).json({ message: 'Product variant not found' })
-    }
-
-    const upsert = await pool.query(
-      `INSERT INTO vandana_cart (
-        user_id,
-        product_id,
-        selected_size,
-        selected_color,
-        quantity,
-        is_custom,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (user_id, product_id, selected_size, selected_color)
-      WHERE is_custom = FALSE AND product_id IS NOT NULL
-      DO UPDATE SET
-        quantity = COALESCE(vandana_cart.quantity, 0) + EXCLUDED.quantity,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING id`,
-      [uid, vid, size, color, qty]
-    )
-
-    return res.status(201).json({
-      message: 'Added to cart successfully',
-      cart_item_id: upsert.rows[0]?.id
-    })
+    const row = await writeStockCart({ userId: uid, variantId: vid, quantity: qty,
+      branchId: 3, size, color, add: true })
+    return res.status(201).json({ message: 'Added to cart successfully', cart_item_id: row.id, quantity: row.quantity, available_stock: row.available })
   } catch (err) {
-    return res.status(500).json({ message: 'Error adding to cart', error: err.message })
+    return res.status(err.status || 500).json({ message: err.status ? err.message : 'Error adding to cart', available_stock: err.available })
   }
 })
 
 router.put('/vandana-cart', async (req, res) => {
-  const {
-    cart_item_id,
-    user_id,
-    product_id,
-    variant_id,
-    selected_size,
-    selected_color,
-    quantity
-  } = req.body || {}
-
-  const uid = toInt(user_id)
-  const cartItemId = toInt(cart_item_id)
-  const vid = toInt(variant_id || product_id)
-  const qty = toInt(quantity)
-  const size = toText(selected_size)
-  const color = toText(selected_color)
-
-  if (!uid || !qty || qty < 1) {
-    return res.status(400).json({ message: 'Missing fields for update' })
-  }
-
+  const body = req.body || {}
+  const uid = toInt(body.user_id)
+  const qty = toInt(body.quantity)
+  if (!uid || !qty || qty < 1) return res.status(400).json({ message: 'Invalid quantity or user' })
   try {
-    let result
-
-    if (cartItemId) {
-      result = await pool.query(
-        `UPDATE vandana_cart c
-         SET quantity=$3, updated_at=CURRENT_TIMESTAMP
-         WHERE c.id=$1
-           AND c.user_id=$2
-           AND (
-             COALESCE(c.is_custom, FALSE) = TRUE
-             OR EXISTS (
-               SELECT 1
-               FROM product_variants v
-               JOIN products p ON p.id = v.product_id
-               WHERE v.id = c.product_id
-                 AND v.is_active = TRUE
-                 AND p.is_active = TRUE
-             )
-           )
-         RETURNING c.id`,
-        [cartItemId, uid, qty]
-      )
-    } else {
-      if (!vid || !size || !color) {
-        return res.status(400).json({ message: 'Missing cart item identity' })
-      }
-
-      result = await pool.query(
-        `UPDATE vandana_cart c
-         SET quantity=$5, updated_at=CURRENT_TIMESTAMP
-         WHERE c.user_id=$1
-           AND c.product_id=$2
-           AND c.selected_size=$3
-           AND c.selected_color=$4
-           AND c.is_custom=FALSE
-           AND EXISTS (
-             SELECT 1
-             FROM product_variants v
-             JOIN products p ON p.id = v.product_id
-             WHERE v.id = c.product_id
-               AND v.is_active = TRUE
-               AND p.is_active = TRUE
-           )
-         RETURNING c.id`,
-        [uid, vid, size, color, qty]
-      )
-    }
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Cart item not found' })
-    }
-
-    return res.json({ message: 'Quantity updated' })
+    const row = await writeStockCart({ userId: uid, variantId: toInt(body.variant_id || body.product_id),
+      cartItemId: toInt(body.cart_item_id), quantity: qty, branchId: 3,
+      size: toText(body.selected_size), color: toText(body.selected_color), add: false })
+    return res.json({ message: 'Quantity updated', quantity: row.quantity, available_stock: row.available })
   } catch (err) {
-    return res.status(500).json({ message: 'Error updating cart', error: err.message })
+    return res.status(err.status || 500).json({ message: err.status ? err.message : 'Error updating cart', available_stock: err.available })
   }
 })
 
@@ -309,7 +207,7 @@ router.get('/:userId', async (req, res) => {
           COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
           COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
           COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
-          COALESCE(bvs.on_hand, 0)::int AS on_hand,
+          CASE WHEN bvs.is_active = TRUE THEN GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0) ELSE 0 END::int AS on_hand,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
           v.image_url AS v_image,
           pi.front_image_url,
