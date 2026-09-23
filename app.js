@@ -286,6 +286,8 @@ app.use(
   transactionRoutes
 )
 
+app.use('/api/order-shipping', require('./routes/orderShippingRoutes'))
+
 app.use(
   '/api',
   require(

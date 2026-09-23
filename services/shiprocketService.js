@@ -19,7 +19,7 @@ class Shiprocket {
     const { data } = await axios.post(`${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`, {
       email,
       password
-    })
+    }, { timeout: 12000 })
 
     if (!data || !data.token) throw new Error('Shiprocket login failed')
     this.token = data.token
@@ -40,6 +40,7 @@ class Shiprocket {
 
     const config = {
       method,
+      timeout: 15000,
       url: `${BASE}${path}`,
       headers: { Authorization: `Bearer ${this.token}` }
     }
@@ -54,7 +55,9 @@ class Shiprocket {
       return await axios(config)
     } catch (err) {
       const msg = err?.response?.data ? JSON.stringify(err.response.data) : err?.message || String(err)
-      throw new Error(msg)
+      const error = new Error(msg)
+      error.status = err?.response?.status
+      throw error
     }
   }
 
@@ -98,6 +101,8 @@ class Shiprocket {
         units: Number(it.qty || 0),
         selling_price: Number(it.price || 0)
       })),
+      shipping_charges: Number(order.shipping_charges || 0),
+      total_discount: Number(order.total_discount || 0),
       payment_method: order.payment_method === 'COD' ? 'COD' : 'Prepaid',
       sub_total: (order.items || []).reduce(
         (a, it) => a + Number(it.price || 0) * Number(it.qty || 0),
@@ -115,7 +120,7 @@ class Shiprocket {
 
   async assignAWBAndLabel({ shipment_id }) {
     const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id]
-    const { data: awb } = await this.api('post', '/courier/assign/awb', { shipment_id: ids })
+    const { data: awb } = await this.api('post', '/courier/assign/awb', { shipment_id: ids[0] })
     const { data: label } = await this.api('post', '/courier/generate/label', { shipment_id: ids })
     return { awb, label }
   }

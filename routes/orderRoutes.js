@@ -26,160 +26,8 @@ const uuid = () => {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
 
-const cleanPhone = (value) => {
-  const v = String(value || '').replace(/\D/g, '')
-  return v || '9999999999'
-}
-
-const normalizeAddress = (address) => {
-  const a = address && typeof address === 'object' ? address : {}
-
-  return {
-    line1: String(a.line1 || a.address_line1 || a.address1 || a.street || '').trim(),
-    line2: String(a.line2 || a.address_line2 || a.address2 || a.landmark || '').trim(),
-    city: String(a.city || '').trim(),
-    state: String(a.state || '').trim(),
-    pincode: String(a.pincode || a.pin_code || '').trim()
-  }
-}
-
-const createShiprocketOrder = async ({
-  saleId,
-  branchId,
-  customerName,
-  customerEmail,
-  customerMobile,
-  shippingAddress,
-  totals,
-  paymentStatus,
-  items
-}) => {
-  const whQ = await pool.query(
-    `SELECT *
-     FROM shiprocket_warehouses
-     WHERE branch_id = $1
-     LIMIT 1`,
-    [branchId]
-  )
-
-  const warehouse = whQ.rows?.[0] || null
-
-  if (!warehouse) {
-    throw new Error(`No Shiprocket pickup warehouse mapped for branch ${branchId}`)
-  }
-
-  const sr = new Shiprocket({ pool })
-  await sr.init()
-
-  const address = normalizeAddress(shippingAddress)
-  const payable = Number(totals?.payable || totals?.total || 0)
-  const payStatus = String(paymentStatus || '').toUpperCase()
-  const shiprocketPaymentMethod = payStatus === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
-
-  const shiprocketItems = items.map((it) => ({
-    variant_id: it.variant_id,
-    qty: it.qty,
-    price: it.price,
-    mrp: it.mrp,
-    size: it.size,
-    colour: it.colour,
-    image_url: it.image_url,
-    ean_code: it.ean_code,
-    name: it.name || `Variant ${it.variant_id}`
-  }))
-
-  const data = await sr.createOrderShipment({
-    channel_order_id: String(saleId),
-    pickup_location: warehouse.name,
-    order: {
-      items: shiprocketItems,
-      payment_method: shiprocketPaymentMethod,
-      weight: 0.5,
-      dimensions: {
-        length: 10,
-        breadth: 10,
-        height: 5
-      }
-    },
-    customer: {
-      name: customerName || 'Customer',
-      email: customerEmail || 'na@example.com',
-      phone: cleanPhone(customerMobile),
-      address
-    }
-  })
-
-  const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || data?.data?.shipment_id || null
-  const shiprocketOrderId = data?.order_id || data?.data?.order_id || null
-  let trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
-  let awb = null
-  let labelUrl = null
-  let rawStatus = 'CONFIRMED'
-  let status = 'CONFIRMED'
-  let assignRaw = null
-
-  if (shipmentId) {
-    try {
-      assignRaw = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
-      const info = extractShipmentInfo(assignRaw, 'PACKED')
-      awb = info.awb || null
-      labelUrl = info.label_url || null
-      trackingUrl = info.tracking_url || trackingUrl || null
-      rawStatus = info.raw_status || 'PACKED'
-      status = info.status || 'PACKED'
-    } catch {
-      rawStatus = 'CONFIRMED'
-      status = 'CONFIRMED'
-    }
-  }
-
-  await pool.query(
-    `INSERT INTO shipments
-       (id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, current_location, status, raw_status, status_synced_at, last_tracking_payload, awb_assigned_at)
-     VALUES
-       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6::text IS NOT NULL THEN now() ELSE NULL END)`,
-    [
-      uuid(),
-      saleId,
-      branchId,
-      shiprocketOrderId,
-      shipmentId,
-      awb,
-      labelUrl,
-      trackingUrl,
-      null,
-      status,
-      rawStatus,
-      JSON.stringify(assignRaw || data || {})
-    ]
-  )
-
-  await syncShipmentByIdentifiers(
-    pool,
-    {
-      sale_id: saleId,
-      shiprocket_order_id: shiprocketOrderId,
-      shiprocket_shipment_id: shipmentId,
-      awb
-    },
-    assignRaw || data,
-    status
-  )
-
-  await syncSaleStatus(pool, saleId, status)
-
-  return {
-    order_id: shiprocketOrderId,
-    shipment_id: shipmentId,
-    awb,
-    label_url: labelUrl,
-    tracking_url: trackingUrl,
-    pickup_location: warehouse.name,
-    status,
-    raw: data,
-    awb_raw: assignRaw
-  }
-}
+const { createWorkflow } = require('../services/orderShippingWorkflow')
+const shippingWorkflow = createWorkflow(pool)
 
 router.post('/web/place', async (req, res) => {
   const body = req.body || {}
@@ -358,6 +206,7 @@ router.post('/web/place', async (req, res) => {
       )
     }
 
+    await client.query("INSERT INTO order_shipping_workflow(sale_id,phase) VALUES($1,'NEW') ON CONFLICT DO NOTHING", [saleId])
     await client.query('COMMIT')
   } catch (e) {
     try {
@@ -376,22 +225,14 @@ router.post('/web/place', async (req, res) => {
   let finalStatus = 'PLACED'
 
   try {
-    shiprocket = await createShiprocketOrder({
-      saleId,
-      branchId: chosenBranchId,
-      customerName: customer_name,
-      customerEmail: customer_email,
-      customerMobile: customer_mobile,
-      shippingAddress: shipping_address,
-      totals,
-      paymentStatus: payment_status,
-      items: normalizedItems
-    })
+    const shippingState = await shippingWorkflow.connect(saleId, { fresh: true })
+    shiprocket = { ...shippingState.shipment, order_id: shippingState.shipment.shiprocket_order_id, shipment_id: shippingState.shipment.shiprocket_shipment_id }
 
     finalStatus = bestOrderStatus([shiprocket.status, ...collectStatusValues(shiprocket)], 'CONFIRMED')
     await syncSaleStatus(pool, saleId, finalStatus)
   } catch (e) {
     shiprocket_error = e?.message || String(e)
+    console.error('[web-order-shipping]', saleId, shiprocket_error)
   }
 
   return res.json({

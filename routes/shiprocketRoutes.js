@@ -13,9 +13,12 @@ const normalizeOrderStatus = (value) => {
   if (!s) return ''
   if (s.includes('CANCEL')) return 'CANCELLED'
   if (s.includes('RTO')) return 'RTO'
-  if (s.includes('DELIVERED') || s.includes('DELIVERED TO') || s.includes('DELIVER')) return 'DELIVERED'
+  if (s.includes('RTO')) return 'RTO'
+  if (s.includes('UNDELIVERED') || s.includes('DELIVERY FAILED')) return 'SHIPPED'
+  if (s === 'DELIVERED' || s.startsWith('DELIVERED TO ')) return 'DELIVERED'
+  if (s.includes('PICKUP') && !s.includes('PICKED UP')) return 'PACKED'
   if (s.includes('OUT FOR DELIVERY') || s.includes('OUT_FOR_DELIVERY')) return 'SHIPPED'
-  if (s.includes('IN TRANSIT') || s.includes('TRANSIT') || s.includes('DISPATCH') || s.includes('DISPATCHED') || s.includes('SHIPPED') || s.includes('PICKED') || s.includes('PICKUP')) return 'SHIPPED'
+  if (s.includes('IN TRANSIT') || s.includes('TRANSIT') || s.includes('DISPATCH') || s.includes('DISPATCHED') || s.includes('SHIPPED') || s.includes('PICKED')) return 'SHIPPED'
   if (s.includes('PACKED') || s.includes('MANIFEST') || s.includes('AWB') || s.includes('READY TO SHIP') || s.includes('READY_TO_SHIP')) return 'PACKED'
   if (s.includes('CONFIRMED') || s.includes('PROCESSING') || s.includes('ACCEPTED') || s.includes('CREATED')) return 'CONFIRMED'
   if (s.includes('PLACED') || s.includes('NEW')) return 'PLACED'
@@ -719,28 +722,8 @@ router.post('/shiprocket/warehouses/sync', async (req, res) => {
   }
 })
 
-router.post('/shiprocket/fulfill/:id', async (req, res) => {
-  try {
-    const id = req.params.id
-    const saleRes = await pool.query('SELECT * FROM sales WHERE id=$1', [id])
-
-    if (!saleRes.rows.length) return res.status(404).json({ ok: false, message: 'Sale not found' })
-
-    const sale = saleRes.rows[0]
-    const items = (await pool.query('SELECT * FROM sale_items WHERE sale_id=$1', [id])).rows
-
-    sale.items = items
-
-    const shipments = await fulfillOrderWithShiprocket(sale, pool)
-    const status = bestOrderStatus(collectStatusValues(shipments), 'CONFIRMED')
-
-    await syncSaleStatus(id, status)
-
-    res.json({ ok: true, status, shipments })
-  } catch (e) {
-    const errData = e.response?.data || e.message || 'fulfillment failed'
-    res.status(500).json({ ok: false, message: errData })
-  }
+router.post('/shiprocket/fulfill/:id', (req, res) => {
+  res.status(409).json({ ok: false, message: 'Use Connect order in the updated admin. Legacy fulfillment is disabled to prevent duplicate stock deductions.' })
 })
 
 router.post('/shiprocket/webhook', verifyWebhookToken, handleShiprocketWebhook)
@@ -877,149 +860,10 @@ router.get('/shiprocket/pincode', async (req, res) => {
   }
 })
 
-router.post('/shiprocket/assign-courier/by-sale/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId
-    const courier_company_id = Number(req.body?.courier_company_id || 0)
-
-    if (!courier_company_id) return res.status(400).json({ ok: false, message: 'courier_company_id is required' })
-
-    const out = await getShipmentsForSale(saleId)
-    if (out.error) return res.status(out.error.code).json(out.error.body)
-
-    const sr = new Shiprocket({ pool })
-    await sr.init()
-
-    const { data } = await sr.api('post', '/courier/assign/awb', {
-      shipment_id: out.shipmentIds,
-      courier_company_id
-    })
-
-    const statusCode = Number(data?.status_code || 0)
-    const awbAssignStatus = data?.awb_assign_status != null ? Number(data.awb_assign_status) : null
-    const message = data?.message || ''
-    const srErr = data?.response?.data?.awb_assign_error || ''
-
-    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr)
-    const success = awbAssignStatus === 1 || statusCode === 200
-
-    if (walletLow || !success) {
-      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to assign courier / generate AWB', data })
-    }
-
-    await syncShipmentRowsForSale(saleId, 'PACKED', data)
-
-    return res.json({ ok: true, status: 'PACKED', data })
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to assign courier'
-    return res.status(500).json({ ok: false, message: msg })
-  }
-})
-
-router.post('/shiprocket/assign-courier', async (req, res) => {
-  try {
-    const saleId = String(req.body?.saleId || req.body?.sale_id || '').trim()
-    const courier_company_id = Number(req.body?.courier_company_id || 0)
-
-    if (!saleId) return res.status(400).json({ ok: false, message: 'saleId is required' })
-    if (!courier_company_id) return res.status(400).json({ ok: false, message: 'courier_company_id is required' })
-
-    const out = await getShipmentsForSale(saleId)
-    if (out.error) return res.status(out.error.code).json(out.error.body)
-
-    const sr = new Shiprocket({ pool })
-    await sr.init()
-
-    const { data } = await sr.api('post', '/courier/assign/awb', {
-      shipment_id: out.shipmentIds,
-      courier_company_id
-    })
-
-    const statusCode = Number(data?.status_code || 0)
-    const awbAssignStatus = data?.awb_assign_status != null ? Number(data.awb_assign_status) : null
-    const message = data?.message || ''
-    const srErr = data?.response?.data?.awb_assign_error || ''
-
-    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr)
-    const success = awbAssignStatus === 1 || statusCode === 200
-
-    if (walletLow || !success) {
-      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to assign courier / generate AWB', data })
-    }
-
-    await syncShipmentRowsForSale(saleId, 'PACKED', data)
-
-    return res.json({ ok: true, status: 'PACKED', data })
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to assign courier'
-    return res.status(500).json({ ok: false, message: msg })
-  }
-})
-
-router.post('/shiprocket/assign-awb/by-sale/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId
-    const out = await getShipmentsForSale(saleId)
-
-    if (out.error) return res.status(out.error.code).json(out.error.body)
-
-    const sr = new Shiprocket({ pool })
-    await sr.init()
-
-    const result = await sr.assignAWBAndLabel({ shipment_id: out.shipmentIds })
-
-    const statusCode = Number(result?.status_code || result?.data?.status_code || 0)
-    const message = result?.message || result?.data?.message || ''
-    const srErr = result?.response?.data?.awb_assign_error || result?.data?.response?.data?.awb_assign_error || ''
-
-    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr)
-
-    if (walletLow || statusCode !== 200) {
-      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to generate AWB', result })
-    }
-
-    await syncShipmentRowsForSale(saleId, 'PACKED', result)
-
-    return res.json({ ok: true, status: 'PACKED', result })
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to assign AWB'
-    return res.status(500).json({ ok: false, message: msg })
-  }
-})
-
-router.post('/shiprocket/assign-awb', async (req, res) => {
-  try {
-    const saleId = String(req.body?.saleId || req.body?.sale_id || '').trim()
-
-    if (!saleId) return res.status(400).json({ ok: false, message: 'saleId is required' })
-
-    const out = await getShipmentsForSale(saleId)
-    if (out.error) return res.status(out.error.code).json(out.error.body)
-
-    const sr = new Shiprocket({ pool })
-    await sr.init()
-
-    const result = await sr.assignAWBAndLabel({ shipment_id: out.shipmentIds })
-
-    const statusCode = Number(result?.status_code || result?.data?.status_code || 0)
-    const message = result?.message || result?.data?.message || ''
-    const srErr = result?.response?.data?.awb_assign_error || result?.data?.response?.data?.awb_assign_error || ''
-
-    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr)
-
-    if (walletLow || statusCode !== 200) {
-      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to generate AWB', result })
-    }
-
-    await syncShipmentRowsForSale(saleId, 'PACKED', result)
-
-    return res.json({ ok: true, status: 'PACKED', result })
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to assign AWB'
-    return res.status(500).json({ ok: false, message: msg })
-  }
-})
-
+router.post('/shiprocket/assign-courier/by-sale/:saleId', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
+router.post('/shiprocket/assign-courier', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
+router.post('/shiprocket/assign-awb/by-sale/:saleId', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
+router.post('/shiprocket/assign-awb', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
 router.get('/shiprocket/tracking/by-sale/:saleId', async (req, res) => {
   try {
     const saleId = req.params.saleId

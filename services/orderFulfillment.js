@@ -239,6 +239,13 @@ async function restoreStock(pool, decremented) {
 }
 
 async function fulfillOrderWithShiprocket(sale, pool) {
+  const storedSource = sale.source || (await pool.query('SELECT source FROM sales WHERE id=$1', [sale.id])).rows[0]?.source
+  if (String(storedSource).toUpperCase() === 'WEB') {
+    const { createWorkflow } = require('./orderShippingWorkflow')
+    const result = await createWorkflow(pool).connect(sale.id, { fresh: sale.stock_already_committed === true })
+    return result.shipments
+  }
+
   const sr = new Shiprocket({ pool })
   await sr.init()
 
