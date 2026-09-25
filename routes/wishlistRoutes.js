@@ -1,80 +1,74 @@
-const express = require('express')
-const pool = require('../db')
-
-const router = express.Router()
-
-const toInt = (v) => {
-  const n = Number(v)
-  return Number.isInteger(n) ? n : null
-}
-
+const express = require('express');
+const pool = require('../db');
+const router = express.Router();
+const toInt = v => {
+  const n = Number(v);
+  return Number.isInteger(n) ? n : null;
+};
 router.post('/', async (req, res) => {
-  const { user_id, product_id, variant_id } = req.body || {}
-
+  const {
+    user_id,
+    product_id,
+    variant_id
+  } = req.body || {};
   if (user_id === undefined || user_id === null) {
-    return res.status(400).json({ message: 'User ID is required' })
+    return res.status(400).json({
+      message: 'User ID is required'
+    });
   }
-
-  const uid = toInt(user_id)
-  const vid = toInt(variant_id || product_id)
-
+  const uid = toInt(user_id);
+  const vid = toInt(variant_id || product_id);
   if (!uid || !vid) {
-    return res.status(400).json({ message: 'Invalid user_id or variant_id' })
+    return res.status(400).json({
+      message: 'Invalid user_id or variant_id'
+    });
   }
-
   try {
-    const user = await pool.query(
-      'SELECT 1 FROM vandana_users WHERE id = $1',
-      [uid]
-    )
-
+    const user = await pool.query('SELECT 1 FROM vandana_users WHERE id = $1', [uid]);
     if (!user.rowCount) {
-      return res.status(400).json({ message: 'Invalid user_id' })
+      return res.status(400).json({
+        message: 'Invalid user_id'
+      });
     }
-
-    const variant = await pool.query(
-      `SELECT v.id
+    const variant = await pool.query(`SELECT v.id
        FROM product_variants v
        JOIN products p ON p.id = v.product_id
        WHERE v.id = $1
          AND v.is_active = TRUE
          AND p.is_active = TRUE
-       LIMIT 1`,
-      [vid]
-    )
-
+       LIMIT 1`, [vid]);
     if (!variant.rowCount) {
-      return res.status(400).json({ message: 'Product is no longer available' })
+      return res.status(400).json({
+        message: 'Product is no longer available'
+      });
     }
-
-    await pool.query(
-      `INSERT INTO vandana_wishlist (user_id, product_id)
+    await pool.query(`INSERT INTO vandana_wishlist (user_id, product_id)
        SELECT $1, $2
        WHERE NOT EXISTS (
          SELECT 1
          FROM vandana_wishlist
          WHERE user_id = $1
            AND product_id = $2
-       )`,
-      [uid, vid]
-    )
-
-    return res.json({ message: 'Added to wishlist' })
+       )`, [uid, vid]);
+    return res.json({
+      message: 'Added to wishlist'
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message
+    });
   }
-})
-
+});
 router.get('/:user_id', async (req, res) => {
-  const uid = toInt(req.params.user_id)
-
+  const uid = toInt(req.params.user_id);
   if (!uid) {
-    return res.status(400).json({ message: 'Invalid user_id' })
+    return res.status(400).json({
+      message: 'Invalid user_id'
+    });
   }
-
   try {
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
-
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba';
     const sql = `
       WITH base AS (
         SELECT
@@ -195,64 +189,69 @@ router.get('/:user_id', async (req, res) => {
         main_image_url
       FROM base
       ORDER BY variant_id DESC
-    `
-
-    const { rows } = await pool.query(sql, [cloud, uid])
-
-    return res.json(
-      rows.map(row => ({
-        ...row,
-        productId: row.product_id,
-        variantId: row.variant_id,
-        actualProductId: row.actual_product_id,
-        productName: row.product_name,
-        brandName: row.brand,
-        designCode: row.design_code || '',
-        patternCode: row.pattern_code || '',
-        patternType: row.pattern_type || '',
-        eanCode: row.ean_code || '',
-        imageUrl: row.image_url || '',
-        frontImageUrl: row.front_image_url || row.image_url || '',
-        backImageUrl: row.back_image_url || '',
-        mainImageUrl: row.main_image_url || row.image_url || ''
-      }))
-    )
+    `;
+    const {
+      rows
+    } = await pool.query(sql, [cloud, uid]);
+    return res.json(rows.map(row => ({
+      ...row,
+      productId: row.product_id,
+      variantId: row.variant_id,
+      actualProductId: row.actual_product_id,
+      productName: row.product_name,
+      brandName: row.brand,
+      designCode: row.design_code || '',
+      patternCode: row.pattern_code || '',
+      patternType: row.pattern_type || '',
+      eanCode: row.ean_code || '',
+      imageUrl: row.image_url || '',
+      frontImageUrl: row.front_image_url || row.image_url || '',
+      backImageUrl: row.back_image_url || '',
+      mainImageUrl: row.main_image_url || row.image_url || ''
+    })));
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching wishlist', error: err.message })
+    return res.status(500).json({
+      message: 'Error fetching wishlist',
+      error: err.message
+    });
   }
-})
-
+});
 router.delete('/', async (req, res) => {
-  const { user_id, product_id, variant_id } = req.body || {}
-
+  const {
+    user_id,
+    product_id,
+    variant_id
+  } = req.body || {};
   if (user_id === undefined || user_id === null) {
-    return res.status(400).json({ message: 'User ID is required' })
+    return res.status(400).json({
+      message: 'User ID is required'
+    });
   }
-
-  const uid = toInt(user_id)
-  const vid = toInt(variant_id || product_id)
-
+  const uid = toInt(user_id);
+  const vid = toInt(variant_id || product_id);
   if (!uid || !vid) {
-    return res.status(400).json({ message: 'Invalid user_id or variant_id' })
+    return res.status(400).json({
+      message: 'Invalid user_id or variant_id'
+    });
   }
-
   try {
-    const deleted = await pool.query(
-      `DELETE FROM vandana_wishlist
+    const deleted = await pool.query(`DELETE FROM vandana_wishlist
        WHERE user_id = $1
          AND product_id = $2
-       RETURNING product_id`,
-      [uid, vid]
-    )
-
+       RETURNING product_id`, [uid, vid]);
     if (!deleted.rowCount) {
-      return res.status(404).json({ message: 'Wishlist item not found' })
+      return res.status(404).json({
+        message: 'Wishlist item not found'
+      });
     }
-
-    return res.json({ message: 'Removed from wishlist' })
+    return res.json({
+      message: 'Removed from wishlist'
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Server error', error: err.message })
+    return res.status(500).json({
+      message: 'Server error',
+      error: err.message
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;

@@ -1,0 +1,174 @@
+{
+  "date": "2026-09-25",
+  "compatible_mobile_version": "1.4.0",
+  "base": "supplied vandhana-backend(1).zip",
+  "replace_count": 14,
+  "add_count": 18,
+  "javascript_code_comments": 0,
+  "automated_tests_passed": 34,
+  "entry_checks_passed": 12,
+  "production_deployed": false,
+  "production_migration_executed": false,
+  "files": [
+    {
+      "path": ".gitignore",
+      "action": "replace",
+      "sha256": "fcdfbb5e2cf5454ed57f2628155787ba6478d391809c6f44f6d9b86000414d37"
+    },
+    {
+      "path": ".nvmrc",
+      "action": "add",
+      "sha256": "68ca3fba3b7e864770cb61aeb306d4bd4354b68ab4dd38450860c5d823e42a53"
+    },
+    {
+      "path": "api/index.js",
+      "action": "replace",
+      "sha256": "2f428c2b4ad065c9b83f0ecb2a2ba8f5bb844b70d16b36289a70da7145d1e78b"
+    },
+    {
+      "path": "app.js",
+      "action": "replace",
+      "sha256": "eeaf965ae6ee66e854c5a759d9d7801ede2cec586e69cb265678981e4043098c"
+    },
+    {
+      "path": "migrations/20260923_mobile.sql",
+      "action": "add",
+      "sha256": "3254318e475ffab7b054529d6afd5be639b34e1423458b9d447e9e8c8d11dd11"
+    },
+    {
+      "path": "migrations/20260923_order_shipping.sql",
+      "action": "add",
+      "sha256": "20858a50ed2851eac14e0b413eacf2b19f345c8699438bc6d6822a141c6f6d23"
+    },
+    {
+      "path": "migrations/20260925_mobile_store.sql",
+      "action": "add",
+      "sha256": "e9eed9f500627e4b105c9f435549ea540a71119cae9988a2ba5dade8919609dc"
+    },
+    {
+      "path": "package-lock.json",
+      "action": "replace",
+      "sha256": "2b91aa9c8dfe706678cf79a9c4f440f8bd2dedc6d5e5d2c567c18efd5e6e00d3"
+    },
+    {
+      "path": "package.json",
+      "action": "replace",
+      "sha256": "497d299994449fb01c52f30c831bc6187f8118f80b054056dc438b89cbd2acca"
+    },
+    {
+      "path": "routes/cartRoutes.js",
+      "action": "replace",
+      "sha256": "cd00e76470d9faf53e1696ca9fe45b8a9a83ff23f8291459ebe6609f4bcd5b07"
+    },
+    {
+      "path": "routes/mobileRoutes.js",
+      "action": "add",
+      "sha256": "6fb9baf31a552768a93ebb35a277c5a3282d1961870b407e0cf09618440301fa"
+    },
+    {
+      "path": "routes/mobileStoreRoutes.js",
+      "action": "add",
+      "sha256": "86f8b93a3d63c4fa79ae34099bff17f07e679601b8c1ae258124086fde86fdb6"
+    },
+    {
+      "path": "routes/mobileWebhook.js",
+      "action": "add",
+      "sha256": "27f5e8a7e0a43229a57bc6ccbbf82405a2d3f6201bb11cd5e2894256a8783750"
+    },
+    {
+      "path": "routes/productRoutes.js",
+      "action": "replace",
+      "sha256": "c1861b0ec82bc18fc932aeeb0aa304a53fe18a4261757e3af387b7e6167bc82a"
+    },
+    {
+      "path": "routes/returnsRoutes.js",
+      "action": "replace",
+      "sha256": "d0b68c2e4d088a01109922ba7e02d3984990918c99a9c3aa2b5a679b5af02eb2"
+    },
+    {
+      "path": "routes/salesRoutes.js",
+      "action": "replace",
+      "sha256": "c171ca51666d08e2c117ba318d3634c7f3c2e2c7d082cd0a9b4895a68952a8a1"
+    },
+    {
+      "path": "scripts/migrateMobile.js",
+      "action": "add",
+      "sha256": "0a7866b4dccf2ff8a4fa4c8f4da04becd7caee70b781e43d103cdbffde0a2dc4"
+    },
+    {
+      "path": "scripts/preflightMobile.js",
+      "action": "add",
+      "sha256": "9a285bc9a509dd250a187d7b95e281f9613e54bca95be7b6486e6ffc6e1501b1"
+    },
+    {
+      "path": "server.js",
+      "action": "add",
+      "sha256": "dd33d830813026d0ede520dcd16e2624aa838638805aa1e336988aaa9c8c8150"
+    },
+    {
+      "path": "services/mobileCheckout.js",
+      "action": "add",
+      "sha256": "41e8df3ae9c737158bdc7e60828eb93ed8e8050df66820e1432e125d1929985e"
+    },
+    {
+      "path": "services/mobileRules.js",
+      "action": "add",
+      "sha256": "a2946e8878d30e13d26637caf0334f5594e8a862a22c6573da4807a2861f10ee"
+    },
+    {
+      "path": "services/mobileStore.js",
+      "action": "add",
+      "sha256": "77b61fb461a53912c6bf1ad5310a9286981a5b425f8b9164aebb0aede40d8f70"
+    },
+    {
+      "path": "services/orderShippingWorkflow.js",
+      "action": "replace",
+      "sha256": "5a7f0a140df3e9cb968bc67df68043c71f30bf85749937524bb2849dca94802d"
+    },
+    {
+      "path": "services/orderStatusSync.js",
+      "action": "replace",
+      "sha256": "239133f11a4e86846f50e0d96cb24fb87cfef8df32bc12cd5eb8825dea2a9f19"
+    },
+    {
+      "path": "services/returnPolicy.js",
+      "action": "add",
+      "sha256": "117e12ec413ab10c374ba8b5818ce539dbab62cf33fdc206069ae3b4779cf7a9"
+    },
+    {
+      "path": "services/returnsService.js",
+      "action": "replace",
+      "sha256": "0114d560320437057a5deba461cb1375bb191fa53a86d98041d1dd6487df6ff3"
+    },
+    {
+      "path": "services/shiprocketService.js",
+      "action": "replace",
+      "sha256": "d3b8075a656001b643028a93b5c7a5e60dfeab3ae576240ae3f42580e862f914"
+    },
+    {
+      "path": "tests/mobileCheckout.test.js",
+      "action": "add",
+      "sha256": "3304258842c6798bf68dfc5f4afac22e699d3d4d98ab133849265633fc7e558d"
+    },
+    {
+      "path": "tests/mobileRules.test.js",
+      "action": "add",
+      "sha256": "48b9a6cb3cef8ee277d270c58479227c6e4b223950df5b13039338d3e9eacc15"
+    },
+    {
+      "path": "tests/mobileStore.test.js",
+      "action": "add",
+      "sha256": "ce360c3981b09ec13df361c79b456db67c691cf7276e5c25a4c77c8621e7c13a"
+    },
+    {
+      "path": "tests/orderShipping.test.js",
+      "action": "replace",
+      "sha256": "6932972ffd16b785f2a847ce53765ea39cc4f2088e0b720f95bbd6a4811e6ac4"
+    },
+    {
+      "path": "tests/support/mobile-schema.sql",
+      "action": "add",
+      "sha256": "8c24340fd3b49f204e01c3e0f8c9b0d866b28a04eb52b81a1a0877a7004559b0"
+    }
+  ]
+}

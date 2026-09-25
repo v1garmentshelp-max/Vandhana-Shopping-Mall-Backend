@@ -1,26 +1,23 @@
-const express = require('express')
-const pool = require('../db')
-
-const router = express.Router()
-
-const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
-
+const express = require('express');
+const pool = require('../db');
+const router = express.Router();
+const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba';
 const parsePositiveInt = value => {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
 router.get('/:ean', async (req, res) => {
-  const ean = String(req.params.ean || '').trim()
-  const branchId = parsePositiveInt(req.query?.branch_id ?? req.query?.branchId)
-
+  const ean = String(req.params.ean || '').trim();
+  const branchId = parsePositiveInt(req.query?.branch_id ?? req.query?.branchId);
   if (!ean) {
-    return res.status(400).json({ message: 'ean required' })
+    return res.status(400).json({
+      message: 'ean required'
+    });
   }
-
   try {
-    const { rows } = await pool.query(
-      `SELECT
+    const {
+      rows
+    } = await pool.query(`SELECT
          b.ean_code,
          pv.id AS variant_id,
          pv.size,
@@ -88,23 +85,20 @@ router.get('/:ean', async (req, res) => {
        WHERE UPPER(TRIM(b.ean_code)) = UPPER(TRIM($1))
          AND pv.is_active = TRUE
          AND p.is_active = TRUE
-       LIMIT 1`,
-      [ean, CLOUD_NAME, branchId]
-    )
-
+       LIMIT 1`, [ean, CLOUD_NAME, branchId]);
     if (!rows.length) {
-      return res.status(404).json({ message: 'Not found' })
+      return res.status(404).json({
+        message: 'Not found'
+      });
     }
-
-    const row = rows[0]
-    const designCode = row.design_code || ''
-    const patternCode = row.pattern_code || ''
-    const patternType = row.pattern_type || ''
-    const stockChecked = branchId !== null
-    const availableQty = stockChecked ? Number(row.available_qty || 0) : null
-    const stockActive = stockChecked ? Boolean(row.stock_is_active) : null
-    const inStock = stockChecked ? stockActive && availableQty > 0 : null
-
+    const row = rows[0];
+    const designCode = row.design_code || '';
+    const patternCode = row.pattern_code || '';
+    const patternType = row.pattern_type || '';
+    const stockChecked = branchId !== null;
+    const availableQty = stockChecked ? Number(row.available_qty || 0) : null;
+    const stockActive = stockChecked ? Boolean(row.stock_is_active) : null;
+    const inStock = stockChecked ? stockActive && availableQty > 0 : null;
     return res.json({
       ean_code: row.ean_code,
       eanCode: row.ean_code,
@@ -149,15 +143,16 @@ router.get('/:ean', async (req, res) => {
       availableQty,
       in_stock: inStock,
       inStock,
-      stock_status: stockChecked ? (inStock ? 'IN_STOCK' : 'OUT_OF_STOCK') : 'NOT_CHECKED',
-      stockStatus: stockChecked ? (inStock ? 'IN_STOCK' : 'OUT_OF_STOCK') : 'NOT_CHECKED',
+      stock_status: stockChecked ? inStock ? 'IN_STOCK' : 'OUT_OF_STOCK' : 'NOT_CHECKED',
+      stockStatus: stockChecked ? inStock ? 'IN_STOCK' : 'OUT_OF_STOCK' : 'NOT_CHECKED',
       image_url: row.image_url || '',
       imageUrl: row.image_url || ''
-    })
+    });
   } catch (err) {
-    console.error('GET /api/barcodes/:ean error:', err)
-    return res.status(500).json({ message: 'Server error' })
+    console.error('GET /api/barcodes/:ean error:', err);
+    return res.status(500).json({
+      message: 'Server error'
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;

@@ -1,22 +1,19 @@
-const express = require('express')
-const pool = require('../db')
-const router = express.Router()
-const { writeStockCart } = require('../services/cartStockService')
-
-const toInt = (v) => {
-  const n = Number(v)
-  return Number.isInteger(n) ? n : null
-}
-
+const express = require('express');
+const pool = require('../db');
+const router = express.Router();
+const {
+  writeStockCart
+} = require('../services/cartStockService');
+const toInt = v => {
+  const n = Number(v);
+  return Number.isInteger(n) ? n : null;
+};
 const toMoney = (v, fallback = 0) => {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : fallback
-}
-
-const toText = (v) => String(v || '').trim()
-
-const toBool = (v) => v === true || v === 'true' || v === 1 || v === '1'
-
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+const toText = v => String(v || '').trim();
+const toBool = v => v === true || v === 'true' || v === 1 || v === '1';
 router.post('/vandana-cart', async (req, res) => {
   const {
     user_id,
@@ -32,32 +29,32 @@ router.post('/vandana-cart', async (req, res) => {
     custom_price,
     custom_original_price,
     custom_payload
-  } = req.body || {}
-
-  const uid = toInt(user_id)
-  const qty = quantity == null ? 1 : toInt(quantity)
-  const size = toText(selected_size)
-  const color = toText(selected_color)
-  const isCustom = toBool(is_custom)
-
+  } = req.body || {};
+  const uid = toInt(user_id);
+  const qty = quantity == null ? 1 : toInt(quantity);
+  const size = toText(selected_size);
+  const color = toText(selected_color);
+  const isCustom = toBool(is_custom);
   if (!uid || !size || !color || !qty || qty < 1) {
-    return res.status(400).json({ message: 'Missing cart fields' })
+    return res.status(400).json({
+      message: 'Missing cart fields'
+    });
   }
-
   try {
     if (isCustom) {
-      const title = toText(custom_title) || 'Custom Product'
-      const brand = toText(custom_brand) || 'V1Garments'
-      const imageUrl = toText(custom_image_url)
-      const price = toMoney(custom_price, 0)
-      const originalPrice = toMoney(custom_original_price, price)
-
+      const title = toText(custom_title) || 'Custom Product';
+      const brand = toText(custom_brand) || 'V1Garments';
+      const imageUrl = toText(custom_image_url);
+      const studio = require('../services/mobileStore');
+      const serverItem = studio.customProduct(custom_payload, await studio.config(pool));
+      const price = serverItem.price;
+      const originalPrice = serverItem.mrp;
       if (!title || !imageUrl || price <= 0) {
-        return res.status(400).json({ message: 'Missing custom cart fields' })
+        return res.status(400).json({
+          message: 'Missing custom cart fields'
+        });
       }
-
-      const inserted = await pool.query(
-        `INSERT INTO vandana_cart (
+      const inserted = await pool.query(`INSERT INTO vandana_cart (
           user_id,
           product_id,
           selected_size,
@@ -74,66 +71,81 @@ router.post('/vandana-cart', async (req, res) => {
           updated_at
         )
         VALUES ($1, NULL, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        RETURNING id`,
-        [
-          uid,
-          size,
-          color,
-          qty,
-          title,
-          brand,
-          imageUrl,
-          price,
-          originalPrice,
-          JSON.stringify(custom_payload || {})
-        ]
-      )
-
+        RETURNING id`, [uid, size, color, qty, title, brand, imageUrl, price, originalPrice, JSON.stringify(custom_payload || {})]);
       return res.status(201).json({
         message: 'Added to cart successfully',
         cart_item_id: inserted.rows[0]?.id
-      })
+      });
     }
-
-    const vid = toInt(variant_id || product_id)
-
+    const vid = toInt(variant_id || product_id);
     if (!vid) {
-      return res.status(400).json({ message: 'Missing variant_id' })
+      return res.status(400).json({
+        message: 'Missing variant_id'
+      });
     }
-
-    const row = await writeStockCart({ userId: uid, variantId: vid, quantity: qty,
-      branchId: 3, size, color, add: true })
-    return res.status(201).json({ message: 'Added to cart successfully', cart_item_id: row.id, quantity: row.quantity, available_stock: row.available })
+    const row = await writeStockCart({
+      userId: uid,
+      variantId: vid,
+      quantity: qty,
+      branchId: 3,
+      size,
+      color,
+      add: true
+    });
+    return res.status(201).json({
+      message: 'Added to cart successfully',
+      cart_item_id: row.id,
+      quantity: row.quantity,
+      available_stock: row.available
+    });
   } catch (err) {
-    return res.status(err.status || 500).json({ message: err.status ? err.message : 'Error adding to cart', available_stock: err.available })
+    return res.status(err.status || 500).json({
+      message: err.status ? err.message : 'Error adding to cart',
+      available_stock: err.available
+    });
   }
-})
-
+});
 router.put('/vandana-cart', async (req, res) => {
-  const body = req.body || {}
-  const uid = toInt(body.user_id)
-  const qty = toInt(body.quantity)
-  if (!uid || !qty || qty < 1) return res.status(400).json({ message: 'Invalid quantity or user' })
+  const body = req.body || {};
+  const uid = toInt(body.user_id);
+  const qty = toInt(body.quantity);
+  if (!uid || !qty || qty < 1) return res.status(400).json({
+    message: 'Invalid quantity or user'
+  });
   try {
-    const row = await writeStockCart({ userId: uid, variantId: toInt(body.variant_id || body.product_id),
-      cartItemId: toInt(body.cart_item_id), quantity: qty, branchId: 3,
-      size: toText(body.selected_size), color: toText(body.selected_color), add: false })
-    return res.json({ message: 'Quantity updated', quantity: row.quantity, available_stock: row.available })
+    const row = await writeStockCart({
+      userId: uid,
+      variantId: toInt(body.variant_id || body.product_id),
+      cartItemId: toInt(body.cart_item_id),
+      quantity: qty,
+      branchId: 3,
+      size: toText(body.selected_size),
+      color: toText(body.selected_color),
+      add: false
+    });
+    return res.json({
+      message: 'Quantity updated',
+      quantity: row.quantity,
+      available_stock: row.available
+    });
   } catch (err) {
-    return res.status(err.status || 500).json({ message: err.status ? err.message : 'Error updating cart', available_stock: err.available })
+    return res.status(err.status || 500).json({
+      message: err.status ? err.message : 'Error updating cart',
+      available_stock: err.available
+    });
   }
-})
-
+});
 router.get('/count/:userId', async (req, res) => {
-  const uid = toInt(req.params.userId)
-
+  const uid = toInt(req.params.userId);
   if (!uid) {
-    return res.status(400).json({ message: 'Invalid userId' })
+    return res.status(400).json({
+      message: 'Invalid userId'
+    });
   }
-
   try {
-    const { rows } = await pool.query(
-      `SELECT COALESCE(SUM(c.quantity), 0)::int AS count
+    const {
+      rows
+    } = await pool.query(`SELECT COALESCE(SUM(c.quantity), 0)::int AS count
        FROM vandana_cart c
        LEFT JOIN product_variants v
          ON v.id = c.product_id
@@ -144,46 +156,46 @@ router.get('/count/:userId', async (req, res) => {
          AND (
            COALESCE(c.is_custom, FALSE) = TRUE
            OR (v.is_active = TRUE AND p.is_active = TRUE)
-         )`,
-      [uid]
-    )
-
-    return res.json({ count: rows[0]?.count || 0 })
+         )`, [uid]);
+    return res.json({
+      count: rows[0]?.count || 0
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching cart count', error: err.message })
+    return res.status(500).json({
+      message: 'Error fetching cart count',
+      error: err.message
+    });
   }
-})
-
+});
 router.delete('/:userId/clear', async (req, res) => {
-  const uid = toInt(req.params.userId)
-
+  const uid = toInt(req.params.userId);
   if (!uid) {
-    return res.status(400).json({ message: 'Invalid userId' })
+    return res.status(400).json({
+      message: 'Invalid userId'
+    });
   }
-
   try {
-    await pool.query(
-      `DELETE FROM vandana_cart WHERE user_id=$1`,
-      [uid]
-    )
-
-    return res.json({ message: 'Cart cleared' })
+    await pool.query(`DELETE FROM vandana_cart WHERE user_id=$1`, [uid]);
+    return res.json({
+      message: 'Cart cleared'
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Error clearing cart', error: err.message })
+    return res.status(500).json({
+      message: 'Error clearing cart',
+      error: err.message
+    });
   }
-})
-
+});
 router.get('/:userId', async (req, res) => {
-  const uid = toInt(req.params.userId)
-  const branchId = toInt(req.query.branch_id) || 3
-
+  const uid = toInt(req.params.userId);
+  const branchId = toInt(req.query.branch_id) || 3;
   if (!uid) {
-    return res.status(400).json({ message: 'Invalid userId' })
+    return res.status(400).json({
+      message: 'Invalid userId'
+    });
   }
-
   try {
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba'
-
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'digu2krba';
     const sql = `
       WITH normal_base AS (
         SELECT
@@ -360,23 +372,23 @@ router.get('/:userId', async (req, res) => {
       SELECT *
       FROM custom_items
       ORDER BY cart_item_id DESC
-    `
-
-    const { rows } = await pool.query(sql, [uid, cloud, branchId])
-
-    return res.json(
-      rows.map(row => ({
-        ...row,
-        designCode: row.design_code || '',
-        patternCode: row.pattern_code || '',
-        patternType: row.pattern_type || ''
-      }))
-    )
+    `;
+    const {
+      rows
+    } = await pool.query(sql, [uid, cloud, branchId]);
+    return res.json(rows.map(row => ({
+      ...row,
+      designCode: row.design_code || '',
+      patternCode: row.pattern_code || '',
+      patternType: row.pattern_type || ''
+    })));
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching cart', error: err.message })
+    return res.status(500).json({
+      message: 'Error fetching cart',
+      error: err.message
+    });
   }
-})
-
+});
 router.delete('/vandana-cart', async (req, res) => {
   const {
     cart_item_id,
@@ -385,53 +397,50 @@ router.delete('/vandana-cart', async (req, res) => {
     variant_id,
     selected_size,
     selected_color
-  } = req.body || {}
-
-  const uid = toInt(user_id)
-  const cartItemId = toInt(cart_item_id)
-  const vid = toInt(variant_id || product_id)
-  const size = toText(selected_size)
-  const color = toText(selected_color)
-
+  } = req.body || {};
+  const uid = toInt(user_id);
+  const cartItemId = toInt(cart_item_id);
+  const vid = toInt(variant_id || product_id);
+  const size = toText(selected_size);
+  const color = toText(selected_color);
   if (!uid) {
-    return res.status(400).json({ message: 'Missing user_id' })
+    return res.status(400).json({
+      message: 'Missing user_id'
+    });
   }
-
   try {
-    let result
-
+    let result;
     if (cartItemId) {
-      result = await pool.query(
-        `DELETE FROM vandana_cart
+      result = await pool.query(`DELETE FROM vandana_cart
          WHERE id=$1 AND user_id=$2
-         RETURNING id`,
-        [cartItemId, uid]
-      )
+         RETURNING id`, [cartItemId, uid]);
     } else {
       if (!vid || !size || !color) {
-        return res.status(400).json({ message: 'Missing fields for delete' })
+        return res.status(400).json({
+          message: 'Missing fields for delete'
+        });
       }
-
-      result = await pool.query(
-        `DELETE FROM vandana_cart
+      result = await pool.query(`DELETE FROM vandana_cart
          WHERE user_id=$1
            AND product_id=$2
            AND selected_size=$3
            AND selected_color=$4
            AND is_custom=FALSE
-         RETURNING id`,
-        [uid, vid, size, color]
-      )
+         RETURNING id`, [uid, vid, size, color]);
     }
-
     if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Cart item not found' })
+      return res.status(404).json({
+        message: 'Cart item not found'
+      });
     }
-
-    return res.json({ message: 'Item removed from cart' })
+    return res.json({
+      message: 'Item removed from cart'
+    });
   } catch (err) {
-    return res.status(500).json({ message: 'Error removing from cart', error: err.message })
+    return res.status(500).json({
+      message: 'Error removing from cart',
+      error: err.message
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;

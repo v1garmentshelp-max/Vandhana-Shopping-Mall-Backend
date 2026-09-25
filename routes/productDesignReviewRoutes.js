@@ -1,65 +1,52 @@
-const express = require('express')
-const pool = require('../db')
-const { requireAuth } = require('../middleware/auth')
-const { applyProductDesignReview } = require('../services/productDesignService')
-
-const router = express.Router()
-
-const REVIEW_STATUSES = new Set(['PENDING', 'APPROVED', 'REJECTED', 'APPLIED'])
-
-const cleanText = value => String(value ?? '').replace(/\s+/g, ' ').trim()
-
+const express = require('express');
+const pool = require('../db');
+const {
+  requireAuth
+} = require('../middleware/auth');
+const {
+  applyProductDesignReview
+} = require('../services/productDesignService');
+const router = express.Router();
+const REVIEW_STATUSES = new Set(['PENDING', 'APPROVED', 'REJECTED', 'APPLIED']);
+const cleanText = value => String(value ?? '').replace(/\s+/g, ' ').trim();
 const parsePositiveInt = value => {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
-const getRole = req => cleanText(req.user?.role_enum || req.user?.role).toUpperCase()
-
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const getRole = req => cleanText(req.user?.role_enum || req.user?.role).toUpperCase();
 const requireSuperAdmin = (req, res, next) => {
   if (getRole(req) !== 'SUPER_ADMIN') {
-    return res.status(403).json({ message: 'Forbidden' })
+    return res.status(403).json({
+      message: 'Forbidden'
+    });
   }
-
-  return next()
-}
-
+  return next();
+};
 const normalizeStatus = value => {
-  const status = cleanText(value).toUpperCase()
-  return REVIEW_STATUSES.has(status) ? status : null
-}
-
+  const status = cleanText(value).toUpperCase();
+  return REVIEW_STATUSES.has(status) ? status : null;
+};
 const normalizeDesignCode = value => {
-  if (value === null || value === undefined || cleanText(value) === '') return null
-
-  const code = cleanText(value).toUpperCase()
-
+  if (value === null || value === undefined || cleanText(value) === '') return null;
+  const code = cleanText(value).toUpperCase();
   if (code.length > 100 || !/^[A-Z0-9][A-Z0-9._-]*$/.test(code)) {
-    return undefined
+    return undefined;
   }
-
-  return code
-}
-
+  return code;
+};
 const normalizePatternType = value => {
-  if (value === null || value === undefined || cleanText(value) === '') return null
-
-  const patternType = cleanText(value).toUpperCase()
-
-  if (patternType.length > 100) return undefined
-
-  return patternType
-}
-
+  if (value === null || value === undefined || cleanText(value) === '') return null;
+  const patternType = cleanText(value).toUpperCase();
+  if (patternType.length > 100) return undefined;
+  return patternType;
+};
 const noStore = res => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
-  res.set('Pragma', 'no-cache')
-  res.set('Expires', '0')
-}
-
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+};
 const getReviewProduct = async (db, productId) => {
-  const result = await db.query(
-    `
+  const result = await db.query(`
       SELECT
         p.id,
         p.name,
@@ -74,17 +61,12 @@ const getReviewProduct = async (db, productId) => {
       FROM products p
       WHERE p.id = $1
       LIMIT 1
-    `,
-    [productId]
-  )
-
-  return result.rows[0] || null
-}
-
+    `, [productId]);
+  return result.rows[0] || null;
+};
 router.get('/summary', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    const result = await pool.query(
-      `
+    const result = await pool.query(`
         SELECT
           COUNT(*)::int AS total_rows,
           COUNT(DISTINCT product_id)::int AS total_products,
@@ -95,46 +77,40 @@ router.get('/summary', requireAuth, requireSuperAdmin, async (req, res) => {
           COUNT(*) FILTER (WHERE NULLIF(TRIM(COALESCE(proposed_design_code, '')), '') IS NOT NULL)::int AS mapped_design_rows,
           COUNT(*) FILTER (WHERE NULLIF(TRIM(COALESCE(proposed_pattern_type, '')), '') IS NOT NULL)::int AS mapped_pattern_rows
         FROM product_design_mapping_review
-      `
-    )
-
-    noStore(res)
-    return res.json(result.rows[0])
+      `);
+    noStore(res);
+    return res.json(result.rows[0]);
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.get('/', requireAuth, requireSuperAdmin, async (req, res) => {
-  const statusInput = cleanText(req.query.status).toUpperCase()
-  const status = statusInput && statusInput !== 'ALL' ? normalizeStatus(statusInput) : null
-  const productId = parsePositiveInt(req.query.product_id || req.query.productId)
-  const search = cleanText(req.query.search || req.query.q)
-  const limit = Math.min(200, Math.max(1, parsePositiveInt(req.query.limit) || 50))
-  const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0)
-
+  const statusInput = cleanText(req.query.status).toUpperCase();
+  const status = statusInput && statusInput !== 'ALL' ? normalizeStatus(statusInput) : null;
+  const productId = parsePositiveInt(req.query.product_id || req.query.productId);
+  const search = cleanText(req.query.search || req.query.q);
+  const limit = Math.min(200, Math.max(1, parsePositiveInt(req.query.limit) || 50));
+  const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
   if (statusInput && statusInput !== 'ALL' && !status) {
-    return res.status(400).json({ message: 'Invalid review status' })
+    return res.status(400).json({
+      message: 'Invalid review status'
+    });
   }
-
   try {
-    const params = []
-    const filters = []
-
+    const params = [];
+    const filters = [];
     if (status) {
-      params.push(status)
-      filters.push(`r.review_status = $${params.length}`)
+      params.push(status);
+      filters.push(`r.review_status = $${params.length}`);
     }
-
     if (productId) {
-      params.push(productId)
-      filters.push(`r.product_id = $${params.length}`)
+      params.push(productId);
+      filters.push(`r.product_id = $${params.length}`);
     }
-
     if (search) {
-      params.push(`%${search}%`)
+      params.push(`%${search}%`);
       filters.push(`(
         p.name ILIKE $${params.length}
         OR p.brand_name ILIKE $${params.length}
@@ -142,20 +118,15 @@ router.get('/', requireAuth, requireSuperAdmin, async (req, res) => {
         OR p.pattern_code ILIKE $${params.length}
         OR p.pattern_type ILIKE $${params.length}
         OR r.ean_code ILIKE $${params.length}
-      )`)
+      )`);
     }
-
-    const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
-    const countParams = [...params]
-
-    params.push(limit)
-    const limitIndex = params.length
-    params.push(offset)
-    const offsetIndex = params.length
-
-    const [dataResult, countResult] = await Promise.all([
-      pool.query(
-        `
+    const whereSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const countParams = [...params];
+    params.push(limit);
+    const limitIndex = params.length;
+    params.push(offset);
+    const offsetIndex = params.length;
+    const [dataResult, countResult] = await Promise.all([pool.query(`
           SELECT
             r.product_id,
             p.name AS product_name,
@@ -189,51 +160,41 @@ router.get('/', requireAuth, requireSuperAdmin, async (req, res) => {
           ORDER BY MAX(r.updated_at) DESC, r.product_id
           LIMIT $${limitIndex}
           OFFSET $${offsetIndex}
-        `,
-        params
-      ),
-      pool.query(
-        `
+        `, params), pool.query(`
           SELECT COUNT(DISTINCT r.product_id)::int AS total
           FROM product_design_mapping_review r
           JOIN products p
             ON p.id = r.product_id
           ${whereSql}
-        `,
-        countParams
-      )
-    ])
-
-    noStore(res)
+        `, countParams)]);
+    noStore(res);
     return res.json({
       items: dataResult.rows,
       total: countResult.rows[0]?.total || 0,
       limit,
       offset
-    })
+    });
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.get('/:productId', requireAuth, requireSuperAdmin, async (req, res) => {
-  const productId = parsePositiveInt(req.params.productId)
-
+  const productId = parsePositiveInt(req.params.productId);
   if (!productId) {
-    return res.status(400).json({ message: 'Invalid productId' })
+    return res.status(400).json({
+      message: 'Invalid productId'
+    });
   }
-
   try {
-    const product = await getReviewProduct(pool, productId)
-
+    const product = await getReviewProduct(pool, productId);
     if (!product) {
-      return res.status(404).json({ message: 'Product not found' })
+      return res.status(404).json({
+        message: 'Product not found'
+      });
     }
-
-    const result = await pool.query(
-      `
+    const result = await pool.query(`
         SELECT
           r.id AS review_id,
           r.product_id,
@@ -322,87 +283,81 @@ router.get('/:productId', requireAuth, requireSuperAdmin, async (req, res) => {
           v.colour,
           v.size,
           r.variant_id
-      `,
-      [productId]
-    )
-
+      `, [productId]);
     if (!result.rowCount) {
-      return res.status(404).json({ message: 'Review rows not found' })
+      return res.status(404).json({
+        message: 'Review rows not found'
+      });
     }
-
-    noStore(res)
-    return res.json({ product, variants: result.rows })
+    noStore(res);
+    return res.json({
+      product,
+      variants: result.rows
+    });
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.patch('/variant/:variantId', requireAuth, requireSuperAdmin, async (req, res) => {
-  const variantId = parsePositiveInt(req.params.variantId)
-
+  const variantId = parsePositiveInt(req.params.variantId);
   if (!variantId) {
-    return res.status(400).json({ message: 'Invalid variantId' })
+    return res.status(400).json({
+      message: 'Invalid variantId'
+    });
   }
-
-  const hasDesignCode = Object.prototype.hasOwnProperty.call(req.body || {}, 'proposed_design_code') || Object.prototype.hasOwnProperty.call(req.body || {}, 'proposedDesignCode')
-  const hasPatternType = Object.prototype.hasOwnProperty.call(req.body || {}, 'proposed_pattern_type') || Object.prototype.hasOwnProperty.call(req.body || {}, 'proposedPatternType')
-  const hasStatus = Object.prototype.hasOwnProperty.call(req.body || {}, 'review_status') || Object.prototype.hasOwnProperty.call(req.body || {}, 'reviewStatus')
-  const hasNotes = Object.prototype.hasOwnProperty.call(req.body || {}, 'notes')
-
+  const hasDesignCode = Object.prototype.hasOwnProperty.call(req.body || {}, 'proposed_design_code') || Object.prototype.hasOwnProperty.call(req.body || {}, 'proposedDesignCode');
+  const hasPatternType = Object.prototype.hasOwnProperty.call(req.body || {}, 'proposed_pattern_type') || Object.prototype.hasOwnProperty.call(req.body || {}, 'proposedPatternType');
+  const hasStatus = Object.prototype.hasOwnProperty.call(req.body || {}, 'review_status') || Object.prototype.hasOwnProperty.call(req.body || {}, 'reviewStatus');
+  const hasNotes = Object.prototype.hasOwnProperty.call(req.body || {}, 'notes');
   if (!hasDesignCode && !hasPatternType && !hasStatus && !hasNotes) {
-    return res.status(400).json({ message: 'No review fields provided' })
+    return res.status(400).json({
+      message: 'No review fields provided'
+    });
   }
-
-  const designCode = hasDesignCode
-    ? normalizeDesignCode(req.body?.proposed_design_code ?? req.body?.proposedDesignCode)
-    : null
-  const patternType = hasPatternType
-    ? normalizePatternType(req.body?.proposed_pattern_type ?? req.body?.proposedPatternType)
-    : null
-  const status = hasStatus
-    ? normalizeStatus(req.body?.review_status ?? req.body?.reviewStatus)
-    : null
-  const notes = hasNotes ? cleanText(req.body?.notes).slice(0, 2000) || null : null
-
+  const designCode = hasDesignCode ? normalizeDesignCode(req.body?.proposed_design_code ?? req.body?.proposedDesignCode) : null;
+  const patternType = hasPatternType ? normalizePatternType(req.body?.proposed_pattern_type ?? req.body?.proposedPatternType) : null;
+  const status = hasStatus ? normalizeStatus(req.body?.review_status ?? req.body?.reviewStatus) : null;
+  const notes = hasNotes ? cleanText(req.body?.notes).slice(0, 2000) || null : null;
   if (hasDesignCode && designCode === undefined) {
-    return res.status(400).json({ message: 'Invalid proposed_design_code' })
+    return res.status(400).json({
+      message: 'Invalid proposed_design_code'
+    });
   }
-
   if (hasPatternType && patternType === undefined) {
-    return res.status(400).json({ message: 'Invalid proposed_pattern_type' })
+    return res.status(400).json({
+      message: 'Invalid proposed_pattern_type'
+    });
   }
-
   if (hasStatus && !status) {
-    return res.status(400).json({ message: 'Invalid review_status' })
+    return res.status(400).json({
+      message: 'Invalid review_status'
+    });
   }
-
   if (status === 'APPLIED') {
-    return res.status(400).json({ message: 'APPLIED status can only be set by the apply operation' })
+    return res.status(400).json({
+      message: 'APPLIED status can only be set by the apply operation'
+    });
   }
-
   try {
-    const existing = await pool.query(
-      `
+    const existing = await pool.query(`
         SELECT *
         FROM product_design_mapping_review
         WHERE variant_id = $1
         LIMIT 1
-      `,
-      [variantId]
-    )
-
+      `, [variantId]);
     if (!existing.rowCount) {
-      return res.status(404).json({ message: 'Review row not found' })
+      return res.status(404).json({
+        message: 'Review row not found'
+      });
     }
-
     if (existing.rows[0].review_status === 'APPLIED') {
-      return res.status(409).json({ message: 'Applied review rows cannot be edited' })
+      return res.status(409).json({
+        message: 'Applied review rows cannot be edited'
+      });
     }
-
-    const result = await pool.query(
-      `
+    const result = await pool.query(`
         UPDATE product_design_mapping_review
         SET proposed_design_code = CASE WHEN $2::boolean THEN $3 ELSE proposed_design_code END,
             proposed_pattern_type = CASE WHEN $4::boolean THEN $5 ELSE proposed_pattern_type END,
@@ -411,91 +366,65 @@ router.patch('/variant/:variantId', requireAuth, requireSuperAdmin, async (req, 
             updated_at = NOW()
         WHERE variant_id = $1
         RETURNING *
-      `,
-      [
-        variantId,
-        hasDesignCode,
-        designCode,
-        hasPatternType,
-        patternType,
-        hasStatus,
-        status,
-        hasNotes,
-        notes
-      ]
-    )
-
-    return res.json(result.rows[0])
+      `, [variantId, hasDesignCode, designCode, hasPatternType, patternType, hasStatus, status, hasNotes, notes]);
+    return res.json(result.rows[0]);
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.post('/:productId/approve', requireAuth, requireSuperAdmin, async (req, res) => {
-  const productId = parsePositiveInt(req.params.productId)
-
+  const productId = parsePositiveInt(req.params.productId);
   if (!productId) {
-    return res.status(400).json({ message: 'Invalid productId' })
+    return res.status(400).json({
+      message: 'Invalid productId'
+    });
   }
-
-  const client = await pool.connect()
-
+  const client = await pool.connect();
   try {
-    await client.query('BEGIN')
-
-    const rowsResult = await client.query(
-      `
+    await client.query('BEGIN');
+    const rowsResult = await client.query(`
         SELECT *
         FROM product_design_mapping_review
         WHERE product_id = $1
         ORDER BY variant_id
         FOR UPDATE
-      `,
-      [productId]
-    )
-
+      `, [productId]);
     if (!rowsResult.rowCount) {
-      await client.query('ROLLBACK')
-      return res.status(404).json({ message: 'Review rows not found' })
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        message: 'Review rows not found'
+      });
     }
-
     if (rowsResult.rows.some(row => row.review_status === 'APPLIED')) {
-      await client.query('ROLLBACK')
-      return res.status(409).json({ message: 'Product review has already been applied' })
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        message: 'Product review has already been applied'
+      });
     }
-
-    const effectiveDesignCodes = rowsResult.rows.map(row =>
-      normalizeDesignCode(row.proposed_design_code || row.current_design_code)
-    )
-
+    const effectiveDesignCodes = rowsResult.rows.map(row => normalizeDesignCode(row.proposed_design_code || row.current_design_code));
     if (effectiveDesignCodes.some(code => !code || code === undefined)) {
-      await client.query('ROLLBACK')
-      return res.status(422).json({ message: 'Every variant requires a valid design code before approval' })
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        message: 'Every variant requires a valid design code before approval'
+      });
     }
-
-    const uniqueDesignCodes = [...new Set(effectiveDesignCodes)]
-    const conflictResult = await client.query(
-      `
+    const uniqueDesignCodes = [...new Set(effectiveDesignCodes)];
+    const conflictResult = await client.query(`
         SELECT id, design_code
         FROM products
         WHERE id <> $1
           AND UPPER(TRIM(design_code)) = ANY($2::text[])
-      `,
-      [productId, uniqueDesignCodes]
-    )
-
+      `, [productId, uniqueDesignCodes]);
     if (conflictResult.rowCount) {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK');
       return res.status(409).json({
         message: 'One or more proposed design codes already belong to another product',
         conflicts: conflictResult.rows
-      })
+      });
     }
-
-    const result = await client.query(
-      `
+    const result = await client.query(`
         UPDATE product_design_mapping_review
         SET proposed_design_code = UPPER(TRIM(COALESCE(NULLIF(proposed_design_code, ''), current_design_code))),
             proposed_pattern_type = NULLIF(UPPER(TRIM(COALESCE(NULLIF(proposed_pattern_type, ''), current_pattern_type, ''))), ''),
@@ -503,42 +432,35 @@ router.post('/:productId/approve', requireAuth, requireSuperAdmin, async (req, r
             updated_at = NOW()
         WHERE product_id = $1
         RETURNING *
-      `,
-      [productId]
-    )
-
-    await client.query('COMMIT')
-
+      `, [productId]);
+    await client.query('COMMIT');
     return res.json({
       message: 'Product design review approved',
       product_id: productId,
       variant_count: result.rowCount,
       design_codes: uniqueDesignCodes
-    })
+    });
   } catch (error) {
     try {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK');
     } catch {}
-
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   } finally {
-    client.release()
+    client.release();
   }
-})
-
+});
 router.post('/:productId/reject', requireAuth, requireSuperAdmin, async (req, res) => {
-  const productId = parsePositiveInt(req.params.productId)
-  const reason = cleanText(req.body?.reason || req.body?.notes).slice(0, 2000) || null
-
+  const productId = parsePositiveInt(req.params.productId);
+  const reason = cleanText(req.body?.reason || req.body?.notes).slice(0, 2000) || null;
   if (!productId) {
-    return res.status(400).json({ message: 'Invalid productId' })
+    return res.status(400).json({
+      message: 'Invalid productId'
+    });
   }
-
   try {
-    const result = await pool.query(
-      `
+    const result = await pool.query(`
         UPDATE product_design_mapping_review
         SET review_status = 'REJECTED',
             notes = CASE
@@ -550,33 +472,30 @@ router.post('/:productId/reject', requireAuth, requireSuperAdmin, async (req, re
         WHERE product_id = $1
           AND review_status <> 'APPLIED'
         RETURNING variant_id
-      `,
-      [productId, reason]
-    )
-
+      `, [productId, reason]);
     if (!result.rowCount) {
-      return res.status(404).json({ message: 'Review rows not found or already applied' })
+      return res.status(404).json({
+        message: 'Review rows not found or already applied'
+      });
     }
-
     return res.json({
       message: 'Product design review rejected',
       product_id: productId,
       variant_count: result.rowCount
-    })
+    });
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.post('/:productId/apply', requireAuth, requireSuperAdmin, async (req, res) => {
-  const productId = parsePositiveInt(req.params.productId)
-
+  const productId = parsePositiveInt(req.params.productId);
   if (!productId) {
-    return res.status(400).json({ message: 'Invalid productId' })
+    return res.status(400).json({
+      message: 'Invalid productId'
+    });
   }
-
   try {
     const result = await applyProductDesignReview({
       pool,
@@ -585,17 +504,14 @@ router.post('/:productId/apply', requireAuth, requireSuperAdmin, async (req, res
         userId: req.user?.id || null,
         role: getRole(req)
       }
-    })
-
-    return res.json(result)
+    });
+    return res.json(result);
   } catch (error) {
-    const status = Number(error?.statusCode || error?.status || 500)
-
+    const status = Number(error?.statusCode || error?.status || 500);
     return res.status(status >= 400 && status <= 599 ? status : 500).json({
       message: error?.message || 'Server error',
       details: error?.details || undefined
-    })
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;

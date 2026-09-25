@@ -1,157 +1,88 @@
-const express = require('express')
-const pool = require('../db')
-
-const router = express.Router()
-
+const express = require('express');
+const pool = require('../db');
+const router = express.Router();
 const normGender = value => {
-  const gender = String(value || '').trim().toUpperCase()
-
-  if (['MEN', 'WOMEN', 'KIDS'].includes(gender)) return gender
-  if (['MAN', 'MALE', 'MENS', "MEN'S"].includes(gender)) return 'MEN'
-  if (['WOMAN', 'FEMALE', 'LADIES', 'WOMENS', "WOMEN'S"].includes(gender)) return 'WOMEN'
-  if (['CHILD', 'CHILDREN', 'BOYS', 'GIRLS', 'KID'].includes(gender)) return 'KIDS'
-
-  return ''
-}
-
+  const gender = String(value || '').trim().toUpperCase();
+  if (['MEN', 'WOMEN', 'KIDS'].includes(gender)) return gender;
+  if (['MAN', 'MALE', 'MENS', "MEN'S"].includes(gender)) return 'MEN';
+  if (['WOMAN', 'FEMALE', 'LADIES', 'WOMENS', "WOMEN'S"].includes(gender)) return 'WOMEN';
+  if (['CHILD', 'CHILDREN', 'BOYS', 'GIRLS', 'KID'].includes(gender)) return 'KIDS';
+  return '';
+};
 const parsePositiveInt = value => {
-  const parsed = parseInt(value, 10)
-
-  return Number.isInteger(parsed) && parsed > 0
-    ? parsed
-    : null
-}
-
+  const parsed = parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
 const parseNonNegativeInt = value => {
-  if (value === '' || value == null) return null
-
-  const parsed = parseInt(value, 10)
-
-  return Number.isInteger(parsed) && parsed >= 0
-    ? parsed
-    : null
-}
-
+  if (value === '' || value == null) return null;
+  const parsed = parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+};
 const cleanName = value => {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
+  return String(value || '').replace(/\s+/g, ' ').trim();
+};
 const slugify = value => {
-  return cleanName(value)
-    .toLowerCase()
-    .replace(/&/g, ' ')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
+  return cleanName(value).toLowerCase().replace(/&/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+};
 const noStore = res => {
-  res.set(
-    'Cache-Control',
-    'no-store, no-cache, must-revalidate, proxy-revalidate'
-  )
-  res.set('Pragma', 'no-cache')
-  res.set('Expires', '0')
-}
-
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+};
 const compareNodes = (a, b) => {
-  const orderA = Number(a.sort_order) || 0
-  const orderB = Number(b.sort_order) || 0
-
+  const orderA = Number(a.sort_order) || 0;
+  const orderB = Number(b.sort_order) || 0;
   if (orderA !== orderB) {
-    return orderA - orderB
+    return orderA - orderB;
   }
-
-  return String(a.name || '').localeCompare(
-    String(b.name || ''),
-    undefined,
-    {
-      numeric: true
-    }
-  )
-}
-
+  return String(a.name || '').localeCompare(String(b.name || ''), undefined, {
+    numeric: true
+  });
+};
 const buildTree = rows => {
-  const categoryMap = new Map()
-  const roots = []
-
+  const categoryMap = new Map();
+  const roots = [];
   for (const row of rows) {
     categoryMap.set(String(row.id), {
       ...row,
       children: []
-    })
+    });
   }
-
   for (const category of categoryMap.values()) {
-    const parentId =
-      category.parent_id == null
-        ? null
-        : String(category.parent_id)
-
-    if (
-      parentId &&
-      categoryMap.has(parentId)
-    ) {
-      categoryMap
-        .get(parentId)
-        .children
-        .push(category)
+    const parentId = category.parent_id == null ? null : String(category.parent_id);
+    if (parentId && categoryMap.has(parentId)) {
+      categoryMap.get(parentId).children.push(category);
     } else {
-      roots.push(category)
+      roots.push(category);
     }
   }
-
   const sortChildren = category => {
-    category.children.sort(compareNodes)
-    category.children.forEach(sortChildren)
-  }
-
-  roots.sort(compareNodes)
-  roots.forEach(sortChildren)
-
-  return roots
-}
-
+    category.children.sort(compareNodes);
+    category.children.forEach(sortChildren);
+  };
+  roots.sort(compareNodes);
+  roots.forEach(sortChildren);
+  return roots;
+};
 const getCategoryRows = async ({
   gender = '',
   id = null,
   includeInactive = false
 } = {}) => {
-  const params = []
-  const filters = []
-
+  const params = [];
+  const filters = [];
   if (gender) {
-    params.push(gender)
-    filters.push(
-      `category_tree.gender = $${params.length}`
-    )
+    params.push(gender);
+    filters.push(`category_tree.gender = $${params.length}`);
   }
-
   if (id) {
-    params.push(id)
-    filters.push(
-      `category_tree.id = $${params.length}`
-    )
+    params.push(id);
+    filters.push(`category_tree.id = $${params.length}`);
   }
-
-  const activeRootFilter =
-    includeInactive
-      ? ''
-      : 'AND c.is_active = TRUE'
-
-  const activeChildFilter =
-    includeInactive
-      ? ''
-      : 'WHERE c.is_active = TRUE'
-
-  const whereClause =
-    filters.length
-      ? `WHERE ${filters.join(' AND ')}`
-      : ''
-
-  const result = await pool.query(
-    `
+  const activeRootFilter = includeInactive ? '' : 'AND c.is_active = TRUE';
+  const activeChildFilter = includeInactive ? '' : 'WHERE c.is_active = TRUE';
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const result = await pool.query(`
       WITH RECURSIVE category_tree AS (
         SELECT
           c.id,
@@ -268,16 +199,11 @@ const getCategoryRows = async ({
         category_tree.level,
         category_tree.sort_order,
         category_tree.name
-    `,
-    params
-  )
-
-  return result.rows
-}
-
+    `, params);
+  return result.rows;
+};
 const getCategoryById = async categoryId => {
-  const result = await pool.query(
-    `
+  const result = await pool.query(`
       SELECT
         id,
         parent_id,
@@ -292,16 +218,11 @@ const getCategoryById = async categoryId => {
       FROM product_categories
       WHERE id = $1
       LIMIT 1
-    `,
-    [categoryId]
-  )
-
-  return result.rows[0] || null
-}
-
+    `, [categoryId]);
+  return result.rows[0] || null;
+};
 const getCategoryImpact = async categoryId => {
-  const result = await pool.query(
-    `
+  const result = await pool.query(`
       WITH RECURSIVE subtree AS (
         SELECT
           c.id,
@@ -383,334 +304,184 @@ const getCategoryImpact = async categoryId => {
       CROSS JOIN product_summary
       CROSS JOIN import_job_summary
       CROSS JOIN import_row_summary
-    `,
-    [categoryId]
-  )
-
-  return result.rows[0]
-}
-
+    `, [categoryId]);
+  return result.rows[0];
+};
 router.get('/admin', async (req, res) => {
   try {
-    noStore(res)
-
+    noStore(res);
     const rows = await getCategoryRows({
       includeInactive: true
-    })
-
+    });
     return res.json({
       rows,
       tree: buildTree(rows)
-    })
+    });
   } catch (error) {
     return res.status(500).json({
-      message:
-        error.message ||
-        'Server error'
-    })
+      message: error.message || 'Server error'
+    });
   }
-})
-
+});
 router.get('/tree', async (req, res) => {
   try {
-    noStore(res)
-
-    const requestedGender =
-      String(
-        req.query.gender || ''
-      ).trim()
-
-    const gender =
-      normGender(
-        requestedGender
-      )
-
-    if (
-      requestedGender &&
-      !gender
-    ) {
+    noStore(res);
+    const requestedGender = String(req.query.gender || '').trim();
+    const gender = normGender(requestedGender);
+    if (requestedGender && !gender) {
       return res.status(400).json({
         message: 'Invalid gender'
-      })
+      });
     }
-
-    const rows =
-      await getCategoryRows({
-        gender
-      })
-
-    return res.json(
-      buildTree(rows)
-    )
+    const rows = await getCategoryRows({
+      gender
+    });
+    return res.json(buildTree(rows));
   } catch (error) {
     return res.status(500).json({
-      message:
-        error.message ||
-        'Server error'
-    })
+      message: error.message || 'Server error'
+    });
   }
-})
-
-router.get(
-  '/gender/:gender/tree',
-  async (req, res) => {
-    try {
-      noStore(res)
-
-      const gender =
-        normGender(
-          req.params.gender
-        )
-
-      if (!gender) {
-        return res.status(400).json({
-          message: 'Invalid gender'
-        })
-      }
-
-      const rows =
-        await getCategoryRows({
-          gender
-        })
-
-      return res.json(
-        buildTree(rows)
-      )
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
+});
+router.get('/gender/:gender/tree', async (req, res) => {
+  try {
+    noStore(res);
+    const gender = normGender(req.params.gender);
+    if (!gender) {
+      return res.status(400).json({
+        message: 'Invalid gender'
+      });
     }
+    const rows = await getCategoryRows({
+      gender
+    });
+    return res.json(buildTree(rows));
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
   }
-)
-
-router.get(
-  '/gender/:gender',
-  async (req, res) => {
-    try {
-      noStore(res)
-
-      const gender =
-        normGender(
-          req.params.gender
-        )
-
-      if (!gender) {
-        return res.status(400).json({
-          message: 'Invalid gender'
-        })
-      }
-
-      const rows =
-        await getCategoryRows({
-          gender
-        })
-
-      return res.json(rows)
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
+});
+router.get('/gender/:gender', async (req, res) => {
+  try {
+    noStore(res);
+    const gender = normGender(req.params.gender);
+    if (!gender) {
+      return res.status(400).json({
+        message: 'Invalid gender'
+      });
     }
+    const rows = await getCategoryRows({
+      gender
+    });
+    return res.json(rows);
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
   }
-)
-
-router.get(
-  '/:id(\\d+)/impact',
-  async (req, res) => {
-    try {
-      noStore(res)
-
-      const categoryId =
-        parsePositiveInt(
-          req.params.id
-        )
-
-      if (!categoryId) {
-        return res.status(400).json({
-          message:
-            'Invalid category id'
-        })
-      }
-
-      const category =
-        await getCategoryById(
-          categoryId
-        )
-
-      if (!category) {
-        return res.status(404).json({
-          message:
-            'Category not found'
-        })
-      }
-
-      const impact =
-        await getCategoryImpact(
-          categoryId
-        )
-
-      return res.json({
-        category_id:
-          categoryId,
-        ...impact
-      })
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
+});
+router.get('/:id(\\d+)/impact', async (req, res) => {
+  try {
+    noStore(res);
+    const categoryId = parsePositiveInt(req.params.id);
+    if (!categoryId) {
+      return res.status(400).json({
+        message: 'Invalid category id'
+      });
     }
-  }
-)
-
-router.get(
-  '/:id(\\d+)',
-  async (req, res) => {
-    try {
-      noStore(res)
-
-      const categoryId =
-        parsePositiveInt(
-          req.params.id
-        )
-
-      if (!categoryId) {
-        return res.status(400).json({
-          message:
-            'Invalid category id'
-        })
-      }
-
-      const rows =
-        await getCategoryRows({
-          id: categoryId,
-          includeInactive: true
-        })
-
-      if (!rows.length) {
-        return res.status(404).json({
-          message:
-            'Category not found'
-        })
-      }
-
-      return res.json(rows[0])
-    } catch (error) {
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
+    const category = await getCategoryById(categoryId);
+    if (!category) {
+      return res.status(404).json({
+        message: 'Category not found'
+      });
     }
+    const impact = await getCategoryImpact(categoryId);
+    return res.json({
+      category_id: categoryId,
+      ...impact
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
   }
-)
-
+});
+router.get('/:id(\\d+)', async (req, res) => {
+  try {
+    noStore(res);
+    const categoryId = parsePositiveInt(req.params.id);
+    if (!categoryId) {
+      return res.status(400).json({
+        message: 'Invalid category id'
+      });
+    }
+    const rows = await getCategoryRows({
+      id: categoryId,
+      includeInactive: true
+    });
+    if (!rows.length) {
+      return res.status(404).json({
+        message: 'Category not found'
+      });
+    }
+    return res.json(rows[0]);
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
+  }
+});
 router.get('/', async (req, res) => {
   try {
-    noStore(res)
-
-    const requestedGender =
-      String(
-        req.query.gender || ''
-      ).trim()
-
-    const gender =
-      normGender(
-        requestedGender
-      )
-
-    if (
-      requestedGender &&
-      !gender
-    ) {
+    noStore(res);
+    const requestedGender = String(req.query.gender || '').trim();
+    const gender = normGender(requestedGender);
+    if (requestedGender && !gender) {
       return res.status(400).json({
         message: 'Invalid gender'
-      })
+      });
     }
-
-    const rows =
-      await getCategoryRows({
-        gender
-      })
-
-    return res.json(rows)
+    const rows = await getCategoryRows({
+      gender
+    });
+    return res.json(rows);
   } catch (error) {
     return res.status(500).json({
-      message:
-        error.message ||
-        'Server error'
-    })
+      message: error.message || 'Server error'
+    });
   }
-})
-
+});
 router.post('/', async (req, res) => {
-  const name =
-    cleanName(
-      req.body?.name
-    )
-
-  const parentId =
-    parsePositiveInt(
-      req.body?.parent_id
-    )
-
-  const sortOrderProvided =
-    req.body?.sort_order !== '' &&
-    req.body?.sort_order != null
-
-  const requestedSortOrder =
-    parseNonNegativeInt(
-      req.body?.sort_order
-    )
-
+  const name = cleanName(req.body?.name);
+  const parentId = parsePositiveInt(req.body?.parent_id);
+  const sortOrderProvided = req.body?.sort_order !== '' && req.body?.sort_order != null;
+  const requestedSortOrder = parseNonNegativeInt(req.body?.sort_order);
   if (!name) {
     return res.status(400).json({
-      message:
-        'Category name is required'
-    })
+      message: 'Category name is required'
+    });
   }
-
   if (!parentId) {
     return res.status(400).json({
-      message:
-        'Parent category is required'
-    })
+      message: 'Parent category is required'
+    });
   }
-
-  if (
-    sortOrderProvided &&
-    requestedSortOrder == null
-  ) {
+  if (sortOrderProvided && requestedSortOrder == null) {
     return res.status(400).json({
-      message:
-        'Sort order must be zero or a positive number'
-    })
+      message: 'Sort order must be zero or a positive number'
+    });
   }
-
-  const slug = slugify(name)
-
+  const slug = slugify(name);
   if (!slug) {
     return res.status(400).json({
-      message:
-        'Invalid category name'
-    })
+      message: 'Invalid category name'
+    });
   }
-
-  const client =
-    await pool.connect()
-
+  const client = await pool.connect();
   try {
-    await client.query('BEGIN')
-
-    const parentResult =
-      await client.query(
-        `
+    await client.query('BEGIN');
+    const parentResult = await client.query(`
           SELECT
             id,
             parent_id,
@@ -721,91 +492,45 @@ router.post('/', async (req, res) => {
           FROM product_categories
           WHERE id = $1
           FOR UPDATE
-        `,
-        [parentId]
-      )
-
-    const parent =
-      parentResult.rows[0]
-
+        `, [parentId]);
+    const parent = parentResult.rows[0];
     if (!parent) {
-      await client.query(
-        'ROLLBACK'
-      )
-
+      await client.query('ROLLBACK');
       return res.status(404).json({
-        message:
-          'Parent category not found'
-      })
+        message: 'Parent category not found'
+      });
     }
-
     if (!parent.is_active) {
-      await client.query(
-        'ROLLBACK'
-      )
-
+      await client.query('ROLLBACK');
       return res.status(400).json({
-        message:
-          'Cannot add a category under an inactive parent'
-      })
+        message: 'Cannot add a category under an inactive parent'
+      });
     }
-
-    const parentProducts =
-      await client.query(
-        `
+    const parentProducts = await client.query(`
           SELECT EXISTS (
             SELECT 1
             FROM products
             WHERE category_id = $1
               AND is_active = TRUE
           ) AS has_products
-        `,
-        [parentId]
-      )
-
-    const parentHasProducts =
-      Boolean(
-        parentProducts.rows[0]
-          ?.has_products
-      )
-
-    const duplicateResult =
-      await client.query(
-        `
+        `, [parentId]);
+    const parentHasProducts = Boolean(parentProducts.rows[0]?.has_products);
+    const duplicateResult = await client.query(`
           SELECT id
           FROM product_categories
           WHERE parent_id = $1
             AND LOWER(slug) = LOWER($2)
           LIMIT 1
-        `,
-        [
-          parentId,
-          slug
-        ]
-      )
-
-    if (
-      duplicateResult.rows.length
-    ) {
-      await client.query(
-        'ROLLBACK'
-      )
-
+        `, [parentId, slug]);
+    if (duplicateResult.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
-        message:
-          'A category with this name already exists under the selected parent'
-      })
+        message: 'A category with this name already exists under the selected parent'
+      });
     }
-
-    let existingProductsCategoryId = null
-
-    if (
-      parentHasProducts &&
-      slug !== 'uncategorized'
-    ) {
-      const existingProductsCategoryResult =
-        await client.query(
-          `
+    let existingProductsCategoryId = null;
+    if (parentHasProducts && slug !== 'uncategorized') {
+      const existingProductsCategoryResult = await client.query(`
             SELECT
               id,
               is_active
@@ -814,20 +539,12 @@ router.post('/', async (req, res) => {
               AND LOWER(slug) = 'uncategorized'
             LIMIT 1
             FOR UPDATE
-          `,
-          [parentId]
-        )
-
-      const existingProductsCategory =
-        existingProductsCategoryResult.rows[0]
-
+          `, [parentId]);
+      const existingProductsCategory = existingProductsCategoryResult.rows[0];
       if (existingProductsCategory) {
-        existingProductsCategoryId =
-          existingProductsCategory.id
-
+        existingProductsCategoryId = existingProductsCategory.id;
         if (!existingProductsCategory.is_active) {
-          await client.query(
-            `
+          await client.query(`
               UPDATE product_categories
               SET
                 is_active = TRUE,
@@ -835,18 +552,10 @@ router.post('/', async (req, res) => {
                 level = $3,
                 updated_at = NOW()
               WHERE id = $1
-            `,
-            [
-              existingProductsCategoryId,
-              parent.gender,
-              Number(parent.level || 0) + 1
-            ]
-          )
+            `, [existingProductsCategoryId, parent.gender, Number(parent.level || 0) + 1]);
         }
       } else {
-        const fallbackSortResult =
-          await client.query(
-            `
+        const fallbackSortResult = await client.query(`
               SELECT
                 COALESCE(
                   MIN(sort_order),
@@ -854,13 +563,8 @@ router.post('/', async (req, res) => {
                 ) - 10 AS fallback_sort_order
               FROM product_categories
               WHERE parent_id = $1
-            `,
-            [parentId]
-          )
-
-        const fallbackInsertResult =
-          await client.query(
-            `
+            `, [parentId]);
+        const fallbackInsertResult = await client.query(`
               INSERT INTO product_categories (
                 parent_id,
                 gender,
@@ -880,43 +584,18 @@ router.post('/', async (req, res) => {
                 TRUE
               )
               RETURNING id
-            `,
-            [
-              parentId,
-              parent.gender,
-              Number(parent.level || 0) + 1,
-              Number(
-                fallbackSortResult.rows[0]
-                  ?.fallback_sort_order ||
-                0
-              )
-            ]
-          )
-
-        existingProductsCategoryId =
-          fallbackInsertResult.rows[0].id
+            `, [parentId, parent.gender, Number(parent.level || 0) + 1, Number(fallbackSortResult.rows[0]?.fallback_sort_order || 0)]);
+        existingProductsCategoryId = fallbackInsertResult.rows[0].id;
       }
-
-      await client.query(
-        `
+      await client.query(`
           UPDATE products
           SET category_id = $2
           WHERE category_id = $1
-        `,
-        [
-          parentId,
-          existingProductsCategoryId
-        ]
-      )
+        `, [parentId, existingProductsCategoryId]);
     }
-
-    let sortOrder =
-      requestedSortOrder
-
+    let sortOrder = requestedSortOrder;
     if (sortOrder == null) {
-      const sortResult =
-        await client.query(
-          `
+      const sortResult = await client.query(`
             SELECT
               COALESCE(
                 MAX(sort_order),
@@ -924,21 +603,10 @@ router.post('/', async (req, res) => {
               ) + 10 AS next_sort_order
             FROM product_categories
             WHERE parent_id = $1
-          `,
-          [parentId]
-        )
-
-      sortOrder =
-        Number(
-          sortResult.rows[0]
-            ?.next_sort_order ||
-          10
-        )
+          `, [parentId]);
+      sortOrder = Number(sortResult.rows[0]?.next_sort_order || 10);
     }
-
-    const insertResult =
-      await client.query(
-        `
+    const insertResult = await client.query(`
           INSERT INTO product_categories (
             parent_id,
             gender,
@@ -958,239 +626,120 @@ router.post('/', async (req, res) => {
             TRUE
           )
           RETURNING id
-        `,
-        [
-          parentId,
-          parent.gender,
-          name,
-          slug,
-          Number(
-            parent.level || 0
-          ) + 1,
-          sortOrder
-        ]
-      )
-
-    if (
-      parentHasProducts &&
-      slug === 'uncategorized'
-    ) {
-      await client.query(
-        `
+        `, [parentId, parent.gender, name, slug, Number(parent.level || 0) + 1, sortOrder]);
+    if (parentHasProducts && slug === 'uncategorized') {
+      await client.query(`
           UPDATE products
           SET category_id = $2
           WHERE category_id = $1
-        `,
-        [
-          parentId,
-          insertResult.rows[0].id
-        ]
-      )
+        `, [parentId, insertResult.rows[0].id]);
     }
-
-    await client.query('COMMIT')
-
-    const rows =
-      await getCategoryRows({
-        id:
-          insertResult.rows[0].id,
-        includeInactive: true
-      })
-
-    return res
-      .status(201)
-      .json(rows[0])
+    await client.query('COMMIT');
+    const rows = await getCategoryRows({
+      id: insertResult.rows[0].id,
+      includeInactive: true
+    });
+    return res.status(201).json(rows[0]);
   } catch (error) {
     try {
-      await client.query(
-        'ROLLBACK'
-      )
+      await client.query('ROLLBACK');
     } catch {}
-
     if (error.code === '23505') {
       return res.status(409).json({
-        message:
-          'A category with this slug already exists under the selected parent'
-      })
+        message: 'A category with this slug already exists under the selected parent'
+      });
     }
-
     return res.status(500).json({
-      message:
-        error.message ||
-        'Server error'
-    })
+      message: error.message || 'Server error'
+    });
   } finally {
-    client.release()
+    client.release();
   }
-})
-
-router.put(
-  '/:id(\\d+)',
-  async (req, res) => {
-    const categoryId =
-      parsePositiveInt(
-        req.params.id
-      )
-
-    const name =
-      cleanName(
-        req.body?.name
-      )
-
-    const parentId =
-      parsePositiveInt(
-        req.body?.parent_id
-      )
-
-    const sortOrder =
-      parseNonNegativeInt(
-        req.body?.sort_order
-      )
-
-    if (!categoryId) {
-      return res.status(400).json({
-        message:
-          'Invalid category id'
-      })
-    }
-
-    if (!name) {
-      return res.status(400).json({
-        message:
-          'Category name is required'
-      })
-    }
-
-    if (!parentId) {
-      return res.status(400).json({
-        message:
-          'Parent category is required'
-      })
-    }
-
-    if (sortOrder == null) {
-      return res.status(400).json({
-        message:
-          'Sort order must be zero or a positive number'
-      })
-    }
-
-    if (
-      categoryId === parentId
-    ) {
-      return res.status(400).json({
-        message:
-          'A category cannot be its own parent'
-      })
-    }
-
-    const slug =
-      slugify(name)
-
-    if (!slug) {
-      return res.status(400).json({
-        message:
-          'Invalid category name'
-      })
-    }
-
-    const client =
-      await pool.connect()
-
-    try {
-      await client.query('BEGIN')
-
-      const categoryResult =
-        await client.query(
-          `
+});
+router.put('/:id(\\d+)', async (req, res) => {
+  const categoryId = parsePositiveInt(req.params.id);
+  const name = cleanName(req.body?.name);
+  const parentId = parsePositiveInt(req.body?.parent_id);
+  const sortOrder = parseNonNegativeInt(req.body?.sort_order);
+  if (!categoryId) {
+    return res.status(400).json({
+      message: 'Invalid category id'
+    });
+  }
+  if (!name) {
+    return res.status(400).json({
+      message: 'Category name is required'
+    });
+  }
+  if (!parentId) {
+    return res.status(400).json({
+      message: 'Parent category is required'
+    });
+  }
+  if (sortOrder == null) {
+    return res.status(400).json({
+      message: 'Sort order must be zero or a positive number'
+    });
+  }
+  if (categoryId === parentId) {
+    return res.status(400).json({
+      message: 'A category cannot be its own parent'
+    });
+  }
+  const slug = slugify(name);
+  if (!slug) {
+    return res.status(400).json({
+      message: 'Invalid category name'
+    });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const categoryResult = await client.query(`
             SELECT *
             FROM product_categories
             WHERE id = $1
             FOR UPDATE
-          `,
-          [categoryId]
-        )
-
-      const category =
-        categoryResult.rows[0]
-
-      if (!category) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(404).json({
-          message:
-            'Category not found'
-        })
-      }
-
-      if (
-        category.parent_id == null
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'Root categories cannot be edited'
-        })
-      }
-
-      const parentResult =
-        await client.query(
-          `
+          `, [categoryId]);
+    const category = categoryResult.rows[0];
+    if (!category) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        message: 'Category not found'
+      });
+    }
+    if (category.parent_id == null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Root categories cannot be edited'
+      });
+    }
+    const parentResult = await client.query(`
             SELECT *
             FROM product_categories
             WHERE id = $1
             FOR UPDATE
-          `,
-          [parentId]
-        )
-
-      const parent =
-        parentResult.rows[0]
-
-      if (!parent) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(404).json({
-          message:
-            'Parent category not found'
-        })
-      }
-
-      if (!parent.is_active) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'Cannot move a category under an inactive parent'
-        })
-      }
-
-      if (
-        parent.gender !==
-        category.gender
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'A category cannot be moved to another gender'
-        })
-      }
-
-      const descendantResult =
-        await client.query(
-          `
+          `, [parentId]);
+    const parent = parentResult.rows[0];
+    if (!parent) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        message: 'Parent category not found'
+      });
+    }
+    if (!parent.is_active) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Cannot move a category under an inactive parent'
+      });
+    }
+    if (parent.gender !== category.gender) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'A category cannot be moved to another gender'
+      });
+    }
+    const descendantResult = await client.query(`
             WITH RECURSIVE descendants AS (
               SELECT id
               FROM product_categories
@@ -1208,103 +757,46 @@ router.put(
               FROM descendants
               WHERE id = $2
             ) AS found
-          `,
-          [
-            categoryId,
-            parentId
-          ]
-        )
-
-      if (
-        descendantResult.rows[0]
-          ?.found
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'A category cannot be moved under one of its child categories'
-        })
-      }
-
-      if (
-        Number(
-          category.parent_id
-        ) !== parentId
-      ) {
-        const parentProducts =
-          await client.query(
-            `
+          `, [categoryId, parentId]);
+    if (descendantResult.rows[0]?.found) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'A category cannot be moved under one of its child categories'
+      });
+    }
+    if (Number(category.parent_id) !== parentId) {
+      const parentProducts = await client.query(`
               SELECT EXISTS (
                 SELECT 1
                 FROM products
                 WHERE category_id = $1
                   AND is_active = TRUE
               ) AS has_products
-            `,
-            [parentId]
-          )
-
-        if (
-          parentProducts.rows[0]
-            ?.has_products
-        ) {
-          await client.query(
-            'ROLLBACK'
-          )
-
-          return res.status(400).json({
-            message:
-              'The selected parent category already contains products'
-          })
-        }
+            `, [parentId]);
+      if (parentProducts.rows[0]?.has_products) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          message: 'The selected parent category already contains products'
+        });
       }
-
-      const duplicateResult =
-        await client.query(
-          `
+    }
+    const duplicateResult = await client.query(`
             SELECT id
             FROM product_categories
             WHERE parent_id = $1
               AND LOWER(slug) = LOWER($2)
               AND id <> $3
             LIMIT 1
-          `,
-          [
-            parentId,
-            slug,
-            categoryId
-          ]
-        )
-
-      if (
-        duplicateResult.rows.length
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(409).json({
-          message:
-            'A category with this name already exists under the selected parent'
-        })
-      }
-
-      const nextLevel =
-        Number(
-          parent.level || 0
-        ) + 1
-
-      const levelDifference =
-        nextLevel -
-        Number(
-          category.level || 0
-        )
-
-      await client.query(
-        `
+          `, [parentId, slug, categoryId]);
+    if (duplicateResult.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        message: 'A category with this name already exists under the selected parent'
+      });
+    }
+    const nextLevel = Number(parent.level || 0) + 1;
+    const levelDifference = nextLevel - Number(category.level || 0);
+    await client.query(`
           UPDATE product_categories
           SET
             parent_id = $2,
@@ -1314,23 +806,9 @@ router.put(
             level = $6,
             sort_order = $7
           WHERE id = $1
-        `,
-        [
-          categoryId,
-          parentId,
-          parent.gender,
-          name,
-          slug,
-          nextLevel,
-          sortOrder
-        ]
-      )
-
-      if (
-        levelDifference !== 0
-      ) {
-        await client.query(
-          `
+        `, [categoryId, parentId, parent.gender, name, slug, nextLevel, sortOrder]);
+    if (levelDifference !== 0) {
+      await client.query(`
             WITH RECURSIVE descendants AS (
               SELECT id
               FROM product_categories
@@ -1350,157 +828,81 @@ router.put(
               SELECT id
               FROM descendants
             )
-          `,
-          [
-            categoryId,
-            levelDifference
-          ]
-        )
-      }
-
-      await client.query('COMMIT')
-
-      const rows =
-        await getCategoryRows({
-          id: categoryId,
-          includeInactive: true
-        })
-
-      return res.json(rows[0])
-    } catch (error) {
-      try {
-        await client.query(
-          'ROLLBACK'
-        )
-      } catch {}
-
-      if (
-        error.code === '23505'
-      ) {
-        return res.status(409).json({
-          message:
-            'A category with this slug already exists under the selected parent'
-        })
-      }
-
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    } finally {
-      client.release()
+          `, [categoryId, levelDifference]);
     }
-  }
-)
-
-router.patch(
-  '/:id(\\d+)/status',
-  async (req, res) => {
-    const categoryId =
-      parsePositiveInt(
-        req.params.id
-      )
-
-    const isActive =
-      req.body?.is_active
-
-    const cascade =
-      req.body?.cascade === true
-
-    if (!categoryId) {
-      return res.status(400).json({
-        message:
-          'Invalid category id'
-      })
-    }
-
-    if (
-      typeof isActive !==
-      'boolean'
-    ) {
-      return res.status(400).json({
-        message:
-          'is_active must be true or false'
-      })
-    }
-
-    const client =
-      await pool.connect()
-
+    await client.query('COMMIT');
+    const rows = await getCategoryRows({
+      id: categoryId,
+      includeInactive: true
+    });
+    return res.json(rows[0]);
+  } catch (error) {
     try {
-      await client.query('BEGIN')
-
-      const categoryResult =
-        await client.query(
-          `
+      await client.query('ROLLBACK');
+    } catch {}
+    if (error.code === '23505') {
+      return res.status(409).json({
+        message: 'A category with this slug already exists under the selected parent'
+      });
+    }
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
+  } finally {
+    client.release();
+  }
+});
+router.patch('/:id(\\d+)/status', async (req, res) => {
+  const categoryId = parsePositiveInt(req.params.id);
+  const isActive = req.body?.is_active;
+  const cascade = req.body?.cascade === true;
+  if (!categoryId) {
+    return res.status(400).json({
+      message: 'Invalid category id'
+    });
+  }
+  if (typeof isActive !== 'boolean') {
+    return res.status(400).json({
+      message: 'is_active must be true or false'
+    });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const categoryResult = await client.query(`
             SELECT *
             FROM product_categories
             WHERE id = $1
             FOR UPDATE
-          `,
-          [categoryId]
-        )
-
-      const category =
-        categoryResult.rows[0]
-
-      if (!category) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(404).json({
-          message:
-            'Category not found'
-        })
-      }
-
-      if (
-        category.parent_id == null
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'Root categories cannot be deactivated or restored'
-        })
-      }
-
-      if (isActive) {
-        const parentResult =
-          await client.query(
-            `
+          `, [categoryId]);
+    const category = categoryResult.rows[0];
+    if (!category) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        message: 'Category not found'
+      });
+    }
+    if (category.parent_id == null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Root categories cannot be deactivated or restored'
+      });
+    }
+    if (isActive) {
+      const parentResult = await client.query(`
               SELECT is_active
               FROM product_categories
               WHERE id = $1
               LIMIT 1
-            `,
-            [
-              category.parent_id
-            ]
-          )
-
-        if (
-          !parentResult.rows[0]
-            ?.is_active
-        ) {
-          await client.query(
-            'ROLLBACK'
-          )
-
-          return res.status(400).json({
-            message:
-              'Restore the parent category first'
-          })
-        }
+            `, [category.parent_id]);
+      if (!parentResult.rows[0]?.is_active) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          message: 'Restore the parent category first'
+        });
       }
-
-      const descendantResult =
-        await client.query(
-          `
+    }
+    const descendantResult = await client.query(`
             WITH RECURSIVE descendants AS (
               SELECT
                 id,
@@ -1523,45 +925,17 @@ router.patch(
                 WHERE is_active = TRUE
               )::int AS active_descendant_count
             FROM descendants
-          `,
-          [categoryId]
-        )
-
-      const descendantCount =
-        Number(
-          descendantResult.rows[0]
-            ?.descendant_count ||
-          0
-        )
-
-      const activeDescendantCount =
-        Number(
-          descendantResult.rows[0]
-            ?.active_descendant_count ||
-          0
-        )
-
-      if (
-        !isActive &&
-        activeDescendantCount > 0 &&
-        !cascade
-      ) {
-        await client.query(
-          'ROLLBACK'
-        )
-
-        return res.status(400).json({
-          message:
-            'This category has active child categories. Select the cascade option to deactivate the full category tree'
-        })
-      }
-
-      if (
-        cascade &&
-        descendantCount > 0
-      ) {
-        await client.query(
-          `
+          `, [categoryId]);
+    const descendantCount = Number(descendantResult.rows[0]?.descendant_count || 0);
+    const activeDescendantCount = Number(descendantResult.rows[0]?.active_descendant_count || 0);
+    if (!isActive && activeDescendantCount > 0 && !cascade) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'This category has active child categories. Select the cascade option to deactivate the full category tree'
+      });
+    }
+    if (cascade && descendantCount > 0) {
+      await client.query(`
             WITH RECURSIVE subtree AS (
               SELECT id
               FROM product_categories
@@ -1580,51 +954,29 @@ router.patch(
               SELECT id
               FROM subtree
             )
-          `,
-          [
-            categoryId,
-            isActive
-          ]
-        )
-      } else {
-        await client.query(
-          `
+          `, [categoryId, isActive]);
+    } else {
+      await client.query(`
             UPDATE product_categories
             SET is_active = $2
             WHERE id = $1
-          `,
-          [
-            categoryId,
-            isActive
-          ]
-        )
-      }
-
-      await client.query('COMMIT')
-
-      const rows =
-        await getCategoryRows({
-          id: categoryId,
-          includeInactive: true
-        })
-
-      return res.json(rows[0])
-    } catch (error) {
-      try {
-        await client.query(
-          'ROLLBACK'
-        )
-      } catch {}
-
-      return res.status(500).json({
-        message:
-          error.message ||
-          'Server error'
-      })
-    } finally {
-      client.release()
+          `, [categoryId, isActive]);
     }
+    await client.query('COMMIT');
+    const rows = await getCategoryRows({
+      id: categoryId,
+      includeInactive: true
+    });
+    return res.json(rows[0]);
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    return res.status(500).json({
+      message: error.message || 'Server error'
+    });
+  } finally {
+    client.release();
   }
-)
-
-module.exports = router
+});
+module.exports = router;

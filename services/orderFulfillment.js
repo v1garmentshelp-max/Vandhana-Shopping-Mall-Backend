@@ -1,51 +1,49 @@
-const { randomUUID } = require('crypto')
-const Shiprocket = require('./shiprocketService')
+const {
+  randomUUID
+} = require('crypto');
+const Shiprocket = require('./shiprocketService');
 const {
   bestOrderStatus,
   collectStatusValues,
   extractShipmentInfo,
   syncSaleStatus,
   syncShipmentByIdentifiers
-} = require('./orderStatusSync')
-
-const FORCE_BRANCH_ID =
-  process.env.SHIPROCKET_FORCE_BRANCH_ID != null && String(process.env.SHIPROCKET_FORCE_BRANCH_ID).trim() !== ''
-    ? Number(process.env.SHIPROCKET_FORCE_BRANCH_ID)
-    : null
-
+} = require('./orderStatusSync');
+const FORCE_BRANCH_ID = process.env.SHIPROCKET_FORCE_BRANCH_ID != null && String(process.env.SHIPROCKET_FORCE_BRANCH_ID).trim() !== '' ? Number(process.env.SHIPROCKET_FORCE_BRANCH_ID) : null;
 function haversineKm(a, b) {
-  const toRad = (d) => (d * Math.PI) / 180
-  const R = 6371
-  const dLat = toRad((b.lat || 0) - (a.lat || 0))
-  const dLon = toRad((b.lng || 0) - (a.lng || 0))
-  const lat1 = toRad(a.lat || 0)
-  const lat2 = toRad(b.lat || 0)
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(h))
+  const toRad = d => d * Math.PI / 180;
+  const R = 6371;
+  const dLat = toRad((b.lat || 0) - (a.lat || 0));
+  const dLon = toRad((b.lng || 0) - (a.lng || 0));
+  const lat1 = toRad(a.lat || 0);
+  const lat2 = toRad(b.lat || 0);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
-
 async function customerLocFromSale(sale, db) {
   if (sale.shipping_address?.lat && sale.shipping_address?.lng) {
     return {
       lat: Number(sale.shipping_address.lat),
       lng: Number(sale.shipping_address.lng)
-    }
+    };
   }
-
-  const pc = sale.shipping_address?.pincode || sale.pincode || null
-  if (!pc) return { lat: null, lng: null }
-
-  const { rows } = await db.query(
-    'SELECT AVG(latitude)::float lat, AVG(longitude)::float lng FROM branches WHERE pincode=$1',
-    [pc]
-  )
-
-  return { lat: rows[0]?.lat || null, lng: rows[0]?.lng || null }
+  const pc = sale.shipping_address?.pincode || sale.pincode || null;
+  if (!pc) return {
+    lat: null,
+    lng: null
+  };
+  const {
+    rows
+  } = await db.query('SELECT AVG(latitude)::float lat, AVG(longitude)::float lng FROM branches WHERE pincode=$1', [pc]);
+  return {
+    lat: rows[0]?.lat || null,
+    lng: rows[0]?.lng || null
+  };
 }
-
 async function candidateBranches(db, variantId, qty) {
-  const { rows } = await db.query(
-    `SELECT
+  const {
+    rows
+  } = await db.query(`SELECT
        b.id,
        b.latitude::float AS lat,
        b.longitude::float AS lng,
@@ -61,49 +59,38 @@ async function candidateBranches(db, variantId, qty) {
        AND v.is_active = TRUE
        AND p.is_active = TRUE
        AND (s.on_hand - s.reserved) >= $2
-       AND EXISTS (SELECT 1 FROM shiprocket_warehouses w WHERE w.branch_id = b.id)`,
-    [variantId, qty]
-  )
-
-  return rows
+       AND EXISTS (SELECT 1 FROM shiprocket_warehouses w WHERE w.branch_id = b.id)`, [variantId, qty]);
+  return rows;
 }
-
 function pickBestBranch(rows, sale, customerLoc) {
-  if (!rows.length) return null
-
+  if (!rows.length) return null;
   if (FORCE_BRANCH_ID != null) {
-    const forced = rows.find((r) => Number(r.id) === Number(FORCE_BRANCH_ID))
-    if (forced) return forced.id
-    return null
+    const forced = rows.find(r => Number(r.id) === Number(FORCE_BRANCH_ID));
+    if (forced) return forced.id;
+    return null;
   }
-
   if (sale.branch_id) {
-    const exact = rows.find((r) => Number(r.id) === Number(sale.branch_id))
-    if (exact) return exact.id
+    const exact = rows.find(r => Number(r.id) === Number(sale.branch_id));
+    if (exact) return exact.id;
   }
-
-  const pincode = sale.shipping_address?.pincode || sale.pincode || null
-  const samePin = pincode ? rows.filter((r) => String(r.pincode) === String(pincode)) : []
-  const poolRows = samePin.length ? samePin : rows
-
+  const pincode = sale.shipping_address?.pincode || sale.pincode || null;
+  const samePin = pincode ? rows.filter(r => String(r.pincode) === String(pincode)) : [];
+  const poolRows = samePin.length ? samePin : rows;
   if (customerLoc.lat != null && customerLoc.lng != null) {
-    const sorted = poolRows
-      .map((r) => ({
-        r,
-        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
-      }))
-      .sort((a, b) => a.d - b.d)
-
-    return sorted[0].r.id
+    const sorted = poolRows.map(r => ({
+      r,
+      d: haversineKm({
+        lat: r.lat,
+        lng: r.lng
+      }, customerLoc)
+    })).sort((a, b) => a.d - b.d);
+    return sorted[0].r.id;
   }
-
-  return poolRows[0].id
+  return poolRows[0].id;
 }
-
 function normalizeShipItem(it) {
-  const variantId = Number(it.variant_id ?? it.product_id)
-  const qty = Number(it.qty ?? it.quantity ?? 1)
-
+  const variantId = Number(it.variant_id ?? it.product_id);
+  const qty = Number(it.qty ?? it.quantity ?? 1);
   return {
     variant_id: variantId,
     qty,
@@ -114,165 +101,128 @@ function normalizeShipItem(it) {
     image_url: it.image_url ?? null,
     ean_code: it.ean_code ?? it.ean ?? it.barcode_value ?? null,
     name: it.name ?? it.product_name ?? null
-  }
+  };
 }
-
 function groupCommittedSale(sale) {
-  const branchId = Number(sale?.branch_id || 0)
-  if (!branchId) throw new Error('branch_id is required for committed shipment fulfillment')
-
-  const items = (sale.items || []).map(normalizeShipItem)
-
+  const branchId = Number(sale?.branch_id || 0);
+  if (!branchId) throw new Error('branch_id is required for committed shipment fulfillment');
+  const items = (sale.items || []).map(normalizeShipItem);
   for (const item of items) {
     if (!item.variant_id || !item.qty || item.qty <= 0) {
-      throw new Error(`Invalid item for variant ${item.variant_id || 'UNKNOWN'}`)
+      throw new Error(`Invalid item for variant ${item.variant_id || 'UNKNOWN'}`);
     }
   }
-
   return {
-    groups: [{ branch_id: branchId, items }],
+    groups: [{
+      branch_id: branchId,
+      items
+    }],
     decremented: []
-  }
+  };
 }
-
 async function planShipmentsAndDecrementStock(sale, pool) {
-  const client = await pool.connect()
-  const decremented = []
-
+  const client = await pool.connect();
+  const decremented = [];
   try {
-    await client.query('BEGIN')
-
-    const loc = await customerLocFromSale(sale, client)
-    const groups = {}
-
+    await client.query('BEGIN');
+    const loc = await customerLocFromSale(sale, client);
+    const groups = {};
     for (const rawIt of sale.items || []) {
-      const it = normalizeShipItem(rawIt)
-      const variantId = Number(it.variant_id)
-      const qty = Number(it.qty)
-
-      if (!variantId || qty <= 0) throw new Error(`Invalid item for variant ${rawIt?.variant_id ?? rawIt?.product_id}`)
-
-      const rows = await candidateBranches(client, variantId, qty)
-      const branchId = pickBestBranch(rows, sale, loc)
-
-      if (!branchId) throw new Error(`Out of stock for variant ${variantId}`)
-
-      const stockQ = await client.query(
-        `SELECT on_hand, reserved
+      const it = normalizeShipItem(rawIt);
+      const variantId = Number(it.variant_id);
+      const qty = Number(it.qty);
+      if (!variantId || qty <= 0) throw new Error(`Invalid item for variant ${rawIt?.variant_id ?? rawIt?.product_id}`);
+      const rows = await candidateBranches(client, variantId, qty);
+      const branchId = pickBestBranch(rows, sale, loc);
+      if (!branchId) throw new Error(`Out of stock for variant ${variantId}`);
+      const stockQ = await client.query(`SELECT on_hand, reserved
          FROM branch_variant_stock
          WHERE branch_id=$1 AND variant_id=$2
-         FOR UPDATE`,
-        [branchId, variantId]
-      )
-
-      if (!stockQ.rowCount) throw new Error(`Stock row missing for variant ${variantId} in branch ${branchId}`)
-
-      const onHand = Number(stockQ.rows[0].on_hand || 0)
-      const reserved = Number(stockQ.rows[0].reserved || 0)
-
-      if (onHand - reserved < qty) throw new Error(`Out of stock for variant ${variantId}`)
-
-      await client.query(
-        `UPDATE branch_variant_stock
+         FOR UPDATE`, [branchId, variantId]);
+      if (!stockQ.rowCount) throw new Error(`Stock row missing for variant ${variantId} in branch ${branchId}`);
+      const onHand = Number(stockQ.rows[0].on_hand || 0);
+      const reserved = Number(stockQ.rows[0].reserved || 0);
+      if (onHand - reserved < qty) throw new Error(`Out of stock for variant ${variantId}`);
+      await client.query(`UPDATE branch_variant_stock
          SET on_hand = GREATEST(on_hand - $3, 0)
-         WHERE branch_id=$1 AND variant_id=$2`,
-        [branchId, variantId, qty]
-      )
-
-      decremented.push({ branch_id: Number(branchId), variant_id: Number(variantId), qty: Number(qty) })
-
-      if (!groups[branchId]) groups[branchId] = []
-      groups[branchId].push(it)
+         WHERE branch_id=$1 AND variant_id=$2`, [branchId, variantId, qty]);
+      decremented.push({
+        branch_id: Number(branchId),
+        variant_id: Number(variantId),
+        qty: Number(qty)
+      });
+      if (!groups[branchId]) groups[branchId] = [];
+      groups[branchId].push(it);
     }
-
-    await client.query('COMMIT')
-
+    await client.query('COMMIT');
     return {
       groups: Object.entries(groups).map(([branch_id, items]) => ({
         branch_id: Number(branch_id),
         items
       })),
       decremented
-    }
+    };
   } catch (e) {
     try {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK');
     } catch {}
-
-    throw e
+    throw e;
   } finally {
     try {
-      client.release()
+      client.release();
     } catch {}
   }
 }
-
 async function restoreStock(pool, decremented) {
-  if (!Array.isArray(decremented) || !decremented.length) return
-
-  const client = await pool.connect()
-
+  if (!Array.isArray(decremented) || !decremented.length) return;
+  const client = await pool.connect();
   try {
-    await client.query('BEGIN')
-
+    await client.query('BEGIN');
     for (const d of decremented) {
-      await client.query(
-        `UPDATE branch_variant_stock
+      await client.query(`UPDATE branch_variant_stock
          SET on_hand = on_hand + $3
-         WHERE branch_id=$1 AND variant_id=$2`,
-        [Number(d.branch_id), Number(d.variant_id), Number(d.qty)]
-      )
+         WHERE branch_id=$1 AND variant_id=$2`, [Number(d.branch_id), Number(d.variant_id), Number(d.qty)]);
     }
-
-    await client.query('COMMIT')
+    await client.query('COMMIT');
   } catch (e) {
     try {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK');
     } catch {}
-
-    throw e
+    throw e;
   } finally {
     try {
-      client.release()
+      client.release();
     } catch {}
   }
 }
-
 async function fulfillOrderWithShiprocket(sale, pool) {
-  const storedSource = sale.source || (await pool.query('SELECT source FROM sales WHERE id=$1', [sale.id])).rows[0]?.source
+  const storedSource = sale.source || (await pool.query('SELECT source FROM sales WHERE id=$1', [sale.id])).rows[0]?.source;
   if (String(storedSource).toUpperCase() === 'WEB') {
-    const { createWorkflow } = require('./orderShippingWorkflow')
-    const result = await createWorkflow(pool).connect(sale.id, { fresh: sale.stock_already_committed === true })
-    return result.shipments
+    const {
+      createWorkflow
+    } = require('./orderShippingWorkflow');
+    const result = await createWorkflow(pool).connect(sale.id, {
+      fresh: sale.stock_already_committed === true
+    });
+    return result.shipments;
   }
-
-  const sr = new Shiprocket({ pool })
-  await sr.init()
-
-  let decremented = []
-
+  const sr = new Shiprocket({
+    pool
+  });
+  await sr.init();
+  let decremented = [];
   try {
-    const planned = sale?.stock_already_committed
-      ? groupCommittedSale(sale)
-      : await planShipmentsAndDecrementStock(sale, pool)
-    decremented = planned.decremented || []
-
-    const groups = planned.groups || []
-    const created = []
-    const manifestShipmentIds = []
-
-    const payable =
-      typeof sale.totals === 'object' && sale.totals !== null ? Number(sale.totals.payable || 0) : 0
-
-    const paymentMethodForShiprocket =
-      String(sale.payment_status || '').toUpperCase() === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
-
+    const planned = sale?.stock_already_committed ? groupCommittedSale(sale) : await planShipmentsAndDecrementStock(sale, pool);
+    decremented = planned.decremented || [];
+    const groups = planned.groups || [];
+    const created = [];
+    const manifestShipmentIds = [];
+    const payable = typeof sale.totals === 'object' && sale.totals !== null ? Number(sale.totals.payable || 0) : 0;
+    const paymentMethodForShiprocket = String(sale.payment_status || '').toUpperCase() === 'COD' && payable > 0 ? 'COD' : 'Prepaid';
     for (const group of groups) {
-      const wh = (await pool.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1', [group.branch_id])).rows[0]
-      if (!wh) throw new Error(`No pickup mapped for branch ${group.branch_id}`)
-
-      const channelOrderId = `${sale.id}-${group.branch_id}`
-
+      const wh = (await pool.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1', [group.branch_id])).rows[0];
+      if (!wh) throw new Error(`No pickup mapped for branch ${group.branch_id}`);
+      const channelOrderId = `${sale.id}-${group.branch_id}`;
       const data = await sr.createOrderShipment({
         channel_order_id: channelOrderId,
         pickup_location: wh.name,
@@ -292,41 +242,38 @@ async function fulfillOrderWithShiprocket(sale, pool) {
             pincode: sale.shipping_address?.pincode || sale.pincode || ''
           }
         }
-      })
-
-      const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || data?.data?.shipment_id || null
-      const orderId = data?.order_id || data?.data?.order_id || null
-
-      let awb = null
-      let labelUrl = null
-      let trackingUrl = data?.tracking_url || data?.data?.tracking_url || null
-      let rawStatus = 'CONFIRMED'
-      let shipmentStatus = 'CONFIRMED'
-
+      });
+      const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || data?.data?.shipment_id || null;
+      const orderId = data?.order_id || data?.data?.order_id || null;
+      let awb = null;
+      let labelUrl = null;
+      let trackingUrl = data?.tracking_url || data?.data?.tracking_url || null;
+      let rawStatus = 'CONFIRMED';
+      let shipmentStatus = 'CONFIRMED';
       if (shipmentId) {
         try {
-          const assignResult = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
-          const info = extractShipmentInfo(assignResult, 'PACKED')
-          awb = info.awb || null
-          labelUrl = info.label_url || null
-          trackingUrl = info.tracking_url || trackingUrl || null
-          rawStatus = info.raw_status || 'PACKED'
-          shipmentStatus = info.status || 'PACKED'
-          manifestShipmentIds.push(shipmentId)
-
+          const assignResult = await sr.assignAWBAndLabel({
+            shipment_id: shipmentId
+          });
+          const info = extractShipmentInfo(assignResult, 'PACKED');
+          awb = info.awb || null;
+          labelUrl = info.label_url || null;
+          trackingUrl = info.tracking_url || trackingUrl || null;
+          rawStatus = info.raw_status || 'PACKED';
+          shipmentStatus = info.status || 'PACKED';
+          manifestShipmentIds.push(shipmentId);
           try {
-            await sr.requestPickup({ shipment_id: shipmentId })
+            await sr.requestPickup({
+              shipment_id: shipmentId
+            });
           } catch {}
         } catch {
-          rawStatus = 'CONFIRMED'
-          shipmentStatus = 'CONFIRMED'
+          rawStatus = 'CONFIRMED';
+          shipmentStatus = 'CONFIRMED';
         }
       }
-
-      const sid = randomUUID()
-
-      await pool.query(
-        `INSERT INTO shipments(
+      const sid = randomUUID();
+      await pool.query(`INSERT INTO shipments(
            id,
            sale_id,
            branch_id,
@@ -342,39 +289,16 @@ async function fulfillOrderWithShiprocket(sale, pool) {
            last_tracking_payload,
            awb_assigned_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6::text IS NOT NULL THEN now() ELSE NULL END)`,
-        [
-          sid,
-          sale.id,
-          group.branch_id,
-          orderId,
-          shipmentId,
-          awb,
-          labelUrl,
-          trackingUrl,
-          null,
-          shipmentStatus,
-          rawStatus,
-          JSON.stringify(data || {})
-        ]
-      )
-
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12::jsonb,CASE WHEN $6::text IS NOT NULL THEN now() ELSE NULL END)`, [sid, sale.id, group.branch_id, orderId, shipmentId, awb, labelUrl, trackingUrl, null, shipmentStatus, rawStatus, JSON.stringify(data || {})]);
       if (shipmentId || orderId || awb) {
-        await syncShipmentByIdentifiers(
-          pool,
-          {
-            sale_id: sale.id,
-            shiprocket_order_id: orderId,
-            shiprocket_shipment_id: shipmentId,
-            awb
-          },
-          data,
-          shipmentStatus
-        )
+        await syncShipmentByIdentifiers(pool, {
+          sale_id: sale.id,
+          shiprocket_order_id: orderId,
+          shiprocket_shipment_id: shipmentId,
+          awb
+        }, data, shipmentStatus);
       }
-
-      await syncSaleStatus(pool, sale.id, shipmentStatus)
-
+      await syncSaleStatus(pool, sale.id, shipmentStatus);
       created.push({
         branch_id: group.branch_id,
         order_id: orderId,
@@ -383,25 +307,25 @@ async function fulfillOrderWithShiprocket(sale, pool) {
         label_url: labelUrl,
         tracking_url: trackingUrl,
         status: shipmentStatus
-      })
+      });
     }
-
     if (manifestShipmentIds.length) {
       try {
-        const manifest = await sr.generateManifest({ shipment_ids: manifestShipmentIds })
-        const manifestStatus = bestOrderStatus(collectStatusValues(manifest), 'PACKED')
-        await syncSaleStatus(pool, sale.id, manifestStatus)
+        const manifest = await sr.generateManifest({
+          shipment_ids: manifestShipmentIds
+        });
+        const manifestStatus = bestOrderStatus(collectStatusValues(manifest), 'PACKED');
+        await syncSaleStatus(pool, sale.id, manifestStatus);
       } catch {}
     }
-
-    return created
+    return created;
   } catch (e) {
     try {
-      await restoreStock(pool, decremented)
+      await restoreStock(pool, decremented);
     } catch {}
-
-    throw e
+    throw e;
   }
 }
-
-module.exports = { fulfillOrderWithShiprocket }
+module.exports = {
+  fulfillOrderWithShiprocket
+};

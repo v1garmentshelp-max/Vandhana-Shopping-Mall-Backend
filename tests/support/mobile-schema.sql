@@ -1,0 +1,32 @@
+
+    CREATE TABLE vandana_users(id bigint PRIMARY KEY,name text,email text,mobile text,type text,updated_at timestamptz);
+    INSERT INTO vandana_users VALUES(1,'Test Customer','customer@example.test','9999999999','B2C',now()),(2,'Other Customer','other@example.test','9888888888','B2C',now());
+    CREATE TABLE products(id bigint PRIMARY KEY,name text,is_active boolean);
+    INSERT INTO products VALUES(1,'Test Shirt',true);
+    CREATE TABLE product_variants(id bigint PRIMARY KEY,product_id bigint,size text,colour text,mrp numeric,sale_price numeric,b2c_discount_pct numeric,image_url text,is_active boolean);
+    INSERT INTO product_variants VALUES(11,1,'M','BLACK',600,500,10,'https://example.test/shirt.jpg',true);
+    CREATE TABLE branch_variant_stock(branch_id bigint,variant_id bigint,on_hand integer,reserved integer,is_active boolean,updated_at timestamptz,PRIMARY KEY(branch_id,variant_id));
+    CREATE TABLE barcodes(id bigserial,variant_id bigint,ean_code text);
+    INSERT INTO barcodes(variant_id,ean_code) VALUES(11,'EAN11');
+    CREATE TABLE vandana_cart(id bigserial PRIMARY KEY,user_id bigint,product_id bigint,selected_size text,selected_color text,quantity integer,is_custom boolean DEFAULT false,created_at timestamptz,updated_at timestamptz);
+    CREATE UNIQUE INDEX stock_cart_unique ON vandana_cart(user_id,product_id,selected_size,selected_color) WHERE is_custom=false AND product_id IS NOT NULL;
+    CREATE TABLE vandana_wishlist(user_id bigint,product_id bigint);
+    CREATE TABLE sales(id uuid PRIMARY KEY,source text,status text,payment_status text,payment_method text,total numeric,totals jsonb,branch_id bigint,customer_name text,customer_email text,customer_mobile text,shipping_address jsonb,login_email text,created_at timestamptz,updated_at timestamptz);
+    CREATE TABLE sale_items(id uuid PRIMARY KEY,sale_id uuid,product_id bigint,variant_id bigint,qty integer,price numeric,mrp numeric,size text,colour text,image_url text,ean_code text);
+    CREATE TABLE payments(id bigserial,sale_id uuid,razorpay_order_id text UNIQUE,razorpay_payment_id text,status text,amount_paise bigint,currency text,email text,phone text,notes jsonb);
+    CREATE TABLE shipments(id uuid,sale_id uuid,status text,awb text,created_at timestamptz);
+    CREATE TABLE reward_settings(setting_key text,setting_value text);
+    INSERT INTO reward_settings VALUES('enabled','true');
+    CREATE TABLE reward_point_lots(id bigserial PRIMARY KEY,user_id bigint,source_type text,points_granted int,points_remaining int,granted_at timestamptz DEFAULT now(),expires_at timestamptz,status text,updated_at timestamptz);
+    CREATE TABLE reward_point_transactions(id bigserial,user_id bigint,lot_id bigint,sale_id uuid,transaction_type text,points int,note text,metadata jsonb,created_at timestamptz);
+ALTER TABLE vandana_users ADD COLUMN password text, ADD COLUMN otp text, ADD COLUMN otp_expiry timestamptz, ADD COLUMN created_at timestamptz DEFAULT now();
+ALTER TABLE products ADD COLUMN brand_name text DEFAULT 'V1Garments', ADD COLUMN gender text DEFAULT 'MEN', ADD COLUMN design_code text DEFAULT 'TEST-P1', ADD COLUMN pattern_code text, ADD COLUMN pattern_type text;
+ALTER TABLE product_variants ADD COLUMN cost_price numeric DEFAULT 0, ADD COLUMN b2b_discount_pct numeric DEFAULT 0;
+CREATE TABLE product_images(ean_code text,image_type text,image_url text);
+ALTER TABLE vandana_cart ADD COLUMN custom_title text, ADD COLUMN custom_brand text, ADD COLUMN custom_original_price numeric, ADD COLUMN custom_price numeric, ADD COLUMN custom_image_url text, ADD COLUMN custom_payload jsonb;
+ALTER TABLE reward_point_lots ADD COLUMN source_ref text;
+
+CREATE TABLE product_categories(id bigint PRIMARY KEY,name text,parent_id bigint);
+ALTER TABLE products ADD COLUMN category_id bigint;
+CREATE TABLE return_requests(id bigserial PRIMARY KEY,sale_id uuid,customer_email text,customer_mobile text,type text,reason text,notes text,status text,refund_status text,created_at timestamptz DEFAULT now());
+CREATE TABLE return_items(id bigserial,request_id bigint,variant_id bigint,qty integer,reason_code text,condition_note text);

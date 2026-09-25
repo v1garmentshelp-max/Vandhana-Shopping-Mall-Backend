@@ -1,40 +1,32 @@
-const express = require('express')
-const pool = require('../db')
-
-const router = express.Router()
-
-const DB_SCHEMA = process.env.DB_SCHEMA || 'public'
-const USERS_TABLE = `"${DB_SCHEMA}"."vandana_users"`
-
-const isValidMobile = (v) => /^[6-9]\d{9}$/.test(String(v || '').trim())
-
+const express = require('express');
+const pool = require('../db');
+const router = express.Router();
+const DB_SCHEMA = process.env.DB_SCHEMA || 'public';
+const USERS_TABLE = `"${DB_SCHEMA}"."vandana_users"`;
+const isValidMobile = v => /^[6-9]\d{9}$/.test(String(v || '').trim());
 router.get('/by-email/:email', async (req, res) => {
   try {
-    const email = decodeURIComponent(req.params.email || '').trim().toLowerCase()
-
+    const email = decodeURIComponent(req.params.email || '').trim().toLowerCase();
     if (!email) {
-      return res.status(400).json({ message: 'Email is required' })
+      return res.status(400).json({
+        message: 'Email is required'
+      });
     }
-
-    const q = await pool.query(
-      `SELECT id, name, email, mobile, type FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
-      [email]
-    )
-
+    const q = await pool.query(`SELECT id, name, email, mobile, type FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`, [email]);
     if (!q.rowCount) {
-      return res.status(404).json({ message: 'User not found' })
+      return res.status(404).json({
+        message: 'User not found'
+      });
     }
-
-    const u = q.rows[0]
-    const mobile = isValidMobile(u.mobile) ? String(u.mobile) : ''
-
+    const u = q.rows[0];
+    const mobile = isValidMobile(u.mobile) ? String(u.mobile) : '';
     return res.json({
       id: u.id,
       name: u.name,
       email: u.email,
       mobile,
       type: u.type
-    })
+    });
   } catch (e) {
     return res.status(500).json({
       message: 'Server error',
@@ -43,41 +35,37 @@ router.get('/by-email/:email', async (req, res) => {
       code: e.code || null,
       table: e.table || null,
       constraint: e.constraint || null
-    })
+    });
   }
-})
-
+});
 router.post('/update-mobile', async (req, res) => {
   try {
-    const email = String(req.body?.email || '').trim().toLowerCase()
-    const mobile = String(req.body?.mobile || '').trim()
-
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const mobile = String(req.body?.mobile || '').trim();
     if (!email) {
-      return res.status(400).json({ message: 'Email is required' })
+      return res.status(400).json({
+        message: 'Email is required'
+      });
     }
-
     if (!isValidMobile(mobile)) {
-      return res.status(400).json({ message: 'Invalid mobile number' })
+      return res.status(400).json({
+        message: 'Invalid mobile number'
+      });
     }
-
-    const upd = await pool.query(
-      `UPDATE ${USERS_TABLE} SET mobile = $1, updated_at = NOW() WHERE lower(email) = $2 RETURNING id, name, email, mobile, type`,
-      [mobile, email]
-    )
-
+    const upd = await pool.query(`UPDATE ${USERS_TABLE} SET mobile = $1, updated_at = NOW() WHERE lower(email) = $2 RETURNING id, name, email, mobile, type`, [mobile, email]);
     if (!upd.rowCount) {
-      return res.status(404).json({ message: 'User not found' })
+      return res.status(404).json({
+        message: 'User not found'
+      });
     }
-
-    const u = upd.rows[0]
-
+    const u = upd.rows[0];
     return res.json({
       id: u.id,
       name: u.name,
       email: u.email,
       mobile: String(u.mobile),
       type: u.type
-    })
+    });
   } catch (e) {
     return res.status(500).json({
       message: 'Server error',
@@ -86,8 +74,7 @@ router.post('/update-mobile', async (req, res) => {
       code: e.code || null,
       table: e.table || null,
       constraint: e.constraint || null
-    })
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;

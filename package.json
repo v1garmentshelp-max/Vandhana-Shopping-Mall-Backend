@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "main": "api/index.js",
   "scripts": {
-    "start": "node api/index.js"
+    "start": "node server.js",
+    "test:mobile": "node --test tests/mobile*.test.js",
+    "migrate:mobile": "node scripts/migrateMobile.js",
+    "preflight:mobile": "node scripts/preflightMobile.js",
+    "vercel-build": "node scripts/preflightMobile.js"
   },
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "dependencies": {
     "@vercel/blob": "^0.24.1",
@@ -24,5 +28,9 @@
     "unzipper": "^0.10.14",
     "uuid": "^13.0.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "supertest": "^7.3.0"
   }
 }

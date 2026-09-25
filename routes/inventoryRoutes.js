@@ -1,40 +1,25 @@
-const express = require('express')
-const pool = require('../db')
-const { requireAuth } = require('../middleware/auth')
-
-const router = express.Router()
-
-const cleanText = value => String(value ?? '').trim()
-
+const express = require('express');
+const pool = require('../db');
+const {
+  requireAuth
+} = require('../middleware/auth');
+const router = express.Router();
+const cleanText = value => String(value ?? '').trim();
 const parsePositiveInt = value => {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
 const getBranchId = req => {
-  return parsePositiveInt(
-    req.query?.branch_id ||
-      req.query?.branchId ||
-      req.body?.branch_id ||
-      req.body?.branchId ||
-      req.user?.branch_id
-  )
-}
-
+  return parsePositiveInt(req.query?.branch_id || req.query?.branchId || req.body?.branch_id || req.body?.branchId || req.user?.branch_id);
+};
 const getBarcode = req => {
-  return cleanText(
-    req.query?.ean_code ||
-      req.query?.ean ||
-      req.query?.barcode ||
-      req.body?.ean_code ||
-      req.body?.ean ||
-      req.body?.barcode
-  )
-}
-
-const scanVariant = async ({ branchId, eanCode }) => {
-  const result = await pool.query(
-    `SELECT
+  return cleanText(req.query?.ean_code || req.query?.ean || req.query?.barcode || req.body?.ean_code || req.body?.ean || req.body?.barcode);
+};
+const scanVariant = async ({
+  branchId,
+  eanCode
+}) => {
+  const result = await pool.query(`SELECT
        b.variant_id,
        b.ean_code,
        p.id AS product_id,
@@ -90,18 +75,13 @@ const scanVariant = async ({ branchId, eanCode }) => {
      WHERE UPPER(TRIM(b.ean_code)) = UPPER(TRIM($1))
        AND v.is_active = TRUE
        AND p.is_active = TRUE
-     LIMIT 1`,
-    [eanCode, branchId]
-  )
-
-  return result.rows[0] || null
-}
-
+     LIMIT 1`, [eanCode, branchId]);
+  return result.rows[0] || null;
+};
 const toPayload = row => {
-  const availableQty = Number(row.available_qty || 0)
-  const stockActive = Boolean(row.stock_is_active)
-  const inStock = stockActive && availableQty > 0
-
+  const availableQty = Number(row.available_qty || 0);
+  const stockActive = Boolean(row.stock_is_active);
+  const inStock = stockActive && availableQty > 0;
   return {
     ok: true,
     variant_id: Number(row.variant_id),
@@ -144,20 +124,18 @@ const toPayload = row => {
     stockStatus: inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
     image_url: row.image_url || '',
     imageUrl: row.image_url || ''
-  }
-}
-
+  };
+};
 router.get('/product/:productId/availability', requireAuth, async (req, res) => {
-  const branchId = getBranchId(req)
-  const productId = parsePositiveInt(req.params.productId)
-
+  const branchId = getBranchId(req);
+  const productId = parsePositiveInt(req.params.productId);
   if (!branchId || !productId) {
-    return res.status(400).json({ message: 'branch_id and valid productId required' })
+    return res.status(400).json({
+      message: 'branch_id and valid productId required'
+    });
   }
-
   try {
-    const result = await pool.query(
-      `SELECT
+    const result = await pool.query(`SELECT
          p.id AS product_id,
          p.name AS product_name,
          p.brand_name,
@@ -213,20 +191,17 @@ router.get('/product/:productId/availability', requireAuth, async (req, res) => 
        WHERE p.id = $1
          AND p.is_active = TRUE
          AND v.is_active = TRUE
-       ORDER BY v.colour, v.size, v.id`,
-      [productId, branchId]
-    )
-
+       ORDER BY v.colour, v.size, v.id`, [productId, branchId]);
     if (!result.rowCount) {
-      return res.status(404).json({ message: 'Product not found' })
+      return res.status(404).json({
+        message: 'Product not found'
+      });
     }
-
-    const first = result.rows[0]
+    const first = result.rows[0];
     const variants = result.rows.map(row => {
-      const availableQty = Number(row.available_qty || 0)
-      const stockActive = Boolean(row.stock_is_active)
-      const inStock = stockActive && availableQty > 0
-
+      const availableQty = Number(row.available_qty || 0);
+      const stockActive = Boolean(row.stock_is_active);
+      const inStock = stockActive && availableQty > 0;
       return {
         variant_id: Number(row.variant_id),
         variantId: Number(row.variant_id),
@@ -251,25 +226,25 @@ router.get('/product/:productId/availability', requireAuth, async (req, res) => 
         stockStatus: inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
         image_url: row.image_url || '',
         imageUrl: row.image_url || ''
-      }
-    })
-
-    const sizeMap = new Map()
-
+      };
+    });
+    const sizeMap = new Map();
     for (const variant of variants) {
-      const key = String(variant.size || '').trim() || 'UNSPECIFIED'
-      const existing = sizeMap.get(key) || { size: variant.size || '', available_qty: 0, variant_ids: [] }
-      existing.available_qty += variant.available_qty
-      existing.variant_ids.push(variant.variant_id)
-      sizeMap.set(key, existing)
+      const key = String(variant.size || '').trim() || 'UNSPECIFIED';
+      const existing = sizeMap.get(key) || {
+        size: variant.size || '',
+        available_qty: 0,
+        variant_ids: []
+      };
+      existing.available_qty += variant.available_qty;
+      existing.variant_ids.push(variant.variant_id);
+      sizeMap.set(key, existing);
     }
-
     const sizes = Array.from(sizeMap.values()).map(item => ({
       ...item,
       in_stock: item.available_qty > 0,
       stock_status: item.available_qty > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'
-    }))
-
+    }));
     return res.json({
       ok: true,
       branch_id: branchId,
@@ -291,70 +266,74 @@ router.get('/product/:productId/availability', requireAuth, async (req, res) => 
       categoryId: first.category_id,
       variants,
       sizes
-    })
+    });
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.get('/scan', requireAuth, async (req, res) => {
-  const branchId = getBranchId(req)
-  const eanCode = getBarcode(req)
-
+  const branchId = getBranchId(req);
+  const eanCode = getBarcode(req);
   if (!branchId || !eanCode) {
-    return res.status(400).json({ message: 'branch_id and ean_code required' })
+    return res.status(400).json({
+      message: 'branch_id and ean_code required'
+    });
   }
-
   try {
-    const row = await scanVariant({ branchId, eanCode })
-
+    const row = await scanVariant({
+      branchId,
+      eanCode
+    });
     if (!row) {
-      return res.status(404).json({ message: 'Barcode not found', code: 'BARCODE_NOT_FOUND' })
+      return res.status(404).json({
+        message: 'Barcode not found',
+        code: 'BARCODE_NOT_FOUND'
+      });
     }
-
-    const payload = toPayload(row)
-
+    const payload = toPayload(row);
     if (!payload.stock_is_active || payload.available_qty <= 0) {
       return res.status(409).json({
         ...payload,
         ok: false,
         code: 'OUT_OF_STOCK',
         message: 'Out of stock'
-      })
+      });
     }
-
-    return res.json(payload)
+    return res.json(payload);
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
+});
 router.post('/scan', requireAuth, async (req, res) => {
-  const branchId = getBranchId(req)
-  const eanCode = getBarcode(req)
-  const qty = parsePositiveInt(req.body?.qty || req.body?.quantity || 1)
-
+  const branchId = getBranchId(req);
+  const eanCode = getBarcode(req);
+  const qty = parsePositiveInt(req.body?.qty || req.body?.quantity || 1);
   if (!branchId || !eanCode) {
-    return res.status(400).json({ message: 'branch_id and ean_code required' })
+    return res.status(400).json({
+      message: 'branch_id and ean_code required'
+    });
   }
-
   if (!qty) {
-    return res.status(400).json({ message: 'qty must be a positive integer' })
+    return res.status(400).json({
+      message: 'qty must be a positive integer'
+    });
   }
-
   try {
-    const row = await scanVariant({ branchId, eanCode })
-
+    const row = await scanVariant({
+      branchId,
+      eanCode
+    });
     if (!row) {
-      return res.status(404).json({ message: 'Barcode not found', code: 'BARCODE_NOT_FOUND' })
+      return res.status(404).json({
+        message: 'Barcode not found',
+        code: 'BARCODE_NOT_FOUND'
+      });
     }
-
-    const payload = toPayload(row)
-
+    const payload = toPayload(row);
     if (!payload.stock_is_active || payload.available_qty < qty) {
       return res.status(409).json({
         ...payload,
@@ -363,19 +342,17 @@ router.post('/scan', requireAuth, async (req, res) => {
         requested_qty: qty,
         requestedQty: qty,
         message: 'Insufficient stock'
-      })
+      });
     }
-
     return res.json({
       ...payload,
       requested_qty: qty,
       requestedQty: qty
-    })
+    });
   } catch (error) {
     return res.status(500).json({
       message: process.env.DEBUG_ERRORS === '1' ? error.message : 'Server error'
-    })
+    });
   }
-})
-
-module.exports = router
+});
+module.exports = router;
