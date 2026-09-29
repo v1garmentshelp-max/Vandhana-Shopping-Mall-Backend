@@ -36,7 +36,7 @@ async function transaction(fn) {
     db.release();
   }
 }
-async function quote(db, userId, points, lock = false) {
+async function quote(db, userId, points, lock = false, paymentMethod = null) {
   if (lock) {
     await db.query('SELECT id FROM vandana_users WHERE id=$1 FOR UPDATE', [userId]);
     await db.query('SELECT id FROM vandana_cart WHERE user_id=$1 ORDER BY id FOR UPDATE', [userId]);
@@ -58,12 +58,12 @@ async function quote(db, userId, points, lock = false) {
     LEFT JOIN branch_variant_stock s ON s.variant_id=v.id AND s.branch_id=$2 WHERE c.user_id=$1 ORDER BY c.id`, [userId, branch()]);
   const customConfig = result.rows.some(r => r.is_custom) ? await store.config(db) : null;
   for (const row of result.rows) if (row.is_custom) row.server_custom = store.customProduct(row.custom_payload, customConfig);
-  const q = makeQuote(result.rows, points, settings());
+  const q = makeQuote(result.rows, points, settings(), paymentMethod);
   if (q.reward_points && !lock) {
     const preview = await rewards.previewRedemption({
       userId,
       requestedPoints: q.reward_points,
-      orderSubtotal: q.subtotal + q.shipping
+      orderSubtotal: q.policy_version === 2 ? q.subtotal : q.subtotal + q.shipping
     });
     if (!preview.can_redeem) throw fail(preview.enabled ? 'Insufficient reward points. Update the points to use.' : 'Reward points are currently disabled.', 409, preview.enabled ? 'INSUFFICIENT_REWARD_POINTS' : 'REWARDS_DISABLED');
   }
@@ -122,7 +122,10 @@ async function create(user, body) {
     address,
     method,
     fingerprint: body.fingerprint,
-    points: body.reward_points || 0
+    points: body.reward_points || 0,
+    ...(Number(body.quote_version) === 2 ? {
+      quote_version: 2
+    } : {})
   })).digest('hex');
   let newCheckout = false;
   let readyToCommit = false;
@@ -136,7 +139,7 @@ async function create(user, body) {
     }
     newCheckout = true;
     if (method === 'ONLINE' && (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET)) throw fail('Online payment is temporarily unavailable. Please choose cash on delivery.', 503, 'ONLINE_UNAVAILABLE');
-    const q = await quote(db, user.id, body.reward_points, true);
+    const q = await quote(db, user.id, body.reward_points, true, Number(body.quote_version) === 2 ? method : null);
     if (q.fingerprint !== body.fingerprint) throw fail('Your bag or prices changed. Review the updated total before placing your order.', 409, 'QUOTE_CHANGED');
     const saleId = crypto.randomUUID();
     const status = q.payable === 0 ? 'PAID' : method === 'COD' ? 'COD' : 'PENDING';
@@ -167,7 +170,7 @@ async function create(user, body) {
       userId: user.id,
       requestedPoints: q.reward_points,
       saleId,
-      orderSubtotal: q.subtotal + q.shipping
+      orderSubtotal: q.policy_version === 2 ? q.subtotal : q.subtotal + q.shipping
     });
     await db.query("INSERT INTO order_shipping_workflow(sale_id,phase) VALUES($1,'NEW') ON CONFLICT DO NOTHING", [saleId]);
     await db.query(`INSERT INTO mobile_checkouts(request_key,user_id,sale_id,fingerprint,request_hash,quote,amount_paise)
@@ -188,6 +191,8 @@ async function paymentOrder(user, key) {
   const row = await transaction(async db => {
     const current = await owned(db, user.id, key, true);
     if (current.payment_status === 'PAID') return current;
+    const cancellation = await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status<>'REJECTED'", [current.sale_id]);
+    if (cancellation.rowCount) throw fail('A cancellation is in progress. Payment is unavailable.', 409);
     if (current.payment_method !== 'ONLINE' || /CANCEL|DELIVER|RETURN/.test(current.order_status)) throw fail('Payment is not available for this order.', 409);
     if (current.gateway_order_id) return current;
     if (current.gateway_state !== 'NEW') throw fail('The payment request needs reconciliation. Your order is saved. Please contact the store with its order ID.', 409, 'PAYMENT_RECONCILIATION');
@@ -229,14 +234,22 @@ async function paymentOrder(user, key) {
 async function complete(userId, key, payment) {
   const row = await transaction(async db => {
     const current = await owned(db, userId, key, true);
+    if (current.gateway_payment_id && current.gateway_payment_id !== payment.id) throw fail('A different captured payment is already recorded. The store must reconcile this payment.', 409);
     if (!capturedPayment(payment, current)) throw fail('Payment has not been captured for this order yet.', 409, 'PAYMENT_PENDING');
-    if (/CANCEL|RETURN/.test(current.order_status)) throw fail('This order needs payment reconciliation by the store.', 409);
+    const cancelled = current.order_status === 'CANCELLED';
+    if (cancelled) {
+      const request = await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status='COMPLETED'", [current.sale_id]);
+      if (!request.rowCount) throw fail('This older cancelled order needs payment reconciliation by the store.', 409);
+    } else if (/RETURN/.test(current.order_status)) throw fail('This order needs payment reconciliation by the store.', 409);
     if (current.payment_status !== 'PAID') {
       await db.query("UPDATE sales SET payment_status='PAID',updated_at=now() WHERE id=$1", [current.sale_id]);
       await db.query("UPDATE payments SET razorpay_payment_id=$2,status='PAID' WHERE razorpay_order_id=$1", [current.gateway_order_id, payment.id]);
     }
     await db.query("UPDATE mobile_checkouts SET gateway_payment_id=$2,gateway_state='PAID',updated_at=now() WHERE request_key=$1", [key, payment.id]);
-    await clearPurchasedCart(db, current);
+    if (cancelled) {
+      const amount = Math.max(0, Number(current.amount_paise) - Math.round(Number(current.quote.shipping) * 100));
+      await db.query("UPDATE storefront_cancellations SET refund_amount_paise=$2::bigint,refund_status=CASE WHEN refund_status='REFUNDED' THEN 'REFUNDED' WHEN $2::bigint>0 THEN 'PENDING_REFUND' ELSE 'NOT_DUE' END,updated_at=now() WHERE sale_id=$1", [current.sale_id, amount]);
+    } else await clearPurchasedCart(db, current);
     return {
       ...current,
       payment_status: 'PAID',
@@ -245,7 +258,10 @@ async function complete(userId, key, payment) {
   });
   return {
     ...publicCheckout(row),
-    shipping: await ship(row.sale_id)
+    shipping: row.order_status === 'CANCELLED' ? {
+      connected: false,
+      message: 'Your order remains cancelled. Any captured product amount is queued for refund.'
+    } : await ship(row.sale_id)
   };
 }
 async function verify(user, key, body) {
@@ -265,7 +281,7 @@ async function reconcile(user, key) {
     const payment = (data.items || []).find(p => capturedPayment(p, row));
     if (payment) return complete(user.id, key, payment);
   }
-  if (row.payment_status === 'PAID' || row.payment_status === 'COD') {
+  if ((row.payment_status === 'PAID' || row.payment_status === 'COD') && row.order_status !== 'CANCELLED') {
     await transaction(async db => clearPurchasedCart(db, await owned(db, user.id, key, true)));
     await ship(row.sale_id);
   }

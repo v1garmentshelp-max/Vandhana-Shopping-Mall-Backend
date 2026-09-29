@@ -79,10 +79,15 @@ async function createReturn(pool, saleId, body) {
     const result = await db.query(`INSERT INTO return_requests(sale_id,customer_email,customer_mobile,type,reason,notes,status)
       VALUES($1,$2,$3,$4,$5,$6,'REQUESTED') RETURNING id,status,created_at`, [saleId, sale.customer_email, sale.customer_mobile, body.type === 'REPLACE' ? 'REPLACE' : 'RETURN', reason, String(body.notes || 'Requested from the store app').slice(0, 1000)]);
     for (const i of items) await db.query('INSERT INTO return_items(request_id,sale_item_id,variant_id,qty,reason_code,condition_note) VALUES($1,$2,$3,$4,$5,$6)', [result.rows[0].id, i.sale_item_id, i.variant_id, i.qty, i.reason_code, i.condition_note]);
+    if (body.bank_upi) await db.query('UPDATE return_requests SET bank_upi=$2 WHERE id=$1', [result.rows[0].id, String(body.bank_upi).trim().slice(0, 150)]);
+    const priced = await require('./storeRefunds').prepareReturnRefund(db, result.rows[0].id);
     await db.query('COMMIT');
     return {
       ok: true,
-      request: result.rows[0]
+      request: {
+        ...result.rows[0],
+        refund: require('./storeRefunds').publicRefund(priced)
+      }
     };
   } catch (e) {
     await db.query('ROLLBACK');

@@ -28,8 +28,12 @@ before(async () => {
       release() {}
     })
   };
+  require.cache[require.resolve('../db')] = {
+    exports: db
+  };
   await pg.exec(fs.readFileSync(path.join(__dirname, 'support/mobile-schema.sql'), 'utf8'));
   await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations/20260925_mobile_store.sql'), 'utf8'));
+  await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations/20260929_store_commerce.sql'), 'utf8'));
 });
 after(async () => pg.close());
 test('custom prices are controlled by the shared server configuration and disabled garments cannot checkout', async () => {
@@ -88,8 +92,8 @@ test('mixed order returns exclude descendant innerwear categories, use actual de
     normal = crypto.randomUUID(),
     inner = crypto.randomUUID();
   await pg.exec("INSERT INTO product_categories VALUES(1,'Inner Wear',NULL),(2,'Vests',1),(3,'Shirts',NULL);UPDATE products SET category_id=3 WHERE id=1;INSERT INTO products(id,name,is_active,category_id) VALUES(2,'Cotton vest',true,2)");
-  await db.query("INSERT INTO sales(id,customer_email,customer_mobile,status,created_at) VALUES($1,'customer@example.test','9999999999','DELIVERED',now()-interval '30 days')", [id]);
-  for (const [item, product, variant] of [[normal, 1, 11], [inner, 2, 22]]) await db.query('INSERT INTO sale_items(id,sale_id,product_id,variant_id,qty) VALUES($1,$2,$3,$4,2)', [item, id, product, variant]);
+  await db.query("INSERT INTO sales(id,customer_email,customer_mobile,status,created_at,total,totals) VALUES($1,'customer@example.test','9999999999','DELIVERED',now()-interval '30 days',2040,'{\"shipping\":40,\"reward_points\":0}')", [id]);
+  for (const [item, product, variant] of [[normal, 1, 11], [inner, 2, 22]]) await db.query('INSERT INTO sale_items(id,sale_id,product_id,variant_id,qty,price) VALUES($1,$2,$3,$4,2,500)', [item, id, product, variant]);
   await db.query("INSERT INTO shipments(id,sale_id,status,created_at,delivered_at) VALUES($1,$2,'DELIVERED',now()-interval '20 days',now()-interval '1 day')", [crypto.randomUUID(), id]);
   let e = await returns.eligibility(db, id);
   assert.equal(e.ok, true);

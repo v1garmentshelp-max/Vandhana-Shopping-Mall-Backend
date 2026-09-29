@@ -118,6 +118,7 @@ async function getWalletSummary(userId, db = pool) {
   if (!userQ.rowCount) throw Object.assign(new Error('User not found'), {
     status: 404
   });
+  await creditSignupBonus(uid, db);
   await expireLots(db, uid);
   const settings = await getSettings(db);
   const lotsQ = await db.query(`SELECT
@@ -340,7 +341,7 @@ async function redeemPoints(db, {
     deductions
   };
 }
-async function releaseRewardsForSale(db, saleId) {
+async function releaseRewardsForSale(db, saleId, upToPoints = Infinity) {
   if (!saleId) {
     return {
       restored_points: 0,
@@ -364,6 +365,8 @@ async function releaseRewardsForSale(db, saleId) {
       restored: []
     };
   }
+  const already = await db.query("SELECT COALESCE(SUM(points),0)::int AS points FROM reward_point_transactions WHERE sale_id=$1 AND transaction_type='REFUNDED' AND points>0", [saleId]);
+  let remaining = Math.max(0, upToPoints - Number(already.rows[0].points));
   const restored = [];
   for (const row of redeemedQ.rows) {
     const refundedQ = await db.query(`SELECT
@@ -391,8 +394,9 @@ async function releaseRewardsForSale(db, saleId) {
     if (!lotQ.rowCount) continue;
     const lot = lotQ.rows[0];
     const capacity = Math.max(Number(lot.points_granted || 0) - Number(lot.points_remaining || 0), 0);
-    const restorePoints = Math.min(outstanding, capacity);
+    const restorePoints = Math.min(outstanding, capacity, remaining);
     if (restorePoints <= 0) continue;
+    remaining -= restorePoints;
     const activeAfterRestore = new Date(lot.expires_at).getTime() > Date.now();
     await db.query(`UPDATE reward_point_lots
        SET points_remaining = points_remaining + $2,

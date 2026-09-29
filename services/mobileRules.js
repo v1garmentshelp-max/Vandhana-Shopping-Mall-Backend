@@ -25,7 +25,7 @@ function addressOf(value) {
   if (a.fullName.length < 2 || a.line1.length < 5 || !a.city || !a.state || !/^[1-9]\d{5}$/.test(a.pincode) || !/^[6-9]\d{9}$/.test(a.mobile)) throw fail('Enter a complete delivery address and valid Indian mobile number.');
   return a;
 }
-function makeQuote(rows, requestedPoints, settings = {}) {
+function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
   if (!rows.length) throw fail('Your bag is empty.', 409);
   const points = integer(requestedPoints || 0, 0, 1000000);
   const items = rows.map(row => {
@@ -64,14 +64,17 @@ function makeQuote(rows, requestedPoints, settings = {}) {
   const threshold = Number(settings.freeShippingThreshold ?? 1000);
   const fee = Number(settings.shippingFee ?? 75);
   if (!Number.isFinite(threshold) || !Number.isFinite(fee) || threshold < 0 || fee < 0) throw fail('Shipping settings need an update.', 503);
-  const shipping = subtotal >= threshold ? 0 : fee;
-  if (points > Math.floor(subtotal + shipping)) throw fail('Reward points exceed this order total.', 409);
+  const charges = paymentMethod ? require('./commercePolicy').deliveryCharges(subtotal, paymentMethod) : {
+    shipping: subtotal >= threshold ? 0 : fee
+  };
+  const shipping = charges.shipping;
+  if (points > Math.floor(paymentMethod ? subtotal : subtotal + shipping)) throw fail('Reward points exceed this order total.', 409);
   const quote = {
     items,
     subtotal,
     mrp,
     discount: money(mrp - subtotal),
-    shipping,
+    ...charges,
     reward_points: points,
     payable: money(subtotal + shipping - points)
   };

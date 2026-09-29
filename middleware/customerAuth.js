@@ -5,6 +5,11 @@ function readToken(req) {
   return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
 }
 function decodeCustomerToken(req) {
+  if (!process.env.JWT_SECRET || ['dev_secret', 'change-me-in-env'].includes(process.env.JWT_SECRET)) return {
+    token: '',
+    decoded: null,
+    error: new Error('Authentication is not configured')
+  };
   const token = readToken(req);
   if (!token) return {
     token: '',

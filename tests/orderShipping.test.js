@@ -139,7 +139,8 @@ async function sale() {
 }
 before(async () => {
   db = new PGlite();
-  await db.exec(`CREATE TABLE branches(id bigint PRIMARY KEY); INSERT INTO branches VALUES(3);
+  await db.exec(`CREATE TABLE storefront_cancellations(sale_id uuid PRIMARY KEY,status text);
+    CREATE TABLE branches(id bigint PRIMARY KEY); INSERT INTO branches VALUES(3);
     CREATE TABLE sales(id uuid PRIMARY KEY,source text,status text,payment_method text,payment_status text,branch_id bigint,total numeric,customer_name text,customer_mobile text,customer_email text,shipping_address jsonb);
     CREATE TABLE products(id bigint PRIMARY KEY,name text); INSERT INTO products VALUES(1,'Test shirt');
     CREATE TABLE sale_items(sale_id uuid,product_id bigint,variant_id bigint,qty int,price numeric,custom_title text);
@@ -303,4 +304,30 @@ test('return windows use a carrier delivery timestamp, never an estimate or the 
     current_status: 'DELIVERED'
   });
   assert.equal(new Date(result[0].delivered_at).toISOString(), '2026-09-21T12:00:00.000Z');
+  await db.query('DELETE FROM shipments WHERE sale_id=$1', [id]);
+});
+test('method fees and rewards remain separate in the Shiprocket collectable amount', async () => {
+  const id = await sale();
+  await db.exec('ALTER TABLE sales ADD COLUMN IF NOT EXISTS totals jsonb');
+  await db.query('UPDATE sales SET total=410,totals=$2 WHERE id=$1', [id, JSON.stringify({
+    shipping: 40,
+    delivery_fee: 30,
+    cod_fee: 10,
+    reward_points: 100
+  })]);
+  await flow.connect(id, {
+    fresh: true
+  });
+  assert.equal(lastOrder.order.shipping_charges, 40);
+  assert.equal(lastOrder.order.total_discount, 100);
+  assert.equal(470 + lastOrder.order.shipping_charges - lastOrder.order.total_discount, 410);
+});
+test('a customer cancellation request blocks dispatch before any carrier call', async () => {
+  const id = await sale(),
+    before = creates;
+  await db.query("INSERT INTO storefront_cancellations(sale_id,status) VALUES($1,'REQUESTED')", [id]);
+  await assert.rejects(flow.connect(id, {
+    fresh: true
+  }), /Dispatch is paused/);
+  assert.equal(creates, before);
 });

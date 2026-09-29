@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const ReturnsService = require('../services/returnsService');
+const refunds = require('../services/storeRefunds');
 const router = express.Router();
 const {
   requireAuth
@@ -49,6 +50,7 @@ async function ensureReturnExtras() {
   extrasEnsured = true;
 }
 function normalizePaymentType(sale) {
+  if (String(sale.payment_method).toUpperCase() === 'COD') return 'COD';
   const raw = String(sale.payment_status || '').toUpperCase();
   if (!raw) return 'UNKNOWN';
   if (raw === 'PREPAID') return 'PREPAID';
@@ -114,6 +116,9 @@ router.post('/returns', requireCustomerAuth, returnOwner, async (req, res) => {
     const savedSale = (await pool.query('SELECT * FROM sales WHERE id=$1', [sale_id])).rows[0];
     if (!savedSale) return res.status(404).json({
       message: 'Order not found.'
+    });
+    if (type === 'REFUND' && String(savedSale.status).toUpperCase() === 'CANCELLED') return res.status(409).json({
+      message: 'Cancelled-order refunds are handled through the cancellation request to prevent duplicate refunds.'
     });
     if (type !== 'REFUND' || String(savedSale.status).toUpperCase() !== 'CANCELLED') {
       const result = await require('../services/returnPolicy').createReturn(pool, sale_id, req.body);
@@ -239,7 +244,7 @@ router.get('/returns/admin/refunds', async (req, res) => {
          s.customer_name,
          s.customer_email,
          s.customer_mobile,
-         CASE WHEN r.type='REFUND' AND upper(s.status)='CANCELLED' THEN s.total ELSE NULL END AS amount,
+         r.refund_amount_paise / 100.0 AS amount,
          r.id AS return_request_id,
          'BANK/UPI'::text AS mode,
          'system'::text AS initiated_by
@@ -267,6 +272,7 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
          r.*,
          s.totals,
          s.payment_status,
+         s.payment_method,
          s.status AS sale_status,
          s.created_at AS sale_created_at
        FROM return_requests r
@@ -279,6 +285,9 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
       });
     }
     const row = q.rows[0];
+    require('../services/orderCancellation').staffAccess(req.user, {
+      branch_id: (await pool.query('SELECT branch_id FROM sales WHERE id=$1', [row.sale_id])).rows[0]?.branch_id
+    });
     const selectedItems = (await pool.query(`SELECT ri.qty,ri.sale_item_id,ri.variant_id,si.price,si.size,si.colour,COALESCE(si.custom_title,p.name,'Clothing') AS name
       FROM return_items ri LEFT JOIN sale_items si ON si.sale_id=$2 AND (ri.sale_item_id=si.id OR (ri.sale_item_id IS NULL AND ri.variant_id=si.variant_id))
       LEFT JOIN products p ON p.id=si.product_id WHERE ri.request_id=$1`, [id, row.sale_id])).rows;
@@ -305,6 +314,7 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
         notes: row.notes,
         status: row.status,
         refund_status: row.refund_status,
+        refund: row.refund_amount_paise == null ? null : refunds.publicRefund(row),
         created_at: row.created_at,
         updated_at: row.updated_at,
         customer_email: row.customer_email,
@@ -316,6 +326,7 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
           id: row.sale_id,
           status: row.sale_status,
           payment_status: row.payment_status,
+          payment_method: row.payment_method,
           created_at: row.sale_created_at,
           totals: row.totals
         }
@@ -372,6 +383,7 @@ router.post('/returns/:id/details', requireStaff, async (req, res) => {
         notes: row.notes,
         status: row.status,
         refund_status: row.refund_status,
+        refund: row.refund_amount_paise == null ? null : refunds.publicRefund(row),
         created_at: row.created_at,
         updated_at: row.updated_at,
         customer_email: row.customer_email,
@@ -395,95 +407,97 @@ router.post('/returns/:id/details', requireStaff, async (req, res) => {
 });
 router.post('/returns/:id/approve', requireStaff, async (req, res) => {
   try {
-    await ensureReturnExtras();
-    const id = req.params.id;
-    const rr = await pool.query('SELECT * FROM return_requests WHERE id=$1', [id]);
-    if (!rr.rows.length) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Return request not found'
-      });
-    }
-    const request = rr.rows[0];
-    const sale = (await pool.query('SELECT * FROM sales WHERE id=$1', [request.sale_id])).rows[0];
-    const payType = normalizePaymentType(sale);
-    if (request.type === 'REFUND') {
-      const refundStatus = payType === 'PREPAID' ? 'PENDING_REFUND' : null;
-      await pool.query('UPDATE return_requests SET status=$1, refund_status=$2, updated_at=now() WHERE id=$3', ['APPROVED', refundStatus, id]);
-      return res.json({
+    const found = (await pool.query('SELECT sale_id FROM return_requests WHERE id=$1', [req.params.id])).rows[0];
+    if (!found) return res.status(404).json({
+      message: 'Return request not found.'
+    });
+    const result = await require('../services/orderCancellation').locked(found.sale_id, async db => {
+      const request = (await db.query('SELECT * FROM return_requests WHERE id=$1', [req.params.id])).rows[0];
+      const sale = (await db.query('SELECT * FROM sales WHERE id=$1', [found.sale_id])).rows[0];
+      require('../services/orderCancellation').staffAccess(req.user, sale);
+      if (request.status === 'APPROVED') return {
         ok: true
+      };
+      if (request.status !== 'REQUESTED') throw Object.assign(new Error('Only a pending request can be approved.'), {
+        status: 409
       });
-    }
-    const items = (await pool.query('SELECT * FROM return_items WHERE request_id=$1', [id])).rows;
-    const branch = (await pool.query('SELECT * FROM branches WHERE id=$1', [sale.branch_id])).rows[0];
-    const svc = new ReturnsService({
-      pool
+      await refunds.prepareReturnRefund(db, request.id);
+      let reverse = (await db.query('SELECT * FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC LIMIT 1', [request.id])).rows[0];
+      if (!reverse) {
+        if (request.reverse_pickup_attempted) throw Object.assign(new Error('A reverse pickup may already exist. Check and link the Shiprocket return booking before retrying. No second pickup has been requested.'), {
+          status: 409
+        });
+        const items = (await db.query('SELECT * FROM return_items WHERE request_id=$1', [request.id])).rows;
+        const branch = (await db.query('SELECT * FROM branches WHERE id=$1', [sale.branch_id])).rows[0];
+        if (!branch) throw Object.assign(new Error('The original branch is unavailable.'), {
+          status: 409
+        });
+        const svc = new ReturnsService({
+          pool
+        });
+        await svc.init();
+        await db.query('UPDATE return_requests SET reverse_pickup_attempted=true,reverse_pickup_error=NULL WHERE id=$1', [request.id]);
+        try {
+          reverse = await svc.createReversePickup({
+            request,
+            sale,
+            items,
+            branch
+          });
+        } catch (e) {
+          await db.query('UPDATE return_requests SET reverse_pickup_error=$2 WHERE id=$1', [request.id, String(e.message).slice(0, 1000)]);
+          throw Object.assign(new Error('Reverse pickup is awaiting store reconciliation. Check Shiprocket before trying again.'), {
+            status: 409
+          });
+        }
+      }
+      await db.query("UPDATE return_requests SET status='APPROVED',refund_status=$2,updated_at=now() WHERE id=$1", [request.id, request.type === 'REPLACE' ? null : 'PENDING_REFUND']);
+      return {
+        ok: true,
+        reverse
+      };
     });
-    await svc.init();
-    const reverse = await svc.createReversePickup({
-      request,
-      sale,
-      items,
-      branch
-    });
-    const refundStatus = payType === 'PREPAID' ? 'PENDING_REFUND' : null;
-    await pool.query('UPDATE return_requests SET status=$1, refund_status=$2, updated_at=now() WHERE id=$3', ['APPROVED', refundStatus, id]);
-    res.json({
-      ok: true,
-      reverse
-    });
+    res.json(result);
   } catch (e) {
-    res.status(500).json({
-      ok: false,
-      message: e.message || 'approve failed'
+    res.status(e.status || 500).json({
+      message: e.status ? e.message : 'The return could not be approved. Please try again.'
     });
   }
 });
 router.post('/returns/:id/reject', requireStaff, async (req, res) => {
   try {
-    await ensureReturnExtras();
-    const id = req.params.id;
-    const rr = await pool.query('SELECT * FROM return_requests WHERE id=$1', [id]);
-    if (!rr.rows.length) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Return request not found'
-      });
-    }
-    await pool.query('UPDATE return_requests SET status=$1, refund_status=$2, notes=COALESCE(notes, \'\')||$3, updated_at=now() WHERE id=$4', ['REJECTED', null, `\nRejected: ${req.body?.reason || ''}`, id]);
+    const row = (await pool.query('SELECT r.*,s.branch_id FROM return_requests r JOIN sales s ON s.id=r.sale_id WHERE r.id=$1', [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({
+      message: 'Return request not found.'
+    });
+    require('../services/orderCancellation').staffAccess(req.user, row);
+    const reason = String(req.body.reason || '').trim().slice(0, 1000);
+    if (reason.length < 5) return res.status(400).json({
+      message: 'Enter a rejection reason.'
+    });
+    const result = await pool.query("UPDATE return_requests SET status='REJECTED',notes=COALESCE(notes,'')||$2,updated_at=now() WHERE id=$1 AND status='REQUESTED' AND reverse_pickup_attempted=false AND COALESCE(refund_status,'')<>'REFUNDED' AND refund_reference IS NULL RETURNING id", [req.params.id, '\nRejected: ' + reason]);
+    if (!result.rowCount) return res.status(409).json({
+      message: 'Only a pending, unpaid return request can be rejected.'
+    });
     res.json({
       ok: true
     });
   } catch (e) {
-    res.status(500).json({
-      ok: false,
-      message: e.message || 'reject failed'
+    res.status(e.status || 500).json({
+      message: e.status ? e.message : 'The return decision could not be saved.'
     });
   }
 });
 router.post('/returns/:id/refund-complete', requireStaff, async (req, res) => {
   try {
-    await ensureReturnExtras();
-    const id = req.params.id;
-    const rr = await pool.query('SELECT * FROM return_requests WHERE id=$1', [id]);
-    if (!rr.rowCount) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Return request not found'
-      });
-    }
-    await pool.query('UPDATE return_requests SET refund_status=$1, updated_at=now() WHERE id=$2', ['REFUNDED', id]);
-    res.json({
-      ok: true
-    });
+    res.json(await refunds.completeReturn(req.user, req.params.id, req.body));
   } catch (e) {
-    res.status(500).json({
-      ok: false,
-      message: e.message || 'refund update failed'
+    res.status(e.status || 500).json({
+      message: e.status ? e.message : 'Refund verification could not be completed. Please try again.'
     });
   }
 });
-router.get('/returns/by-sale/:saleId', async (req, res) => {
+router.get('/returns/by-sale/:saleId', requireCustomerAuth, returnOwner, async (req, res) => {
   try {
     const saleId = req.params.saleId;
     const q = await pool.query(`SELECT r.*,

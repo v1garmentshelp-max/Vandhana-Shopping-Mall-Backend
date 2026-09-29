@@ -5,6 +5,25 @@ const {
   releaseRewardsForSaleWithTransaction
 } = require('../services/rewardPointsService');
 const router = express.Router();
+router.use('/payments', async (req, res, next) => {
+  try {
+    if (req.method === 'POST' && !req.path.includes('webhook')) {
+      const sale = req.body?.sale_id,
+        gateway = req.body?.razorpay_order_id;
+      if (sale || gateway) {
+        const managed = await pool.query('SELECT sale_id FROM mobile_checkouts WHERE sale_id::text=$1 OR gateway_order_id=$2', [sale || null, gateway || null]);
+        if (managed.rowCount) return res.status(409).json({
+          message: 'Resume this payment from your saved order. This checkout uses verified payment processing.'
+        });
+      }
+    }
+    next();
+  } catch (e) {
+    res.status(500).json({
+      message: 'Payment could not be checked. Please try again.'
+    });
+  }
+});
 function payableFromTotals(t) {
   if (!t) return null;
   if (typeof t === 'object' && t.payable != null) {

@@ -7,7 +7,10 @@
     "test:mobile": "node --test tests/mobile*.test.js",
     "migrate:mobile": "node scripts/migrateMobile.js",
     "preflight:mobile": "node scripts/preflightMobile.js",
-    "vercel-build": "node scripts/preflightMobile.js"
+    "vercel-build": "node scripts/preflightMobile.js && node scripts/preflightCommerce.js",
+    "test:commerce": "node --test tests/commerce*.test.js",
+    "preflight:commerce": "node scripts/preflightCommerce.js",
+    "migrate:commerce": "node scripts/migrateCommerce.js"
   },
   "engines": {
     "node": "24.x"

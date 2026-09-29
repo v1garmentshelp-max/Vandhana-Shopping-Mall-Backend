@@ -35,7 +35,8 @@ router.get('/config', (_req, res) => res.json({
   branch_id: checkout.branch(),
   ...checkout.settings(),
   otp: 'email-password-reset',
-  checkout: true
+  checkout: true,
+  delivery_policy: require('../services/commercePolicy').policy()
 }));
 router.get('/products/:id(\\d+)', forward(require('./productRoutes'), req => `/by-product/${req.params.id}`, 'GET', null, req => ({
   branch_id: checkout.branch(),
@@ -124,7 +125,8 @@ router.post('/account-deletion-request', wrap(async (req, res) => {
   });
 }));
 router.get('/orders', wrap(async (req, res) => {
-  const rows = await pool.query(`SELECT s.id,s.status,s.payment_status,s.payment_method,s.created_at,s.total,s.totals,s.customer_name,
+  const rows = await pool.query(`SELECT s.id,s.status,s.payment_status,s.payment_method,s.created_at,s.total,s.totals,s.customer_name,s.customer_email,s.customer_mobile,s.shipping_address,
+    (SELECT COALESCE(json_agg(json_build_object('id',si.id,'product_id',si.product_id,'variant_id',si.variant_id,'qty',si.qty,'price',si.price,'size',si.size,'colour',si.colour,'image_url',si.image_url,'product_name',COALESCE(si.custom_title,p.name))), '[]'::json) FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=s.id) AS items,
     m.request_key AS checkout_key FROM sales s LEFT JOIN mobile_checkouts m ON m.sale_id=s.id
     WHERE s.source='WEB' AND (lower(s.login_email)=lower($1) OR lower(s.customer_email)=lower($1)) ORDER BY s.created_at DESC LIMIT 200`, [req.customer.email]);
   res.json(rows.rows);
@@ -149,10 +151,13 @@ const returns = require('../services/returnPolicy');
 router.get('/orders/:id/return-eligibility', wrap(ownedSale), wrap(async (req, res) => res.json(await returns.eligibility(pool, req.sale.id))));
 router.get('/orders/:id/tracking', wrap(ownedSale), wrap(async (req, res) => res.json(await createWorkflow(pool).tracking(req.sale.id))));
 router.post('/orders/:id/return', wrap(ownedSale), wrap(async (req, res) => res.json(await returns.createReturn(pool, req.sale.id, req.body))));
-router.get('/orders/:id/returns', wrap(ownedSale), wrap(async (req, res) => res.json((await pool.query(`SELECT r.id,r.type,r.reason,r.status,r.refund_status,r.created_at,
+router.get('/orders/:id/returns', wrap(ownedSale), wrap(async (req, res) => res.json((await pool.query(`SELECT r.id,r.type,r.reason,r.status,r.refund_status,r.refund_amount_paise,r.refund_points,r.excluded_fees_paise,r.created_at,
   (SELECT json_agg(json_build_object('sale_item_id',i.sale_item_id,'qty',i.qty)) FROM return_items i WHERE i.request_id=r.id) AS items
   FROM return_requests r WHERE r.sale_id=$1 ORDER BY r.created_at DESC`, [req.sale.id])).rows)));
-router.post('/checkout/quote', wrap(async (req, res) => res.json(await checkout.quote(pool, req.customer.id, req.body.reward_points))));
+router.post('/checkout/quote', wrap(async (req, res) => {
+  if (Number(req.body.quote_version) === 2 && !['COD', 'ONLINE'].includes(req.body.payment_method)) throw fail('Choose a payment method.', 400, 'PAYMENT_METHOD_REQUIRED');
+  res.json(await checkout.quote(pool, req.customer.id, req.body.reward_points, false, Number(req.body.quote_version) === 2 ? req.body.payment_method : null));
+}));
 router.post('/checkouts', wrap(async (req, res) => res.json(await checkout.create(req.customer, req.body))));
 router.post('/checkouts/:key/pay', wrap(async (req, res) => res.json(await checkout.paymentOrder(req.customer, req.params.key))));
 router.post('/checkouts/:key/verify', wrap(async (req, res) => res.json(await checkout.verify(req.customer, req.params.key, req.body))));

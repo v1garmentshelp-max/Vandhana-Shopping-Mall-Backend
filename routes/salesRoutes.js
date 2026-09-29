@@ -802,7 +802,9 @@ router.post('/pos/place', requireAuth, async (req, res) => {
     client.release();
   }
 });
-router.post('/web/place', optionalCustomerAuth, async (req, res) => {
+router.post('/web/place', (_req, res) => res.status(410).json({
+  message: 'Checkout has been updated. Refresh the website and review your order.'
+}), optionalCustomerAuth, async (req, res) => {
   const {
     customer_email,
     customer_name,
@@ -1298,7 +1300,9 @@ router.post('/web/b2b-place', async (req, res) => {
     client.release();
   }
 });
-router.post('/web/set-payment-status', async (req, res) => {
+router.post('/web/set-payment-status', (_req, res) => res.status(410).json({
+  message: 'Payment status must be confirmed by the payment gateway or carrier.'
+}), async (req, res) => {
   const client = await pool.connect();
   try {
     const requestedSaleId = String(req.body.sale_id || '').trim();

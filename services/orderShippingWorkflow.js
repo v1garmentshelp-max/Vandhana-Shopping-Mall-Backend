@@ -17,6 +17,7 @@ const addressOf = sale => {
 };
 const eligible = sale => {
   if (String(sale.source).toUpperCase() !== 'WEB') throw fail('This shipping workflow supports website orders only.');
+  if (sale.cancellation_pending) throw fail('A cancellation request is being processed. Dispatch is paused.');
   if (/CANCEL|DELIVERED|RETURN|RTO/.test(String(sale.status).toUpperCase())) throw fail('This order is closed or cancelled. Shipping actions are disabled.');
   if (String(sale.payment_method).toUpperCase() !== 'COD' && String(sale.payment_status).toUpperCase() !== 'PAID') throw fail('Payment must be confirmed before shipping a prepaid order.');
 };
@@ -27,6 +28,8 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
   async function state(db, saleId) {
     const sale = (await db.query('SELECT * FROM sales WHERE id=$1', [saleId])).rows[0];
     if (!sale) throw fail('Order not found', 404);
+    const cancellation = (await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status<>'REJECTED'", [saleId])).rows[0];
+    sale.cancellation_pending = !!cancellation;
     const workflow = (await db.query('SELECT * FROM order_shipping_workflow WHERE sale_id=$1', [saleId])).rows[0] || null;
     const shipments = (await db.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [saleId])).rows;
     const warehouse = (await db.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1 LIMIT 1', [sale.branch_id])).rows[0] || null;
@@ -145,8 +148,8 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
           order: {
             items,
             payment_method: String(s.sale.payment_method).toUpperCase() === 'COD' ? 'COD' : 'Prepaid',
-            shipping_charges: Math.max(0, Math.round((total - subtotal) * 100) / 100),
-            total_discount: Math.max(0, Math.round((subtotal - total) * 100) / 100),
+            shipping_charges: Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)),
+            total_discount: Math.max(0, Math.round((subtotal + Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)) - total) * 100) / 100),
             weight: 0.5,
             dimensions: {
               length: 10,

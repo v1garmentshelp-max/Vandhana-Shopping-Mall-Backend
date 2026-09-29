@@ -45,6 +45,7 @@ app.use(express.urlencoded({
   extended: true,
   limit: '10mb'
 }));
+app.use('/api/storefront', require('./routes/storefrontRoutes'));
 app.use('/api/mobile', require('./routes/mobileRoutes'));
 app.use('/api', shiprocketPublicRoutes);
 app.use('/api/upload', require('./routes/uploadRoutes'));

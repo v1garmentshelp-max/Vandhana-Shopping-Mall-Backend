@@ -9,6 +9,7 @@ class RazorpayService {
     this.keySecret = keySecret || process.env.RAZORPAY_KEY_SECRET;
     this.client = axios.create({
       baseURL: 'https://api.razorpay.com/v1',
+      timeout: 15000,
       auth: {
         username: this.keyId,
         password: this.keySecret

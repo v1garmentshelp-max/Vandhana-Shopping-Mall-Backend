@@ -31,162 +31,9 @@ const {
   createWorkflow
 } = require('../services/orderShippingWorkflow');
 const shippingWorkflow = createWorkflow(pool);
-router.post('/web/place', async (req, res) => {
-  const body = req.body || {};
-  const items = Array.isArray(body.items) ? body.items : [];
-  const totals = body.totals && typeof body.totals === 'object' ? body.totals : null;
-  const shipping_address = body.shipping_address && typeof body.shipping_address === 'object' ? body.shipping_address : null;
-  const customer_name = body.customer_name ? String(body.customer_name) : null;
-  const customer_email = body.customer_email ? String(body.customer_email) : null;
-  const customer_mobile = body.customer_mobile ? String(body.customer_mobile) : null;
-  const payment_method = body.payment_method ? String(body.payment_method) : 'COD';
-  const payment_status = body.payment_status ? String(body.payment_status) : 'COD';
-  const login_email = body.login_email ? String(body.login_email) : null;
-  const requestedBranchId = toNumber(body.branch_id) || 3;
-  if (!items.length) return res.status(400).json({
-    message: 'Items required'
-  });
-  if (!shipping_address) return res.status(400).json({
-    message: 'shipping_address required'
-  });
-  const normalizedItems = items.map(it => {
-    const productId = toNumber(it.product_id);
-    const variantId = toNumber(it.variant_id != null ? it.variant_id : it.product_id);
-    return {
-      product_id: productId,
-      variant_id: variantId,
-      qty: Number(it.qty ?? it.quantity ?? 1),
-      price: Number(it.price || 0) || 0,
-      mrp: Number(it.mrp || it.original_price || it.price || 0) || 0,
-      size: it.size != null ? String(it.size) : it.selected_size != null ? String(it.selected_size) : null,
-      colour: it.colour != null ? String(it.colour) : it.selected_color != null ? String(it.selected_color) : null,
-      image_url: it.image_url != null ? String(it.image_url) : null,
-      ean_code: it.ean_code != null ? String(it.ean_code) : it.barcode_value != null ? String(it.barcode_value) : null,
-      name: it.name != null ? String(it.name) : it.product_name != null ? String(it.product_name) : it.title != null ? String(it.title) : variantId ? `Variant ${variantId}` : 'Product'
-    };
-  });
-  if (normalizedItems.some(it => !Number.isSafeInteger(it.variant_id) || it.variant_id <= 0 || !Number.isSafeInteger(it.qty) || it.qty <= 0)) {
-    return res.status(400).json({
-      message: 'Invalid items (variant_id/qty)'
-    });
-  }
-  const stockMap = new Map();
-  for (const item of normalizedItems) {
-    stockMap.set(item.variant_id, (stockMap.get(item.variant_id) || 0) + item.qty);
-  }
-  const stockJson = JSON.stringify(Array.from(stockMap.entries()).map(([variant_id, qty]) => ({
-    variant_id,
-    qty
-  })));
-  const client = await pool.connect();
-  let saleId = null;
-  let chosenBranchId = null;
-  try {
-    await client.query('BEGIN');
-    const branchQ = await client.query(`
-      WITH cart AS (
-        SELECT * FROM jsonb_to_recordset($1::jsonb)
-        AS x(variant_id int, qty int)
-      )
-      SELECT bvs.branch_id
-      FROM branch_variant_stock bvs
-      JOIN cart c ON c.variant_id = bvs.variant_id
-      WHERE bvs.branch_id = $2
-        AND bvs.is_active = TRUE
-        AND EXISTS (SELECT 1 FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = bvs.variant_id AND v.is_active = TRUE AND p.is_active = TRUE)
-        AND COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) >= c.qty
-      GROUP BY bvs.branch_id
-      HAVING COUNT(*) = (SELECT COUNT(*) FROM cart)
-      LIMIT 1
-      `, [stockJson, requestedBranchId]);
-    chosenBranchId = branchQ.rows?.[0]?.branch_id || null;
-    if (!chosenBranchId) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        message: `Stock not available in branch ${requestedBranchId} for all items`
-      });
-    }
-    for (const [variantId, qty] of [...stockMap.entries()].sort((a, b) => a[0] - b[0])) {
-      const upd = await client.query(`
-        UPDATE branch_variant_stock
-        SET on_hand = COALESCE(on_hand, 0) - $3
-        WHERE branch_id = $1
-          AND variant_id = $2
-          AND is_active = TRUE
-          AND COALESCE(on_hand, 0) - COALESCE(reserved, 0) >= $3
-        RETURNING on_hand
-        `, [chosenBranchId, variantId, qty]);
-      if (!upd.rowCount) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({
-          message: `Insufficient stock for variant ${variantId} in branch ${chosenBranchId}`
-        });
-      }
-    }
-    const totalPayable = totals && totals.payable != null ? Number(totals.payable) : null;
-    const saleQ = await client.query(`
-      INSERT INTO sales
-        (source, status, payment_status, payment_method, total, totals, branch_id,
-         customer_name, customer_email, customer_mobile, shipping_address, login_email, created_at)
-      VALUES
-        ('WEB', 'PLACED', $1, $2, $3, $4::jsonb, $5,
-         $6, $7, $8, $9::jsonb, $10, now())
-      RETURNING id
-      `, [payment_status, payment_method, Number.isFinite(totalPayable) ? totalPayable : 0, JSON.stringify(totals || {}), chosenBranchId, customer_name, customer_email, customer_mobile, JSON.stringify(shipping_address || {}), login_email]);
-    saleId = saleQ.rows?.[0]?.id || null;
-    if (!saleId) {
-      await client.query('ROLLBACK');
-      return res.status(500).json({
-        message: 'Failed to create order'
-      });
-    }
-    for (const it of normalizedItems) {
-      await client.query(`
-        INSERT INTO sale_items
-          (sale_id, product_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code, created_at)
-        VALUES
-          ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
-        `, [saleId, it.product_id, it.variant_id, it.qty, it.price, it.mrp, it.size, it.colour, it.image_url, it.ean_code]);
-    }
-    await client.query("INSERT INTO order_shipping_workflow(sale_id,phase) VALUES($1,'NEW') ON CONFLICT DO NOTHING", [saleId]);
-    await client.query('COMMIT');
-  } catch (e) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {}
-    return res.status(500).json({
-      message: process.env.DEBUG_ERRORS === '1' ? e.message : 'Server error'
-    });
-  } finally {
-    client.release();
-  }
-  let shiprocket = null;
-  let shiprocket_error = null;
-  let finalStatus = 'PLACED';
-  try {
-    const shippingState = await shippingWorkflow.connect(saleId, {
-      fresh: true
-    });
-    shiprocket = {
-      ...shippingState.shipment,
-      order_id: shippingState.shipment.shiprocket_order_id,
-      shipment_id: shippingState.shipment.shiprocket_shipment_id
-    };
-    finalStatus = bestOrderStatus([shiprocket.status, ...collectStatusValues(shiprocket)], 'CONFIRMED');
-    await syncSaleStatus(pool, saleId, finalStatus);
-  } catch (e) {
-    shiprocket_error = e?.message || String(e);
-    console.error('[web-order-shipping]', saleId, shiprocket_error);
-  }
-  return res.json({
-    id: saleId,
-    status: finalStatus,
-    payment_status,
-    branch_id: chosenBranchId,
-    shiprocket,
-    shiprocket_error
-  });
-});
+router.post('/web/place', (_req, res) => res.status(410).json({
+  message: 'Checkout has been updated. Refresh the website and review your order again.'
+}));
 router.get('/', requireAuth, async (req, res) => {
   try {
     const role = String(req.user?.role_enum || req.user?.role || '').toUpperCase();
@@ -244,94 +91,17 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 router.get('/track/:orderId/:channelId?', getTracking);
-router.post('/cancel', async (req, res) => {
-  const {
-    sale_id,
-    payment_type,
-    reason,
-    cancellation_source
-  } = req.body || {};
-  if (!sale_id) {
-    return res.status(400).json({
-      ok: false,
-      message: 'sale_id required'
-    });
-  }
-  const client = await pool.connect();
-  let shiprocketOrderIds = [];
-  let salePaymentStatus = null;
+router.post('/cancel', requireAuth, async (req, res) => {
   try {
-    await client.query('BEGIN');
-    const orderQ = await client.query(`SELECT id, status, payment_status
-       FROM sales
-       WHERE id = $1::uuid
-       FOR UPDATE`, [sale_id]);
-    if (!orderQ.rowCount) {
-      await client.query('ROLLBACK');
-      client.release();
-      return res.status(404).json({
-        ok: false,
-        message: 'Order not found'
-      });
-    }
-    const sale = orderQ.rows[0];
-    salePaymentStatus = sale.payment_status || null;
-    const currentStatus = String(sale.status || '').toUpperCase();
-    if (currentStatus === 'CANCELLED') {
-      await client.query('ROLLBACK');
-      client.release();
-      return res.status(400).json({
-        ok: false,
-        message: 'Order already cancelled'
-      });
-    }
-    if (currentStatus === 'DELIVERED' || currentStatus === 'RTO') {
-      await client.query('ROLLBACK');
-      client.release();
-      return res.status(400).json({
-        ok: false,
-        message: 'Order cannot be cancelled'
-      });
-    }
-    const shipQ = await client.query(`SELECT DISTINCT shiprocket_order_id
-       FROM shipments
-       WHERE sale_id = $1
-         AND shiprocket_order_id IS NOT NULL`, [sale_id]);
-    shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean);
-    await client.query(`UPDATE sales SET status = 'CANCELLED', updated_at = now() WHERE id = $1::uuid`, [sale_id]);
-    await client.query(`UPDATE shipments SET status = 'CANCELLED', raw_status = 'CANCELLED', status_synced_at = now(), updated_at = now() WHERE sale_id = $1`, [sale_id]);
-    await client.query(`INSERT INTO order_cancellations (sale_id, payment_type, reason, cancellation_source, created_at)
-       VALUES ($1::uuid,$2,$3,$4,now())
-       ON CONFLICT DO NOTHING`, [sale_id, payment_type || salePaymentStatus, reason || null, cancellation_source || null]);
-    await client.query('COMMIT');
-    client.release();
-  } catch {
-    try {
-      await client.query('ROLLBACK');
-    } catch {}
-    try {
-      client.release();
-    } catch {}
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to cancel order'
+    const result = await require('../services/orderCancellation').adminCancellation(req.user, req.body?.sale_id, req.body || {});
+    res.json({
+      ok: true,
+      ...result
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      message: e.status ? e.message : 'Cancellation could not be completed. Please review the request.'
     });
   }
-  if (shiprocketOrderIds.length) {
-    try {
-      const sr = new Shiprocket({
-        pool
-      });
-      await sr.init();
-      await sr.cancelOrders({
-        order_ids: shiprocketOrderIds
-      });
-    } catch {}
-  }
-  return res.json({
-    ok: true,
-    id: sale_id,
-    status: 'CANCELLED'
-  });
 });
 module.exports = router;

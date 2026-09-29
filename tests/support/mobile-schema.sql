@@ -30,3 +30,6 @@ CREATE TABLE product_categories(id bigint PRIMARY KEY,name text,parent_id bigint
 ALTER TABLE products ADD COLUMN category_id bigint;
 CREATE TABLE return_requests(id bigserial PRIMARY KEY,sale_id uuid,customer_email text,customer_mobile text,type text,reason text,notes text,status text,refund_status text,created_at timestamptz DEFAULT now());
 CREATE TABLE return_items(id bigserial,request_id bigint,variant_id bigint,qty integer,reason_code text,condition_note text);
+
+ALTER TABLE reward_point_lots ADD COLUMN created_at timestamptz DEFAULT now();
+CREATE TABLE order_cancellations(sale_id uuid UNIQUE,payment_type text,reason text,cancellation_source text,created_at timestamptz);

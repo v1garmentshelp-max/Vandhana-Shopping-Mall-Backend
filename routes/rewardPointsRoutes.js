@@ -14,6 +14,9 @@ const {
   expireLots
 } = require('../services/rewardPointsService');
 const router = express.Router();
+router.use('/admin', requireAuth, (req, res, next) => String(req.user?.role_enum || req.user?.role) === 'SUPER_ADMIN' ? next() : res.status(403).json({
+  message: 'Super admin access required.'
+}));
 const asPositiveInt = (value, fallback) => {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) {
