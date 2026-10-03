@@ -21,7 +21,7 @@ router.use((_req, res, next) => {
   next();
 });
 router.use('/admin', requireAuth, (req, res, next) => {
-  if (!['SUPER_ADMIN', 'BRANCH_ADMIN'].includes(String(req.user?.role_enum || req.user?.role))) return res.status(403).json({
+  if (!['SUPER_ADMIN', 'BRANCH_ADMIN'].includes(String(req.user?.role_enum || req.user?.role)) && !/^BRANCH\d+$/.test(String(req.user?.role_enum || req.user?.role))) return res.status(403).json({
     message: 'Staff access required.'
   });
   next();

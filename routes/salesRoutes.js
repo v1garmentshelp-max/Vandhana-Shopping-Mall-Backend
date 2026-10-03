@@ -15,6 +15,9 @@ const {
   releaseRewardsForSale
 } = require('../services/rewardPointsService');
 const router = express.Router();
+const {requireOrderStaff}=require('../middleware/orderStaffAuth');
+const {requireCustomerAuth}=require('../middleware/customerAuth');
+const {requireSuperAdmin}=require('../middleware/auth');
 const isDebug = () => String(process.env.DEBUG_ERRORS || '').trim() === '1';
 const uuid = () => {
   if (typeof crypto.randomUUID === 'function') {
@@ -49,32 +52,7 @@ const toArray = x => {
   return [];
 };
 const statusText = s => String(s || '').trim().toUpperCase();
-const normalizeOrderStatus = value => {
-  const s = statusText(value);
-  if (!s) return '';
-  if (s.includes('CANCEL')) {
-    return 'CANCELLED';
-  }
-  if (s.includes('DELIVERED') || s.includes('DELIVERED TO') || s.includes('DELIVER')) {
-    return 'DELIVERED';
-  }
-  if (s.includes('OUT FOR DELIVERY') || s.includes('OUT_FOR_DELIVERY')) {
-    return 'SHIPPED';
-  }
-  if (s.includes('IN TRANSIT') || s.includes('TRANSIT') || s.includes('DISPATCH') || s.includes('DISPATCHED') || s.includes('SHIPPED') || s.includes('PICKED') || s.includes('PICKUP')) {
-    return 'SHIPPED';
-  }
-  if (s.includes('PACKED') || s.includes('MANIFEST') || s.includes('AWB') || s.includes('READY TO SHIP') || s.includes('READY_TO_SHIP')) {
-    return 'PACKED';
-  }
-  if (s.includes('CONFIRMED') || s.includes('PROCESSING') || s.includes('ACCEPTED') || s.includes('CREATED')) {
-    return 'CONFIRMED';
-  }
-  if (s.includes('PLACED') || s.includes('NEW')) {
-    return 'PLACED';
-  }
-  return s;
-};
+const normalizeOrderStatus = require('../services/orderStatusSync').normalizeOrderStatus;
 const statusRank = status => {
   const s = normalizeOrderStatus(status);
   if (s === 'PLACED') {
@@ -199,8 +177,7 @@ const getLatestShipment = shipments => {
 };
 const applyEffectiveStatus = (sale, shipments = []) => {
   const latestShipment = getLatestShipment(shipments);
-  const shipmentStatuses = toArray(shipments).flatMap(s => collectStatusValues(s));
-  const effectiveStatus = bestOrderStatus([sale?.status, sale?.shipment_status, sale?.shipping_status, sale?.shiprocket_status, sale?.tracking_status, sale?.current_status, latestShipment?.status, latestShipment?.current_status, latestShipment?.shipment_status, latestShipment?.shiprocket_status, latestShipment?.awb ? 'PACKED' : '', ...shipmentStatuses], sale?.status || 'PLACED');
+  const effectiveStatus = String(sale?.status||'').toUpperCase() || normalizeOrderStatus(latestShipment?.status) || 'PLACED';
   return {
     ...sale,
     stored_status: sale?.status || null,
@@ -1199,7 +1176,7 @@ router.post('/web/place', (_req, res) => res.status(410).json({
     shiprocket_error
   });
 });
-router.post('/web/b2b-place', async (req, res) => {
+router.post('/web/b2b-place', requireOrderStaff, requireSuperAdmin, async (req, res) => {
   const {
     customer_email,
     customer_name,
@@ -1370,21 +1347,26 @@ router.post('/web/set-payment-status', (_req, res) => res.status(410).json({
     client.release();
   }
 });
-router.get('/web', async (_req, res) => {
+router.get('/web', requireOrderStaff, async (req, res) => {
   try {
+    const branch=require('../services/orderManagement').branchScope(req.user);
     const list = await pool.query(`SELECT
              s.*,
              oc.payment_type AS cancellation_payment_type,
              oc.reason AS cancellation_reason,
              oc.cancellation_source,
-             oc.created_at AS cancellation_created_at
+             oc.created_at AS cancellation_created_at,
+             c.status AS cancellation_status,c.refund_status,c.refund_amount_paise,c.refund_points,
+             CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status
            FROM sales s
            LEFT JOIN order_cancellations oc
              ON oc.sale_id = s.id
+           LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
+           WHERE ($1::bigint IS NULL OR s.branch_id=$1)
            ORDER BY
              s.created_at DESC NULLS LAST,
              s.id DESC
-           LIMIT 200`);
+           LIMIT 200`,[branch]);
     const rows = await enrichSalesWithShipments(list.rows);
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.set('Pragma', 'no-cache');
@@ -1396,29 +1378,10 @@ router.get('/web', async (_req, res) => {
     });
   }
 });
-router.get('/web/by-user', async (req, res) => {
+router.get('/web/by-user', requireCustomerAuth, async (req, res) => {
   try {
-    const email = String(req.query.email || '').trim();
-    const mobile = String(req.query.mobile || '').trim();
-    if (!email && !mobile) {
-      return res.status(400).json({
-        message: 'email or mobile required'
-      });
-    }
-    const params = [];
-    const conds = ["s.source = 'WEB'"];
-    const ors = [];
-    if (email) {
-      params.push(email);
-      ors.push(`LOWER(s.customer_email) = LOWER($${params.length})`);
-    }
-    if (mobile) {
-      params.push(mobile);
-      ors.push(`regexp_replace(s.customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`);
-    }
-    if (ors.length) {
-      conds.push(`(${ors.join(' OR ')})`);
-    }
+    const params=[req.customer.id];
+    const conds=["s.source='WEB'","EXISTS (SELECT 1 FROM vandana_users u WHERE u.id=$1 AND (lower(u.email)=lower(s.login_email) OR lower(u.email)=lower(s.customer_email)))"];
     const salesQ = await pool.query(`SELECT
              s.id,
              s.status,
@@ -1433,10 +1396,13 @@ router.get('/web/by-user', async (req, res) => {
              oc.payment_type AS cancellation_payment_type,
              oc.reason AS cancellation_reason,
              oc.cancellation_source,
-             oc.created_at AS cancellation_created_at
+             oc.created_at AS cancellation_created_at,
+             c.status AS cancellation_status,c.refund_status,c.refund_amount_paise,c.refund_points,
+             CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status
            FROM sales s
            LEFT JOIN order_cancellations oc
              ON oc.sale_id = s.id
+           LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
            WHERE ${conds.join(' AND ')}
            ORDER BY
              s.created_at DESC NULLS LAST,
@@ -1469,7 +1435,7 @@ router.get('/web/by-user', async (req, res) => {
     });
   }
 });
-router.get('/web/:id', async (req, res) => {
+router.get('/web/:id', requireCustomerAuth, async (req, res) => {
   const id = String(req.params.id || '').trim();
   if (!id) {
     return res.status(400).json({
@@ -1492,11 +1458,15 @@ router.get('/web/:id', async (req, res) => {
              oc.payment_type AS cancellation_payment_type,
              oc.reason AS cancellation_reason,
              oc.cancellation_source,
-             oc.created_at AS cancellation_created_at
+             oc.created_at AS cancellation_created_at,
+             c.status AS cancellation_status,c.refund_status,c.refund_amount_paise,c.refund_points,
+             CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status
            FROM sales s
            LEFT JOIN order_cancellations oc
              ON oc.sale_id = s.id
-           WHERE s.id = $1::uuid`, [id]);
+           LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
+           WHERE s.id = $1::uuid AND s.source='WEB'
+             AND EXISTS (SELECT 1 FROM vandana_users u WHERE u.id=$2 AND (lower(u.email)=lower(s.login_email) OR lower(u.email)=lower(s.customer_email)))`, [id,req.customer.id]);
     if (!saleQ.rowCount) {
       return res.status(404).json({
         message: 'Not found'
@@ -1516,7 +1486,7 @@ router.get('/web/:id', async (req, res) => {
     });
   }
 });
-router.get('/admin', requireAuth, async (req, res) => {
+router.get('/admin', requireOrderStaff, async (req, res) => {
   try {
     const role = getUserRole(req);
     const isSuper = role === 'SUPER_ADMIN';
@@ -1530,7 +1500,7 @@ router.get('/admin', requireAuth, async (req, res) => {
         });
       }
       params.push(branchId);
-      where.push(`(s.branch_id = $${params.length} OR s.is_b2b = true)`);
+      where.push(`s.branch_id = $${params.length}`);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const list = await pool.query(`SELECT
@@ -1538,10 +1508,13 @@ router.get('/admin', requireAuth, async (req, res) => {
              oc.payment_type AS cancellation_payment_type,
              oc.reason AS cancellation_reason,
              oc.cancellation_source,
-             oc.created_at AS cancellation_created_at
+             oc.created_at AS cancellation_created_at,
+             c.status AS cancellation_status,c.refund_status,c.refund_amount_paise,c.refund_points,
+             CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status
            FROM sales s
            LEFT JOIN order_cancellations oc
              ON oc.sale_id = s.id
+           LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
            ${whereSql}
            ORDER BY
              s.created_at DESC NULLS LAST,
@@ -1558,7 +1531,7 @@ router.get('/admin', requireAuth, async (req, res) => {
     });
   }
 });
-router.get('/admin/:id', requireAuth, async (req, res) => {
+router.get('/admin/:id', requireOrderStaff, async (req, res) => {
   const id = String(req.params.id || '').trim();
   if (!id) {
     return res.status(400).json({
@@ -1578,7 +1551,7 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
         });
       }
       params.push(branchId);
-      where += ` AND (s.branch_id = $2 OR s.is_b2b = true)`;
+      where += ` AND s.branch_id = $2`;
     }
     const saleQ = await pool.query(`SELECT
              s.id,
@@ -1595,10 +1568,13 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
              oc.payment_type AS cancellation_payment_type,
              oc.reason AS cancellation_reason,
              oc.cancellation_source,
-             oc.created_at AS cancellation_created_at
+             oc.created_at AS cancellation_created_at,
+             c.status AS cancellation_status,c.refund_status,c.refund_amount_paise,c.refund_points,
+             CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status
            FROM sales s
            LEFT JOIN order_cancellations oc
              ON oc.sale_id = s.id
+           LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
            WHERE ${where}`, params);
     if (!saleQ.rowCount) {
       return res.status(404).json({
@@ -1619,7 +1595,7 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
     });
   }
 });
-router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
+router.post('/web/b2b-update-status', requireOrderStaff, requireSuperAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -1656,7 +1632,7 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
            SET
              ${updates.join(', ')},
              updated_at = now()
-           WHERE id = $1::uuid
+           WHERE id = $1::uuid AND is_b2b=true
            RETURNING
              id,
              status,

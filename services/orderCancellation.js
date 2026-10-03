@@ -65,6 +65,7 @@ function publicRequest(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     refund_status: row.refund_status,
+    refund_reference: row.refund_reference || null,
     refund_amount: Number(row.refund_amount_paise) / 100,
     reward_points: Number(row.refund_points),
     excluded_fees: Number(row.excluded_fees_paise) / 100,
@@ -115,7 +116,7 @@ async function requestCancellation(user, id, body, staff = null) {
 }
 function staffAccess(staff, sale) {
   const role = String(staff?.role_enum || staff?.role || '').toUpperCase();
-  if (role !== 'SUPER_ADMIN' && !(role === 'BRANCH_ADMIN' && Number(staff.branch_id) === Number(sale.branch_id))) throw error('You do not have access to this order.', 403);
+  if (role !== 'SUPER_ADMIN' && !((role === 'BRANCH_ADMIN' || /^BRANCH\d+$/.test(role)) && Number(staff.branch_id)>0 && Number(staff.branch_id) === Number(sale.branch_id))) throw error('You do not have access to this order.', 403);
 }
 async function verifyCarrier(db, s) {
   if (s.workflow?.create_attempted && !s.shipments.some(x => x.shiprocket_order_id)) throw error('Find and link the existing Shiprocket booking before processing cancellation.');

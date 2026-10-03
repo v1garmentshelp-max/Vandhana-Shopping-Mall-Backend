@@ -2,6 +2,7 @@ const express = require('express')
 const pool = require('../db')
 
 const router = express.Router()
+router.use(require('../middleware/legacyCustomerAccess').requireOwnCustomerId)
 
 const toInt = (v) => {
   const n = Number(v)

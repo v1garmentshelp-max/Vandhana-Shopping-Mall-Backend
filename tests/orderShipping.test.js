@@ -151,7 +151,7 @@ before(async () => {
   await db.exec(`ALTER TABLE sales ADD COLUMN updated_at timestamptz;
     ALTER TABLE shipments ADD COLUMN delivered_at timestamptz, ADD COLUMN tracking_url text,
       ADD COLUMN label_url text, ADD COLUMN current_location text, ADD COLUMN status_synced_at timestamptz,
-      ADD COLUMN last_tracking_payload jsonb;`);
+      ADD COLUMN last_tracking_payload jsonb, ADD COLUMN carrier_event_at timestamptz;`);
 });
 after(async () => {
   await db.close();
@@ -280,6 +280,10 @@ test('out-for-delivery, failed delivery, pickup and RTO cannot become delivered'
   assert.equal(normalizeOrderStatus('PICKUP SCHEDULED'), 'PACKED');
   assert.equal(normalizeOrderStatus('RTO DELIVERED'), 'RTO');
   assert.equal(normalizeOrderStatus('DELIVERED'), 'DELIVERED');
+  assert.equal(normalizeOrderStatus('CANCELLATION REQUESTED'),'');
+  const current=extractShipmentInfo({current_status:'IN TRANSIT',shipment_track_activities:[{activity:'DELIVERED'},{activity:'CANCELLED'}]});
+  assert.equal(current.status,'SHIPPED');
+  assert.equal(extractShipmentInfo({current_status:'RTO DELIVERED'}).status,'RTO');
 });
 test('return windows use a carrier delivery timestamp, never an estimate or the tracking refresh time', async () => {
   const id = await sale();
@@ -330,4 +334,25 @@ test('a customer cancellation request blocks dispatch before any carrier call', 
     fresh: true
   }), /Dispatch is paused/);
   assert.equal(creates, before);
+});
+test('Shiprocket Indian timestamps and delayed webhooks preserve the latest actual carrier event',async()=>{
+  await db.query('DELETE FROM shipments');
+  const id=await sale();await flow.connect(id,{fresh:true});
+  const first=(await db.query('SELECT * FROM shipments WHERE sale_id=$1',[id])).rows;
+  const payload={sr_order_id:99,order_id:id,current_status:'IN TRANSIT',current_timestamp:'03 10 2026 14:20:00',scans:[{date:'2026-10-03 10:00:00',location:'Old hub'},{date:'2026-10-03 14:20:00',location:'Current hub'}]};
+  const info=extractShipmentInfo(payload);assert.equal(info.event_at,'2026-10-03T08:50:00.000Z');assert.equal(info.current_location,'Current hub');assert.equal(info.shiprocket_order_id,'99');
+  let saved=await syncShipmentRows(pool,first,payload);
+  await syncShipmentRows(pool,saved,{current_status:'CANCELLED',current_timestamp:'03 10 2026 10:00:00'});
+  let current=(await db.query('SELECT * FROM shipments WHERE sale_id=$1',[id])).rows[0];assert.equal(current.status,'SHIPPED');assert.equal(current.raw_status,'IN TRANSIT');
+  saved=await syncShipmentRows(pool,[current],{current_status:'DELIVERED',current_timestamp:'03 10 2026 15:00:00'});
+  assert.equal(new Date(saved[0].delivered_at).toISOString(),'2026-10-03T09:30:00.000Z');
+});
+test('measured forward parcels reach the carrier and invalid measurements cannot create a booking',async()=>{
+  await db.query('DELETE FROM shipments');
+  const id=await sale(),before=creates;
+  await assert.rejects(flow.connect(id,{fresh:true,parcel:{weight:0,length:20,breadth:15,height:8}}),/measured package/);
+  assert.equal(creates,before);
+  await flow.connect(id,{fresh:true,parcel:{weight:1.25,length:20,breadth:15,height:8}});
+  assert.equal(lastOrder.order.weight,1.25);
+  assert.deepEqual(lastOrder.order.dimensions,{length:20,breadth:15,height:8});
 });

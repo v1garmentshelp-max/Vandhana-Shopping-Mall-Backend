@@ -1,0 +1,303 @@
+READ FILE_LOCATIONS_AND_INSTALL.txt FIRST. The original full admin is not included; exact integration files are supplied.
+
+V1GARMENTS — ORDER OPERATIONS UPDATE 1.6
+Prepared: 03 October 2026
+
+Updated backend, website, mobile source, Android test APK, admin integration
+files and a standalone order-admin application are included.
+
+WHAT WAS FIXED AND ADDED
+
+1. Cancellation visibility
+   Customer requests appear immediately in the admin queue and older
+   /api/orders and /api/sales/admin lists, before cancellation is completed.
+   Display status, reason, request time, payment method, refund amount and
+   points are available. Dispatch pauses while an active request is checked.
+   Staff can verify/process a cancellation or reject it with a recorded reason.
+
+2. Refund tracking and duplicate protection
+   Online refunds use the original captured Razorpay payment. The backend
+   checks the payment, currency, order and exact approved amount in paise.
+   One durable refund operation and immutable idempotency key are saved before
+   contacting the gateway. Timeout retries reuse the same key and body.
+   Pending, processed, failed and review-required states, provider reference
+   and timestamps are visible. Signed refund webhooks fetch the authoritative
+   provider result; repeated events cannot finalize a refund twice.
+   Failed refunds require reconciliation before any replacement is considered.
+   COD refunds require a completed bank/UPI transfer reference and exact amount;
+   recording that reference does not send money.
+
+3. Points, stock and invoice consistency
+   Confirmed cancellations restore eligible stock and redeemed points once.
+   Partial returns allocate cash/points across the original invoice quantities.
+   Restoration preserves the original reward lot expiry; expired points do
+   not become new, unexpired points. Delivery and COD charges remain excluded
+   under the existing product-only refund policy. Older orders with missing
+   fee or item evidence are held for review instead of guessing an amount.
+
+4. Returns and reverse shipping
+   Shiprocket return orders now use the customer's address as pickup and the
+   original branch warehouse as destination, with original invoice prices.
+   Booking IDs are saved before return courier/AWB/pickup actions. A timed-out
+   booking can be linked using its existing RET-{return_id} reference.
+   Staff can inspect received goods, record notes and explicitly choose whether
+   sellable stock should be restored. Receipt, restock and refund are separate
+   actions. A courier delivery webhook alone cannot restock goods or refund.
+   Customers can see reverse shipment status and AWB on website/mobile.
+
+5. Admin operations and audit
+   Search, pagination, payment/status filters, cancellation/return/refund queues,
+   summary counts and RTO/shipping exceptions are available. Order details show
+   items, totals, carrier data, refund operations, rewards and a database audit
+   timeline. Visible screens refresh every 30 seconds and support manual refresh.
+   Branch admins are scoped to their branch; super admins can review all branches.
+   Existing branch-role names are supported when the token has a branch_id.
+
+6. Shipping reliability
+   Existing/uncertain forward bookings must be reconciled before creating a
+   replacement. AWB and pickup attempts retain recoverable state. Measured
+   parcel values are accepted for manual dispatch and return approval.
+   Carrier status uses the current event rather than old history/estimated dates.
+   Indian carrier timestamps are interpreted correctly; older events cannot
+   overwrite newer tracking. RTO and failed/out-for-delivery events are not
+   treated as delivered. Labels, invoices and manifests are available to staff.
+
+7. Website and mobile parity
+   Both show cancellation, refund references, points, returns and order history.
+   Mobile checkout now requests policy version 2 with the selected payment
+   method, matching website delivery/COD charges. Payment recovery is disabled
+   for cancelled/cancellation-pending/refunded orders. Native version is 1.6.0,
+   Android versionCode 7 and iOS buildNumber 7.
+
+8. Additional ownership protection
+   Legacy cart, wishlist and profile APIs now require the owning customer session;
+   the website callers include authentication. Legacy sales reads enforce customer
+   ownership or staff/branch scope. The older manual B2B creation/status endpoints
+   now require super-admin access. This is an access change for any external
+   client still calling those legacy endpoints without authentication.
+
+WHAT IS INCLUDED — ORIGINAL PROJECT STRUCTURE
+
+vandhana-backend/   Complete updated backend, migrations and tests.
+vandhana-website/   Complete updated website.
+V1Garments-Mobile-Source/V1Garments-Mobile/   Complete mobile source/assets/native projects.
+V1Garments-Mobile-Source/V1Garments-Backend/  Synced backend reference copy.
+V1Garments-Mobile-Source/V1Garments-Website/  Synced website reference copy.
+vandhana-admin/    EXACT CHANGED ADMIN FILES ONLY; copy into existing admin root.
+FILE_LOCATIONS_AND_INSTALL.txt   Exact project roots and ADD/REPLACE file list.
+API_AND_OPERATIONS.txt   Verified provider endpoints and operational steps.
+V1Garments-Mobile-Source/verification/ and RELEASE_VERIFICATION.json   Test evidence.
+
+The previously delivered V1Garments-Android-Test-1.6.apk is supplied separately.
+This folder-structure correction changes no mobile runtime code or APK bytes.
+The original vandhana-admin(2).zip exists, but its download returned HTTP 502
+and its complete contents could not be opened. This package supplies admin
+integration changes, not a rebuilt copy of the complete original admin.
+
+DEPLOYMENT ORDER
+
+1. Preserve a database backup and your existing environment configuration.
+2. Apply the backend migrations to the existing application database.
+3. Deploy the updated backend and configure provider webhook destinations.
+4. Deploy the updated website and integrated/standalone order admin together.
+5. Install the Android test app and verify the actual provider flows.
+
+Do not run tests/support SQL against production. It is an isolated test fixture,
+not a replacement database. This release was not deployed to production, and
+no live customer payment, carrier cancellation, shipment or refund was made.
+
+BACKEND SETUP
+
+Use Node.js 24 and the existing PostgreSQL database/schema.
+From vandhana-backend:
+
+    npm ci
+    npm run migrate:mobile
+    npm run migrate:commerce
+    npm run preflight:mobile
+    npm run preflight:commerce
+    npm start
+
+The mobile migration prepares the earlier supplied mobile/shipping schema and
+is repeatable. The commerce command applies 20260929_store_commerce.sql and
+20261003_order_operations.sql transactionally. The new migration adds schema
+and audit triggers; it does not rewrite customer balances or original order totals.
+Older installations must satisfy the base schema preflight before migration.
+If it fails, preserve the error and resolve the schema difference before deploying.
+
+Set the server values in .env.example using your existing real credentials:
+
+    DATABASE_URL, DB_SCHEMA, JWT_SECRET
+    RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+    MOBILE_RAZORPAY_WEBHOOK_SECRET or RAZORPAY_WEBHOOK_SECRET
+    SHIPROCKET_API_USER_EMAIL, SHIPROCKET_API_USER_PASSWORD
+    SHIPROCKET_WEBHOOK_TOKEN
+    MOBILE_BRANCH_ID and CORS_ORIGINS
+
+Keep the existing real JWT secret when applying the update. Default development
+secrets are refused by the new protected routes. All provider secrets stay on
+the backend. Never put a gateway secret or Shiprocket password in web/mobile env.
+Retain your existing SMTP, Cloudinary and other application environment values.
+
+Configure SHIPROCKET_DEFAULT_WEIGHT_KG, SHIPROCKET_DEFAULT_LENGTH_CM,
+SHIPROCKET_DEFAULT_BREADTH_CM and SHIPROCKET_DEFAULT_HEIGHT_CM for automatic
+forward bookings. If absent, legacy defaults are 0.5 kg and 10 x 10 x 5 cm.
+Those values must match your packed parcels. Manual staff booking accepts actual
+measurements; it does not change an already-created carrier booking's dimensions.
+
+SHIPROCKET CONFIGURATION
+
+Create/use a Shiprocket API user in your own account. Map an existing pickup
+location to each fulfilling branch. Include complete warehouse address, city,
+state, pincode and real warehouse phone; returns cannot be approved without
+valid customer and destination details.
+
+Webhook URL:
+    https://YOUR-BACKEND/api/webhooks/orders
+Authentication header:
+    x-api-key: the exact SHIPROCKET_WEBHOOK_TOKEN value configured on the backend
+
+Use /api/webhooks/orders for the provider callback. Carrier webhooks update
+shipment tracking and order audit; reverse-shipment events do not mark goods
+received or authorize stock/refund actions.
+
+RAZORPAY CONFIGURATION
+
+Choose ONE callback URL for the shared website/mobile backend:
+    https://YOUR-BACKEND/api/mobile/payments/webhook
+or the alias:
+    https://YOUR-BACKEND/api/storefront/payments/webhook
+
+Enable payment.captured, refund.created, refund.processed and refund.failed.
+Use the same webhook secret in the Razorpay dashboard and backend. The body must
+reach the raw-body route unchanged so its HMAC signature can be verified.
+Do not register both aliases for the same events merely because both exist.
+
+ADMIN INTEGRATION — EXISTING PROJECT
+
+Read FILE_LOCATIONS_AND_INSTALL.txt. In your existing admin root:
+  ADD     src/components/OrderOperations.jsx
+  ADD     src/components/OrderOperations.css
+  REPLACE src/pages/OrderIssues.js
+
+Keep your App.js, NavbarAdmin.js, login and other pages. Keep/add the existing
+protected /order-issues route; the supplied mobile Admin-Patch already has it.
+Use your existing admin package.json/dependencies and run npm run build there.
+The integration component recognizes auth_token, admin_token, token, adminToken
+and accessToken in localStorage. Adjust getStaffToken() if your login uses a
+different token mechanism. Staff JWTs must contain role and branch_id for branch
+staff. Add the admin origin to backend CORS_ORIGINS. Configure REACT_APP_API_BASE
+for a CRA admin or VITE_API_BASE for Vite, without a trailing /api suffix.
+
+The earlier separate standalone order-admin app is optional and does not replace
+your original admin. It is not needed to apply these exact 3 integration files.
+
+WEBSITE SETUP
+
+From vandhana-website:
+    npm ci
+    npm run build
+
+Deploy its dist output through your existing website deployment. The supplied
+website continues to use the existing backend host by default. New commerce
+requests use VITE_API_BASE. Some inherited catalogue/cart constants still name
+the supplied host; when moving the whole store to another host, update those
+legacy API_BASE constants too before rebuilding. Keep SPA route fallback enabled.
+
+MOBILE SETUP AND ANDROID TEST APK
+
+From V1Garments-Mobile:
+    npm ci
+    npm run typecheck
+    npm test
+    npm start
+
+Set EXPO_PUBLIC_API_URL, EXPO_PUBLIC_WEBSITE_URL and EXPO_PUBLIC_BRANCH_ID for
+your environment. The delivered APK points to the supplied backend host and
+branch 3; deploy the updated backend there before checking the new operations.
+
+The new APK is version 1.6.0, versionCode 7, package com.v1garments.mobile.
+It supports ARM64 Android 7.0+ devices and bundles JavaScript/assets. It uses
+the same supplied development test certificate as the original test APK, so
+it can update that app on compatible devices. It needs no Expo Go or Metro.
+Install the APK from your Android downloads app and allow installation when
+Android asks. Internet access is required for the store.
+
+This is an internal TEST APK. It is not signed with your Play Store production
+key. No physical/emulated Android device test was performed in this environment.
+The iOS source and Expo export were checked; there is no signed IPA or native
+Xcode build. iOS signing/build needs your Apple account and macOS/Xcode or EAS.
+
+Local Android rebuild requirements: Node 24, full JDK 17, SDK 36, Build Tools
+35.0.0/36.0.0, NDK 27.1.12297006, CMake 3.22.1 and the Gradle 9 wrapper.
+Configure your Android SDK path locally, then:
+
+    cd android
+    ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --max-workers=2
+
+Output: android/app/build/outputs/apk/release/app-release.apk
+The included test keystore is only for the supplied test release. Use your own
+production signing setup for store releases. npm ci runs the retained narrow
+React Native/Foojay compatibility patch needed by this Gradle toolchain.
+
+POLICY PRESERVED / CHECKOUT PARITY
+
+The existing store policy remains: cancellation within 7 days before dispatch,
+returns within 7 days of confirmed delivery, innerwear excluded, product-only
+refunds, delivery/COD fees excluded. Changing these business rules is a separate
+policy decision and should update customer-facing copy and backend rules together.
+
+New version-2 checkouts use the product subtotal before rewards for the threshold:
+  Below Rs 1000: delivery Rs 30; COD adds Rs 10; online adds no COD fee.
+  Rs 1000 or above: delivery Rs 0; COD adds Rs 30; online adds no COD fee.
+Server STORE_* environment values can override these defaults. Existing saved
+legacy checkouts keep their original invoice; they are not repriced on recovery.
+Refunding all products can still result in PARTIALLY_REFUNDED because fees remain
+excluded. Points and cash are tracked separately.
+
+PROVIDER / DATABASE ACCEPTANCE BEFORE CUSTOMER RELEASE
+
+The automated tests used isolated database fixtures and simulated provider APIs.
+They do not prove your live database, credentials, carrier account or signing
+configuration is deployed correctly. Verify with your own staging/provider setup:
+
+  - COD and captured online orders, with and without reward redemption.
+  - Customer cancellation visible immediately to the correct admin branch.
+  - Duplicate cancellation processing restores stock/points only once.
+  - Provider pending/processed/failed refund and repeated signed webhooks.
+  - Refund after a timeout recovers the same provider request, without a new key.
+  - Partial return pickup/AWB, receipt inspection, optional stock restoration
+    and exact cash/points allocation across multiple selected quantities.
+  - Another customer/branch cannot read or change the order.
+  - Delivered/RTO/out-for-delivery carrier events and stale events.
+  - Android native login, checkout, payment, cancellation and return screens.
+  - Existing admin navigation and other modules after the complete admin merge.
+
+REMAINING OPERATIONAL LIMITS
+
+RTO/NDR and shipping exceptions appear for staff review. An automatic RTO stock
+receipt/refund or NDR rescheduling engine was not added. Verify returned goods
+at the warehouse before deciding stock/refund treatment. Replacement-order
+fulfillment remains your existing workflow; this update covers return/refund
+inspection and shipping rather than creating a new exchange checkout.
+There is no new unattended expiry worker for abandoned/uncertain old payments.
+Older ambiguous invoices/provider bookings require staff reconciliation.
+The full original admin integration and live deployment remain unverified.
+This is a tested order-operations update, not a guarantee that every inherited
+POS, B2B, catalogue or unrelated administrative feature has been fully audited.
+
+VERIFICATION RESULTS
+
+75 backend automated tests passed, including real SQL migration/enum/check
+fixtures, cancellation/reward/stock/refund ownership checks and provider retries.
+19 mobile automated tests and TypeScript check passed.
+Website TypeScript/production build and standalone admin production build passed.
+Expo web, Android and iOS exports passed; native Android release build passed.
+APK signature and 16 KiB ZIP alignment verified against the supplied test signer.
+Browser fixture checks passed for website/mobile cancellation and staff admin
+processing/refund/reverse courier/inspection flows, including 390 px layout.
+No production database migration or live provider transaction was executed.
+
+See API_AND_OPERATIONS.txt for the official Shiprocket/Razorpay sources and
+recovery steps. Files from older release notes, when included under
+legacy-reference/, are historical references and are not current verification.

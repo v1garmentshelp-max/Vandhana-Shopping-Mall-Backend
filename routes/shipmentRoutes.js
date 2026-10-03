@@ -11,7 +11,7 @@ const {
 
 const router = express.Router()
 
-router.get('/shipments/by-sale/:id', async (req, res) => {
+router.get('/shipments/by-sale/:id', require('../middleware/orderStaffAuth').requireOrderStaff, require('../middleware/orderStaffAuth').requireOrderBranch('id'), async (req, res) => {
   const id = req.params.id
 
   try {

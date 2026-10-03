@@ -1,16 +1,16 @@
 const router = require('express').Router()
 const pool = require('../db')
-const { requireAuth } = require('../middleware/auth')
+const { requireOrderStaff } = require('../middleware/orderStaffAuth')
 const Shiprocket = require('../services/shiprocketService')
 const { createWorkflow } = require('../services/orderShippingWorkflow')
 const workflow = createWorkflow(pool)
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-router.use(requireAuth)
+router.use(requireOrderStaff)
 router.use('/:id', async (req, res, next) => {
   try {
     const role = String(req.user.role || req.user.role_enum || '').toUpperCase()
-    if (role !== 'SUPER_ADMIN' && !/^BRANCH\d+$/.test(role)) return res.status(403).json({ message: 'Admin access required' })
+    if (role !== 'SUPER_ADMIN' && role !== 'BRANCH_ADMIN' && !/^BRANCH\d+$/.test(role)) return res.status(403).json({ message: 'Admin access required' })
     if (!uuidPattern.test(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' })
     const sale = (await pool.query('SELECT id,branch_id FROM sales WHERE id=$1', [req.params.id])).rows[0]
     if (!sale) return res.status(404).json({ message: 'Order not found' })
@@ -27,7 +27,7 @@ const run = fn => async (req, res) => {
   }
 }
 router.get('/:id', run(req => workflow.state(req.params.id)))
-router.post('/:id/connect', run(req => workflow.connect(req.params.id, { remote_order_id: req.body.remote_order_id, confirmed_absent: req.body.confirmed_absent === true })))
+router.post('/:id/connect', run(req => workflow.connect(req.params.id, { remote_order_id: req.body.remote_order_id, confirmed_absent: req.body.confirmed_absent === true, parcel: req.body.parcel })))
 router.get('/:id/tracking', run(req => workflow.tracking(req.params.id)))
 router.get('/:id/couriers', run(req => workflow.couriers(req.params.id)))
 router.post('/:id/awb', run(req => workflow.assignAwb(req.params.id, req.body.courier_id)))

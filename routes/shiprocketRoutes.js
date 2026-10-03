@@ -4,110 +4,17 @@ const Shiprocket = require('../services/shiprocketService')
 const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 
 const router = express.Router()
+const { requireOrderStaff, requireOrderBranch } = require('../middleware/orderStaffAuth')
+const { requireSuperAdmin } = require('../middleware/auth')
+// Public serviceability and authenticated carrier webhooks remain available.
+router.use('/shiprocket', (req,res,next) => {
+  if (req.path === '/webhook' || req.path === '/pincode') return next()
+  return requireOrderStaff(req,res,next)
+})
+router.use('/shiprocket/warehouses', requireSuperAdmin)
 
-const statusText = (s) => String(s || '').trim().toUpperCase()
-
-const normalizeOrderStatus = (value) => {
-  const s = statusText(value)
-
-  if (!s) return ''
-  if (s.includes('CANCEL')) return 'CANCELLED'
-  if (s.includes('RTO')) return 'RTO'
-  if (s.includes('RTO')) return 'RTO'
-  if (s.includes('UNDELIVERED') || s.includes('DELIVERY FAILED')) return 'SHIPPED'
-  if (s === 'DELIVERED' || s.startsWith('DELIVERED TO ')) return 'DELIVERED'
-  if (s.includes('PICKUP') && !s.includes('PICKED UP')) return 'PACKED'
-  if (s.includes('OUT FOR DELIVERY') || s.includes('OUT_FOR_DELIVERY')) return 'SHIPPED'
-  if (s.includes('IN TRANSIT') || s.includes('TRANSIT') || s.includes('DISPATCH') || s.includes('DISPATCHED') || s.includes('SHIPPED') || s.includes('PICKED')) return 'SHIPPED'
-  if (s.includes('PACKED') || s.includes('MANIFEST') || s.includes('AWB') || s.includes('READY TO SHIP') || s.includes('READY_TO_SHIP')) return 'PACKED'
-  if (s.includes('CONFIRMED') || s.includes('PROCESSING') || s.includes('ACCEPTED') || s.includes('CREATED')) return 'CONFIRMED'
-  if (s.includes('PLACED') || s.includes('NEW')) return 'PLACED'
-
-  return s
-}
-
-const statusRank = (status) => {
-  const s = normalizeOrderStatus(status)
-  if (s === 'PLACED') return 0
-  if (s === 'CONFIRMED') return 1
-  if (s === 'PACKED') return 2
-  if (s === 'SHIPPED') return 3
-  if (s === 'DELIVERED') return 4
-  if (s === 'RTO') return 5
-  return -1
-}
-
-const collectStatusValues = (input, depth = 0, out = []) => {
-  if (!input || depth > 8 || out.length > 180) return out
-
-  if (typeof input === 'string' || typeof input === 'number') {
-    const v = String(input).trim()
-    if (v && v.length <= 220) out.push(v)
-    return out
-  }
-
-  if (Array.isArray(input)) {
-    for (const item of input) collectStatusValues(item, depth + 1, out)
-    return out
-  }
-
-  if (typeof input === 'object') {
-    for (const [key, value] of Object.entries(input)) {
-      const k = String(key || '').toLowerCase()
-
-      if (
-        k.includes('status') ||
-        k.includes('activity') ||
-        k.includes('remark') ||
-        k.includes('description') ||
-        k.includes('event') ||
-        k.includes('scan')
-      ) {
-        if (typeof value === 'string' || typeof value === 'number') out.push(String(value))
-        else collectStatusValues(value, depth + 1, out)
-      } else if (typeof value === 'object') {
-        collectStatusValues(value, depth + 1, out)
-      }
-    }
-  }
-
-  return out
-}
-
-const bestOrderStatus = (values, fallback = 'PLACED') => {
-  const list = Array.isArray(values) ? values : [values]
-  let best = normalizeOrderStatus(fallback) || 'PLACED'
-  let bestRank = statusRank(best)
-
-  for (const value of list) {
-    const next = normalizeOrderStatus(value)
-    if (!next) continue
-
-    if (next === 'CANCELLED') return 'CANCELLED'
-    if (next === 'RTO') return 'RTO'
-
-    const rank = statusRank(next)
-    if (rank > bestRank) {
-      best = next
-      bestRank = rank
-    }
-  }
-
-  return best
-}
-
-const shouldUpdateStatus = (current, next) => {
-  const currentStatus = normalizeOrderStatus(current)
-  const nextStatus = normalizeOrderStatus(next)
-
-  if (!nextStatus) return false
-  if (currentStatus === 'CANCELLED') return false
-  if (currentStatus === 'DELIVERED' && nextStatus !== 'DELIVERED') return false
-  if (currentStatus === 'RTO' && nextStatus !== 'RTO') return false
-  if (nextStatus === 'CANCELLED') return currentStatus !== 'DELIVERED' && currentStatus !== 'RTO' && currentStatus !== 'CANCELLED'
-
-  return statusRank(nextStatus) > statusRank(currentStatus)
-}
+const sharedStatus = require('../services/orderStatusSync')
+const { statusText,normalizeOrderStatus,statusRank,collectStatusValues,bestOrderStatus,shouldUpdateStatus } = sharedStatus
 
 const normalizeRemittanceStatus = (value) => {
   const s = statusText(value)
@@ -190,24 +97,17 @@ const extractTrackingData = (tracking) => {
 
 const extractShipmentInfo = (raw, fallbackStatus = '') => {
   const data = extractTrackingData(raw) || raw || {}
-  const statuses = collectStatusValues(data)
-
-  const rawStatus =
-    findFirstByKeys(data, ['current_status', 'shipment_status', 'status', 'track_status', 'activity']) ||
-    statuses[0] ||
-    fallbackStatus ||
-    ''
-
-  const status = bestOrderStatus([...statuses, rawStatus], fallbackStatus || '')
+  const currentInfo = sharedStatus.extractShipmentInfo(raw,fallbackStatus)
+  const { statuses, raw_status: rawStatus, status } = currentInfo
   const awb = findFirstByKeys(data, ['awb_code', 'awb_number', 'awb'])
   const trackingUrl = findFirstByKeys(data, ['tracking_url', 'track_url'])
   const labelUrl = findFirstByKeys(data, ['label_url'])
-  const currentLocation = findFirstByKeys(data, ['current_location', 'current_city', 'destination_city', 'scan_location', 'scanned_location'])
-  const deliveredAt = findFirstByKeys(data, ['delivered_at', 'delivered_date', 'delivery_date'])
-  const shiprocketOrderId = findFirstByKeys(data, ['shiprocket_order_id', 'order_id'])
+  const currentLocation = currentInfo.current_location
+  const deliveredAt = currentInfo.delivered_at
+  const shiprocketOrderId = currentInfo.shiprocket_order_id
   const shiprocketShipmentId = findFirstByKeys(data, ['shiprocket_shipment_id', 'shipment_id'])
   const channelOrderId = findFirstByKeys(data, ['channel_order_id'])
-  const saleId = extractUuid(channelOrderId) || extractUuid(findFirstByKeys(data, ['sale_id'])) || extractUuid(shiprocketOrderId)
+  const saleId = currentInfo.sale_id
 
   const remittanceStatus =
     findFirstByKeys(data, ['remittance_status', 'cod_remittance_status', 'settlement_status', 'payment_remittance_status']) ||
@@ -424,71 +324,11 @@ const syncCodRemittance = async (saleId, shipment, info, raw) => {
   return q.rows[0] || null
 }
 
-const syncShipmentRows = async (rows, raw, fallbackStatus = '') => {
-  const info = extractShipmentInfo(raw, fallbackStatus)
-  const updated = []
-
-  for (const row of rows || []) {
-    const finalStatus = bestOrderStatus(
-      [
-        row.status,
-        info.status,
-        info.raw_status,
-        info.awb ? 'PACKED' : '',
-        ...info.statuses
-      ],
-      row.status || fallbackStatus || 'CONFIRMED'
-    )
-
-    const currentStatus = normalizeOrderStatus(row.status) || row.status || ''
-    const nextStatus = shouldUpdateStatus(currentStatus, finalStatus) ? finalStatus : currentStatus || finalStatus
-    const deliveredAt = parseDateValue(info.delivered_at)
-
-    const q = await pool.query(
-      `UPDATE shipments
-       SET status = COALESCE($2, status),
-           raw_status = COALESCE(NULLIF($3, ''), raw_status),
-           awb = COALESCE(NULLIF($4, ''), awb),
-           tracking_url = COALESCE(NULLIF($5, ''), tracking_url),
-           label_url = COALESCE(NULLIF($6, ''), label_url),
-           current_location = COALESCE(NULLIF($7, ''), current_location),
-           status_synced_at = now(),
-           last_tracking_payload = COALESCE($8::jsonb, last_tracking_payload),
-           delivered_at = CASE
-             WHEN $2 = 'DELIVERED' THEN COALESCE(delivered_at, $9::timestamptz, now())
-             ELSE delivered_at
-           END,
-           awb_assigned_at = CASE
-             WHEN COALESCE(NULLIF($4, ''), awb) IS NOT NULL THEN COALESCE(awb_assigned_at, now())
-             ELSE awb_assigned_at
-           END,
-           updated_at = now()
-       WHERE id = $1
-       RETURNING *`,
-      [
-        row.id,
-        nextStatus || null,
-        info.raw_status || '',
-        info.awb || '',
-        info.tracking_url || '',
-        info.label_url || '',
-        info.current_location || '',
-        JSON.stringify(info.raw || raw || {}),
-        deliveredAt
-      ]
-    )
-
-    const saved = q.rows[0]
-
-    if (saved?.sale_id) {
-      await syncSaleStatus(saved.sale_id, saved.status)
-      await syncCodRemittance(saved.sale_id, saved, info, raw)
-    }
-
-    updated.push(saved)
-  }
-
-  return updated
+const syncShipmentRows = async (rows,raw,fallbackStatus='') => {
+  const info=extractShipmentInfo(raw,fallbackStatus)
+  const saved=await sharedStatus.syncShipmentRows(pool,rows,raw,fallbackStatus)
+  for(const shipment of saved) if(shipment?.sale_id) await syncCodRemittance(shipment.sale_id,shipment,info,raw)
+  return saved
 }
 
 const syncShipmentByIdentifiers = async (identifiers = {}, raw = {}, fallbackStatus = '') => {
@@ -571,6 +411,10 @@ const handleShiprocketWebhook = async (req, res) => {
   let errorMessage = null
 
   try {
+    if(payload.is_return===true||Number(payload.is_return)===1){
+      const result=await require('../services/returnTracking').syncReturnTracking(pool,payload);
+      return res.status(200).json({ok:true,processed:result.matched>0,is_return:true});
+    }
     rows = await findShipmentRows({
       sale_id: info.sale_id,
       shiprocket_order_id: info.shiprocket_order_id,
@@ -599,6 +443,7 @@ const handleShiprocketWebhook = async (req, res) => {
     shipmentId: processedShipmentId
   })
 
+  if (errorMessage) return res.status(503).json({ ok:false,message:'Tracking update could not be recorded. Retry this event.' })
   return res.status(200).json({
     ok: true,
     processed: updated.length > 0 || !!processedSaleId,
@@ -792,7 +637,7 @@ async function getLatestShiprocketOrderIdForSale(saleId) {
   return { orderId }
 }
 
-router.get('/shiprocket/serviceability/:saleId', async (req, res) => {
+router.get('/shiprocket/serviceability/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const out = await computeServiceabilityForSaleId(req.params.saleId)
     if (out.error) return res.status(out.error.code).json(out.error.body)
@@ -803,7 +648,7 @@ router.get('/shiprocket/serviceability/:saleId', async (req, res) => {
   }
 })
 
-router.get('/shiprocket/serviceability/by-sale/:saleId', async (req, res) => {
+router.get('/shiprocket/serviceability/by-sale/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const out = await computeServiceabilityForSaleId(req.params.saleId)
     if (out.error) return res.status(out.error.code).json(out.error.body)
@@ -814,7 +659,7 @@ router.get('/shiprocket/serviceability/by-sale/:saleId', async (req, res) => {
   }
 })
 
-router.get('/shiprocket/serviceability/sale/:saleId', async (req, res) => {
+router.get('/shiprocket/serviceability/sale/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const out = await computeServiceabilityForSaleId(req.params.saleId)
     if (out.error) return res.status(out.error.code).json(out.error.body)
@@ -864,7 +709,7 @@ router.post('/shiprocket/assign-courier/by-sale/:saleId', (req, res) => res.stat
 router.post('/shiprocket/assign-courier', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
 router.post('/shiprocket/assign-awb/by-sale/:saleId', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
 router.post('/shiprocket/assign-awb', (req, res) => res.status(409).json({ message: 'Use the updated order shipping panel to generate AWB safely.' }))
-router.get('/shiprocket/tracking/by-sale/:saleId', async (req, res) => {
+router.get('/shiprocket/tracking/by-sale/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const saleId = req.params.saleId
     const out = await getLatestShiprocketOrderIdForSale(saleId)
@@ -901,7 +746,7 @@ router.get('/shiprocket/tracking/by-sale/:saleId', async (req, res) => {
   }
 })
 
-router.get('/shiprocket/label/:saleId', async (req, res) => {
+router.get('/shiprocket/label/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const saleId = req.params.saleId
     const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [saleId])
@@ -931,7 +776,7 @@ router.get('/shiprocket/label/:saleId', async (req, res) => {
   }
 })
 
-router.get('/shiprocket/invoice/:saleId', async (req, res) => {
+router.get('/shiprocket/invoice/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const saleId = req.params.saleId
     const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC', [saleId])
@@ -956,7 +801,7 @@ router.get('/shiprocket/invoice/:saleId', async (req, res) => {
   }
 })
 
-router.get('/shiprocket/manifest/:saleId', async (req, res) => {
+router.get('/shiprocket/manifest/:saleId', requireOrderBranch('saleId'), async (req, res) => {
   try {
     const saleId = req.params.saleId
     const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC', [saleId])

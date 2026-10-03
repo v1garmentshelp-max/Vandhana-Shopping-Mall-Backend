@@ -26,6 +26,7 @@ let pg,
   carrierCalls = 0,
   carrierSale = '',
   gatewayCalls = 0;
+let refundPosts=[],refundCreates=0,refundMode='',refundKeys=new Map();
 const locks = new Set();
 async function query(sql, args) {
   if (sql.includes('pg_advisory_xact_lock')) return {
@@ -75,6 +76,12 @@ require.cache[require.resolve('../services/orderShippingWorkflow')] = {
 class Gateway {
   constructor() {
     this.client = {
+      post: async (url,body,config) => {
+        const key=config.headers['X-Refund-Idempotency'];refundPosts.push({key,body});
+        if(!refundKeys.has(key)){refundCreates++;const entity={id:`rfnd_auto_${refundCreates}`,payment_id:url.split('/')[2],amount:body.amount,currency:'INR',status:refundMode==='failed'?'failed':'pending',receipt:body.receipt};refundKeys.set(key,entity);refunds[entity.id]=entity;}
+        if(refundMode==='timeout')throw new Error('gateway timeout after creation');
+        return {data:refundKeys.get(key)};
+      },
       get: async url => ({
         data: url.includes('/refunds/') ? refunds[url.split('/').pop()] : url.startsWith('/orders/') ? {
           items: captures
@@ -163,16 +170,28 @@ before(async () => {
   for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql']) await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
   await pg.exec('ALTER TABLE shipments ADD COLUMN shiprocket_order_id text,ADD COLUMN shiprocket_shipment_id text,ADD COLUMN raw_status text,ADD COLUMN updated_at timestamptz;');
   await pg.exec("CREATE TABLE branches(id bigint PRIMARY KEY,name text);INSERT INTO branches VALUES(3,'Test branch');CREATE TABLE reverse_shipments(id bigserial PRIMARY KEY,request_id bigint);");
+  await pg.exec('ALTER TABLE shipments ADD COLUMN current_location text,ADD COLUMN status_synced_at timestamptz,ADD COLUMN last_tracking_payload jsonb,ADD COLUMN tracking_url text,ADD COLUMN label_url text,ADD COLUMN awb_assigned_at timestamptz;');
+  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
   const app = express();
+  app.post('/api/mobile/payments/webhook',express.raw({type:'application/json'}),require('../routes/mobileWebhook'));
   app.use(express.json());
   app.use('/api/storefront', require('../routes/storefrontRoutes'));
   app.use('/api/rewards', require('../routes/rewardPointsRoutes'));
   app.use('/api/orders', require('../routes/orderRoutes'));
+  app.use('/api/mobile', require('../routes/mobileRoutes'));
+  app.use('/api/order-management', require('../routes/orderManagementRoutes'));
+  app.use('/api/cart',require('../routes/cartRoutes'));
+  app.use('/api/wishlist',require('../routes/wishlistRoutes'));
+  app.use('/api/user',require('../routes/userRoutes'));
+  app.use('/api/sales',require('../routes/salesRoutes'));
   app.use('/api', require('../routes/returnsRoutes'));
+  app.use('/api',require('../routes/shipmentRoutes'));
+  app.use('/api',require('../routes/shiprocketPublicRoutes'));
+  app.use('/api',require('../routes/shiprocketRoutes'));
   http = supertest(app);
 });
 beforeEach(async () => {
-  reverseCalls=0;reverseMode='';
+  reverseCalls=0;reverseMode='';refundPosts=[];refundCreates=0;refundMode='';refundKeys=new Map();
   captures = [];
   refunds = {};
   carrierStatus = 'NEW';
@@ -475,4 +494,140 @@ test('an uncertain return pickup is never created again on approval retry',async
  const admin=jwt.sign(staff,process.env.JWT_SECRET);reverseMode='timeout';
  const approve=()=>http.post(`/api/returns/${created.request.id}/approve`).set('Authorization',`Bearer ${admin}`).send({});
  await approve().expect(409);reverseMode='';await approve().expect(409);assert.equal(reverseCalls,1);
+});
+
+test('pending mobile cancellation appears immediately in admin queues and branch permissions apply',async()=>{
+ const saved=await place('COD',20);
+ await auth(http.post(`/api/mobile/orders/${saved.sale_id}/cancel`)).send({reason:'Customer no longer needs this shirt'}).expect(202);
+ const admin=jwt.sign(staff,process.env.JWT_SECRET),branch=jwt.sign({id:9,role:'BRANCH_ADMIN',branch_id:8},process.env.JWT_SECRET);
+ const result=await http.get('/api/order-management/orders?queue=cancellations').set('Authorization',`Bearer ${admin}`).expect(200);
+ assert.equal(result.body.total,1);assert.equal(result.body.rows[0].display_status,'CANCELLATION REQUESTED');
+ assert.equal(Number((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand),9);
+ assert.equal((await http.get('/api/order-management/orders?queue=cancellations').set('Authorization',`Bearer ${branch}`).expect(200)).body.total,0);
+ await http.get(`/api/order-management/orders/${saved.sale_id}`).set('Authorization',`Bearer ${branch}`).expect(403);
+ const summary=await http.get('/api/order-management/summary').set('Authorization',`Bearer ${admin}`).expect(200);
+ assert.equal(summary.body.cancellation_requests,1);
+ const history=await auth(http.get(`/api/mobile/orders/${saved.sale_id}/timeline`)).expect(200);
+ assert(history.body.some(e=>e.event_type==='CANCELLATION_UPDATED'&&e.status==='REQUESTED'));
+ await http.get(`/api/mobile/orders/${saved.sale_id}/timeline`).set('Authorization',`Bearer ${other}`).expect(404);
+});
+test('a refund timeout reuses the same immutable gateway key and provider reconciliation settles it once',async()=>{
+ const saved=await paid(20);
+ await cancellations.requestCancellation(user,saved.sale_id,{reason:'Please cancel my clothing order'});
+ await cancellations.processCancellation(staff,saved.sale_id);
+ const operations=require('../services/refundOperations');refundMode='timeout';
+ await assert.rejects(operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:52000}),/confirmation is pending/);
+ assert.equal(refundCreates,1);
+ refundMode='';const retried=await operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:52000});
+ assert.equal(retried.operation.status,'PENDING');assert.equal(refundCreates,1);assert.equal(refundPosts.length,2);
+ assert.deepEqual(refundPosts[0],refundPosts[1]);
+ assert.equal((await query('SELECT payment_status FROM sales WHERE id=$1',[saved.sale_id])).rows[0].payment_status,'PAID');
+ refunds[retried.operation.reference].status='processed';
+ const settled=await operations.reconcile(staff,'CANCELLATION',saved.sale_id);assert.equal(settled.operation.status,'PROCESSED');
+ await operations.reconcile(staff,'CANCELLATION',saved.sale_id);
+ assert.equal((await query('SELECT payment_status FROM sales WHERE id=$1',[saved.sale_id])).rows[0].payment_status,'PARTIALLY_REFUNDED');
+ assert.equal((await query('SELECT refund_status FROM storefront_cancellations WHERE sale_id=$1',[saved.sale_id])).rows[0].refund_status,'REFUNDED');
+ assert.equal((await query("SELECT COUNT(*)::int AS count FROM reward_point_transactions WHERE transaction_type='REFUNDED'")).rows[0].count,1);
+});
+test('return inspection restocks only sellable goods once and COD refund stays separate from receipt',async()=>{
+ const saved=await place('COD',100);await delivered(saved);
+ const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+ const result=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size clothing received',items:[{sale_item_id:item.id,qty:1}]});
+ const id=result.request.id;
+ await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1",[id]);
+ await assert.rejects(refundService.receiveReturn({...staff,role:'BRANCH_ADMIN',branch_id:8},id,{restock:true,inspection_notes:'Shirt checked and sellable'}),/access/);
+ await refundService.receiveReturn(staff,id,{restock:true,inspection_notes:'Shirt checked and sellable'});
+ await refundService.receiveReturn(staff,id,{restock:true,inspection_notes:'Duplicate receipt must not restore twice'});
+ assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand,10);
+ assert.equal((await query('SELECT refund_status FROM return_requests WHERE id=$1',[id])).rows[0].refund_status,'PENDING_REFUND');
+ await refundService.completeReturn(staff,id,{amount_paise:44000,reference:'BANK_RESTOCK_001',transfer_confirmed:true});
+ assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining,100);
+});
+test('gateway refunds require return receipt and failed refunds cannot create a second key',async()=>{
+ const saved=await paid();await delivered(saved);
+ const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+ const result=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong clothing size received',items:[{sale_item_id:item.id,qty:1}]});
+ await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1",[result.request.id]);
+ const operations=require('../services/refundOperations');
+ await assert.rejects(operations.initiate(staff,'RETURN',result.request.id,{amount_paise:54000}),/inspect/);
+ await refundService.receiveReturn(staff,result.request.id,{restock:false,inspection_notes:'Damaged fabric. Keep out of sellable stock.'});
+ refundMode='failed';const response=await operations.initiate(staff,'RETURN',result.request.id,{amount_paise:54000});
+ assert.equal(response.operation.status,'FAILED');assert.equal(refundCreates,1);
+ await assert.rejects(operations.initiate(staff,'RETURN',result.request.id,{amount_paise:54000}),/failed/);
+ assert.equal(refundCreates,1);assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand,9);
+});
+test('signed refund webhooks reconcile authoritative status and repeated or reordered deliveries stay idempotent',async()=>{
+ process.env.MOBILE_RAZORPAY_WEBHOOK_SECRET='refund-webhook-test-secret';
+ const saved=await paid();await cancellations.requestCancellation(user,saved.sale_id,{reason:'Please cancel the order'});await cancellations.processCancellation(staff,saved.sale_id);
+ const op=await require('../services/refundOperations').initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:54000});
+ const entity=refunds[op.operation.reference];entity.status='processed';
+ const body=JSON.stringify({event:'refund.processed',payload:{refund:{entity}}});
+ const signature=crypto.createHmac('sha256',process.env.MOBILE_RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex');
+ const send=()=>http.post('/api/mobile/payments/webhook').set('Content-Type','application/json').set('x-razorpay-signature',signature).send(body);
+ await http.post('/api/mobile/payments/webhook').set('Content-Type','application/json').send(body).expect(400);
+ await send().expect(200);await send().expect(200);
+ assert.equal((await query('SELECT status FROM order_refund_operations')).rows[0].status,'PROCESSED');
+ assert.equal((await query("SELECT COUNT(*)::int AS count FROM order_events WHERE source='order_refund_operations' AND status='PROCESSED'")).rows[0].count,1);
+});
+test('operation migration is repeatable and pending orders support filters and legacy branch roles',async()=>{
+ const saved=await place();
+ await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
+ await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
+ const management=require('../services/orderManagement');
+ assert.equal((await management.list({id:9,role:'BRANCH3',branch_id:3},{q:'Test Customer'})).total,1);
+ assert.equal((await management.list(staff,{q:'%'})).total,0);
+ assert.equal((await management.detail(staff,saved.sale_id)).timeline.filter(e=>e.event_type==='ORDER_PLACED').length,1);
+});
+test('legacy carrier endpoints reject customer and cross-branch access while old refund lists include cancellations',async()=>{
+  const saved=await paid();await cancellations.requestCancellation(user,saved.sale_id,{reason:'Ordered a wrong clothing size'});await cancellations.processCancellation(staff,saved.sale_id);
+  const admin=jwt.sign(staff,process.env.JWT_SECRET),branch=jwt.sign({id:88,role:'BRANCH_ADMIN',branch_id:8},process.env.JWT_SECRET);
+  await http.get(`/api/shipments/by-sale/${saved.sale_id}`).expect(401);
+  await auth(http.get(`/api/shipments/by-sale/${saved.sale_id}`)).expect(403);
+  await http.get(`/api/shipments/by-sale/${saved.sale_id}`).set('Authorization',`Bearer ${branch}`).expect(403);
+  await auth(http.get('/api/orders')).expect(403);
+  await http.get('/api/shiprocket/my-orders').expect(401);
+  await http.post('/api/shiprocket/warehouses/import').set('Authorization',`Bearer ${branch}`).send({}).expect(403);
+  const listed=await http.get('/api/returns/admin/refunds').set('Authorization',`Bearer ${admin}`).expect(200);
+  assert.equal(listed.body.rows.length,1);assert.equal(listed.body.rows[0].type,'CANCELLATION');assert.equal(Number(listed.body.rows[0].amount),540);
+});
+test('return courier webhooks update only the reverse shipment and cannot receive items or restore stock',async()=>{
+  const saved=await place();await delivered(saved);
+  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+  const returned=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size delivered',items:[{sale_item_id:item.id,qty:1}]});
+  await query("UPDATE return_requests SET status='APPROVED' WHERE id=$1",[returned.request.id]);
+  await query("INSERT INTO reverse_shipments(request_id,shiprocket_order_id,shiprocket_shipment_id,awb,status)VALUES($1,'9191','9292','RETURNTRACK','NEW')",[returned.request.id]);
+  process.env.SHIPROCKET_WEBHOOK_TOKEN='carrier-webhook-fixture';
+  const payload={is_return:1,sr_order_id:9191,order_id:saved.sale_id,awb:'RETURNTRACK',current_status:'RETURN DELIVERED',current_timestamp:'03 10 2026 15:00:00'};
+  const send=body=>http.post('/api/webhooks/orders').set('x-api-key',process.env.SHIPROCKET_WEBHOOK_TOKEN).send(body);
+  await http.post('/api/webhooks/orders').send(payload).expect(401);
+  await send(payload).expect(200);await send(payload).expect(200);
+  await send({...payload,current_status:'IN TRANSIT',current_timestamp:'03 10 2026 10:00:00'}).expect(200);
+  assert.equal((await query('SELECT status FROM reverse_shipments')).rows[0].status,'RETURN DELIVERED');
+  assert.equal((await query('SELECT status FROM sales')).rows[0].status,'DELIVERED');
+  assert.equal((await query('SELECT items_received_at FROM return_requests')).rows[0].items_received_at,null);
+  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand,9);
+});
+
+test('legacy cart, wishlist and profile routes require the owning customer session',async()=>{
+  for(const path of ['/api/cart/1','/api/wishlist/1','/api/user/by-email/customer@example.test'])await http.get(path).expect(401);
+  for(const path of ['/api/cart/2','/api/wishlist/2'])await http.get(path).set('Authorization',`Bearer ${token}`).expect(403);
+  await http.delete('/api/cart/vandana-cart').set('Authorization',`Bearer ${token}`).send({user_id:2,cart_item_id:1}).expect(403);
+  await http.post('/api/wishlist').set('Authorization',`Bearer ${token}`).send({user_id:2,variant_id:11}).expect(403);
+  const count=await http.get('/api/cart/count/1').set('Authorization',`Bearer ${token}`).expect(200);assert.equal(count.body.count,1);
+  const profile=await http.get('/api/user/by-email/customer@example.test').set('Authorization',`Bearer ${token}`).expect(200);assert.equal(profile.body.id,1);
+  await http.get('/api/user/by-email/other@example.test').set('Authorization',`Bearer ${token}`).expect(404);
+  await http.post('/api/user/update-mobile').set('Authorization',`Bearer ${token}`).send({email:'other@example.test',mobile:'9777777777'}).expect(404);
+  assert.equal((await query('SELECT mobile FROM vandana_users WHERE id=2')).rows[0].mobile,'9888888888');
+});
+test('legacy sales admin displays requested cancellations and blocks customer or cross-branch access',async()=>{
+  const saved=await place();await cancellations.requestCancellation(user,saved.sale_id,{reason:'Wrong shirt size selected'});
+  const admin=jwt.sign(staff,process.env.JWT_SECRET),branch=jwt.sign({id:88,role:'BRANCH_ADMIN',branch_id:8},process.env.JWT_SECRET);
+  await http.get('/api/sales/web').expect(401);
+  await http.get('/api/sales/admin').set('Authorization',`Bearer ${token}`).expect(403);
+  const own=await http.get('/api/sales/admin').set('Authorization',`Bearer ${admin}`).expect(200);
+  assert.equal(own.body[0].cancellation_status,'REQUESTED');assert.equal(own.body[0].display_status,'CANCELLATION REQUESTED');
+  const otherBranch=await http.get('/api/sales/admin').set('Authorization',`Bearer ${branch}`).expect(200);assert.deepEqual(otherBranch.body,[]);
+  await http.get(`/api/sales/web/${saved.sale_id}`).set('Authorization',`Bearer ${other}`).expect(404);
+  await http.post('/api/sales/web/b2b-update-status').set('Authorization',`Bearer ${token}`).send({sale_id:saved.sale_id,new_status:'DELIVERED'}).expect(403);
+  await http.post('/api/sales/web/b2b-update-status').set('Authorization',`Bearer ${branch}`).send({sale_id:saved.sale_id,new_status:'DELIVERED'}).expect(403);
 });

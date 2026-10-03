@@ -3,18 +3,7 @@ const Shiprocket = require('./shiprocketService');
 const fail = (message, status = 409) => Object.assign(new Error(message), {
   status
 });
-const positiveId = value => /^\d+$/.test(String(value || '')) && Number(value) > 0 ? String(value) : null;
-const awbText = value => typeof value === 'string' && /^[A-Za-z0-9-]+$/.test(value) && !['null', 'undefined'].includes(value) ? value : null;
-const addressOf = sale => {
-  const a = sale.shipping_address || {};
-  return {
-    line1: String(a.line1 || a.address_line1 || a.address1 || a.street || '').trim(),
-    line2: String(a.line2 || a.address_line2 || a.address2 || a.landmark || '').trim(),
-    city: String(a.city || '').trim(),
-    state: String(a.state || '').trim(),
-    pincode: String(a.pincode || a.pin_code || sale.pincode || '').trim()
-  };
-};
+const {positiveId,awbText,addressOf,parcelOf}=require('./shippingValidation');
 const eligible = sale => {
   if (String(sale.source).toUpperCase() !== 'WEB') throw fail('This shipping workflow supports website orders only.');
   if (sale.cancellation_pending) throw fail('A cancellation request is being processed. Dispatch is paused.');
@@ -115,7 +104,8 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
   async function connect(id, {
     fresh = false,
     remote_order_id,
-    confirmed_absent = false
+    confirmed_absent = false,
+    parcel
   } = {}) {
     return locked(id, async (db, s) => {
       eligible(s.sale);
@@ -138,6 +128,7 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
       const subtotal = Math.round(items.reduce((sum, i) => sum + Number(i.qty) * Number(i.price), 0) * 100) / 100;
       const total = Number(s.sale.total);
       if (!Number.isFinite(total) || total < 0) throw fail('The saved order total is invalid.', 422);
+      const measured=parcelOf(parcel);
       await sr.init();
       await db.query("UPDATE order_shipping_workflow SET create_attempted=true,phase='CREATING',last_error=NULL,updated_at=now() WHERE sale_id=$1", [id]);
       let data;
@@ -150,11 +141,11 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
             payment_method: String(s.sale.payment_method).toUpperCase() === 'COD' ? 'COD' : 'Prepaid',
             shipping_charges: Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)),
             total_discount: Math.max(0, Math.round((subtotal + Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)) - total) * 100) / 100),
-            weight: 0.5,
+            weight: measured.weight,
             dimensions: {
-              length: 10,
-              breadth: 10,
-              height: 5
+              length: measured.length,
+              breadth: measured.breadth,
+              height: measured.height
             }
           },
           customer: {
@@ -268,7 +259,8 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
       current_status: current.current_status,
       awb_code: current.awb_code,
       tracking_url: core.track_url,
-      current_location: current.current_location
+      current_location: current.current_location,
+      delivered_at: current.delivered_date || current.delivered_at || null
     }, s.shipment.status);
     return {
       status: current.current_status,

@@ -1,0 +1,120 @@
+V1GARMENTS — PROVIDER API AND ORDER OPERATIONS
+Official documentation checked: 03 October 2026
+
+SHIPROCKET
+
+Base: https://apiv2.shiprocket.in/v1/external
+Server API user authentication is separate from your storefront customer login.
+
+Implemented workflow endpoints:
+  POST /auth/login                  API user authentication
+  GET  /settings/company/pickup     Existing branch pickup locations
+  POST /orders/create/adhoc         Forward order creation
+  GET  /orders/show/{numeric_id}    Reconcile the existing carrier order
+  GET  /courier/serviceability      Available forward courier options
+  POST /courier/assign/awb          Assign selected courier and AWB
+  POST /courier/generate/pickup     Request pickup after a confirmed AWB
+  GET  /courier/track/shipment/{id}  Current tracking and activities
+  POST /orders/cancel               Cancel a verified carrier order
+  POST /courier/generate/label      Shipping label
+  POST /orders/print/invoice        Invoice
+  POST /manifests/generate          Manifest
+
+Return endpoints:
+  POST /orders/create/return
+       Customer address is pickup; original branch warehouse is destination.
+       RET-{return_request_id} is the internal reference. Invoice prices and
+       measured parcel values are sent. Save carrier order/shipment IDs first.
+  GET /courier/serviceability/ with is_return=1 and numeric carrier order_id
+  POST /courier/assign/awb with is_return=1, shipment_id and courier_id
+  POST /courier/generate/pickup after return AWB confirmation
+  GET /orders/show/{numeric_id} for safe booking/AWB/pickup reconciliation
+
+Shiprocket also documents NDR, exchange, account and international APIs.
+Those capabilities are not automatically implemented merely because the
+provider exposes them. Account permissions, courier serviceability, wallet
+balance and pickup-location setup must be valid in your account.
+
+Official references:
+  https://apidocs.shiprocket.in/
+  https://www.shiprocket.in/developers/
+  https://www.postman.com/shiprocketdev/shiprocket-dev-s-public-workspace/request/4hsuoja/create-a-return-order
+  https://support.shiprocket.in/support/solutions/articles/43000463528-how-to-add-a-return-order-
+
+RAZORPAY
+
+POST /v1/payments/{original_payment_id}/refund
+  Exact amount in paise, normal speed, immutable receipt/notes and
+  X-Refund-Idempotency header. Reuse the same key AND same request body on retry.
+GET /v1/payments/{payment_id}
+  Validate original captured payment, INR amount and gateway order reference.
+GET /v1/payments/{payment_id}/refunds/{refund_id}
+  Fetch authoritative pending/processed/failed status before local finalization.
+
+Enable payment.captured, refund.created, refund.processed and refund.failed on
+the chosen shared callback URL. Verify HMAC over the unmodified raw body.
+
+Official references:
+  https://razorpay.com/docs/api/refunds/normal-refunds-idempotent/
+  https://razorpay.com/docs/webhooks/refunds/
+  https://razorpay.com/docs/webhooks/validate-test/
+
+STAFF OPERATIONS
+
+Cancellation:
+  Request -> admin cancellation queue -> verify carrier/payment -> confirmed
+  cancellation -> restore stock/redeemed points once -> initiate any product
+  cash refund -> provider confirmation or completed COD transfer reference.
+  A carrier timeout leaves review-required state and dispatch paused. Search
+  the carrier's existing order; do not create/cancel/refund blindly a second time.
+
+Forward shipping:
+  Open order -> map branch pickup -> link existing booking if present.
+  Create only after confirming no old booking; enter measured packed parcel.
+  Load couriers -> select courier -> assign AWB -> request pickup -> tracking.
+  Automatic newly placed orders use the configured server parcel defaults.
+  If a creation request times out, find the website UUID reference in Shiprocket
+  and link its numeric carrier order ID. Keep the saved attempted flag.
+
+Return:
+  Customer eligible request -> review invoice quantities/refund estimate ->
+  confirm packed parcel -> approve/book reverse order -> select return courier
+  -> return AWB -> pickup -> warehouse receipt and inspection -> explicit stock
+  decision -> refund approved products/points -> provider/transfer confirmation.
+  A timeout uses RET-{return_request_id} to find/link the original return booking.
+  After linking, approve the saved request again to finish its local approval.
+  Do not reset attempt flags to force another carrier booking.
+
+Refund review:
+  PENDING: Check provider status. Processing is not the same as credited money.
+  REVIEW_REQUIRED with no reference: Retry the original initiation to recover
+    the immutable provider request; the backend retains its original key/body.
+  FAILED: Reconcile with Razorpay/support before any replacement action.
+  PROCESSED: Read the provider reference and local audit; do not initiate again.
+  COD: Send exact funds externally first, verify reference, then record it.
+
+RTO/NDR:
+  The exception queue exposes the condition. Inspect warehouse receipt and
+  decide stock/refund treatment explicitly. No automatic refund/restock occurs
+  solely because the carrier reported RTO or a reverse delivery scan.
+
+ADMIN API (all require configured staff JWT and branch access)
+
+  GET  /api/order-management/summary
+  GET  /api/order-management/orders?q=&queue=&status=&payment_method=&page=
+  GET  /api/order-management/orders/{sale_id}
+  POST /api/order-management/returns/{return_id}/receive
+  POST /api/order-management/refunds/{CANCELLATION|RETURN}/{request_id}/initiate
+  POST /api/order-management/refunds/{CANCELLATION|RETURN}/{request_id}/reconcile
+  POST /api/storefront/admin/cancellations/{sale_id}/process
+  POST /api/storefront/admin/cancellations/{sale_id}/reject
+  POST /api/storefront/admin/cancellations/{sale_id}/refund-complete
+  POST /api/returns/{return_id}/approve
+  POST /api/returns/{return_id}/reject
+  POST /api/returns/{return_id}/refund-complete
+  GET/POST /api/returns/{return_id}/shipping/{couriers|reconcile|awb|pickup}
+  GET/POST /api/order-shipping/{sale_id}/... for protected dispatch/document actions
+
+Customer website/mobile APIs require the owning customer session for
+cancellation, timeline, refunds, returns and order tracking. Admin-only notes,
+bank/UPI details and provider errors are not included in the public timeline.

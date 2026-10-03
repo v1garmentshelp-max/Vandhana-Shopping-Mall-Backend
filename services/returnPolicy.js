@@ -8,7 +8,7 @@ const {
 async function eligibility(db, saleId, now = Date.now()) {
   const sale = (await db.query('SELECT * FROM sales WHERE id=$1', [saleId])).rows[0];
   if (!sale) throw fail('Order not found.', 404);
-  const deliveries = (await db.query("SELECT delivered_at FROM shipments WHERE sale_id=$1 AND upper(status)='DELIVERED' ORDER BY delivered_at DESC NULLS LAST", [saleId])).rows;
+  const deliveries = (await db.query("SELECT delivered_at FROM shipments WHERE sale_id=$1 AND upper(status::text)='DELIVERED' ORDER BY delivered_at DESC NULLS LAST", [saleId])).rows;
   const deliveredAt = deliveries[0]?.delivered_at;
   const deliveredTime = deliveredAt ? new Date(deliveredAt).getTime() : NaN;
   const deadline = Number.isFinite(deliveredTime) ? new Date(deliveredTime + policy.window_days * 86400000).toISOString() : null;
@@ -22,7 +22,7 @@ async function eligibility(db, saleId, now = Date.now()) {
     (si.is_innerwear OR p.category_id IN (SELECT id FROM inner_categories)) AS blocked,
     COALESCE((SELECT SUM(ri.qty) FROM return_items ri JOIN return_requests r ON r.id=ri.request_id
       WHERE r.sale_id=si.sale_id AND (ri.sale_item_id=si.id OR (ri.sale_item_id IS NULL AND ri.variant_id=si.variant_id))
-      AND upper(r.status) NOT IN ('REJECTED','CANCELLED')),0) AS requested_qty
+      AND upper(r.status::text) NOT IN ('REJECTED','CANCELLED')),0) AS requested_qty
     FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=$1`, [saleId])).rows;
   const items = rows.map(i => ({
     sale_item_id: i.id,

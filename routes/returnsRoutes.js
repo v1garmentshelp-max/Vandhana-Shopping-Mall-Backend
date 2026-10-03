@@ -12,7 +12,7 @@ const {
 const configuredAuth = (_req, res, next) => !process.env.JWT_SECRET || ['change-me-in-env', 'dev_secret'].includes(process.env.JWT_SECRET) ? res.status(503).json({
   message: 'Store authentication is unavailable.'
 }) : next();
-const requireStaff = (req, res, next) => configuredAuth(req, res, () => requireAuth(req, res, () => ['SUPER_ADMIN', 'BRANCH_ADMIN'].includes(String(req.user?.role_enum || req.user?.role)) ? next() : res.status(403).json({
+const requireStaff = (req, res, next) => configuredAuth(req, res, () => requireAuth(req, res, () => (['SUPER_ADMIN', 'BRANCH_ADMIN'].includes(String(req.user?.role_enum || req.user?.role)) || /^BRANCH\d+$/.test(String(req.user?.role_enum || req.user?.role))) ? next() : res.status(403).json({
   message: 'Staff access required.'
 })));
 router.use('/returns/admin', requireStaff);
@@ -212,15 +212,12 @@ router.get('/returns/admin', async (req, res) => {
               s.customer_name
        FROM return_requests r
        JOIN sales s ON s.id = r.sale_id
-       ORDER BY r.created_at DESC`);
-    res.json({
-      ok: true,
-      rows: q.rows
-    });
+       WHERE ($1::bigint IS NULL OR s.branch_id=$1) ORDER BY r.created_at DESC`, [require('../services/orderManagement').branchScope(req.user)]);
+    res.json({ ok: true, rows: q.rows });
   } catch (e) {
-    res.status(500).json({
+    res.status(e.status || 500).json({
       ok: false,
-      message: e.message || 'fetch failed'
+      message: e.status ? e.message : 'Return details could not load.'
     });
   }
 });
@@ -250,13 +247,16 @@ router.get('/returns/admin/refunds', async (req, res) => {
          'system'::text AS initiated_by
        FROM return_requests r
        JOIN sales s ON s.id = r.sale_id
-       WHERE r.type = 'REFUND'
-          OR r.refund_status IS NOT NULL
-       ORDER BY r.created_at DESC`);
-    res.json({
-      ok: true,
-      rows: q.rows
-    });
+       WHERE (r.type = 'REFUND' OR r.refund_status IS NOT NULL) AND ($1::bigint IS NULL OR s.branch_id=$1) ORDER BY r.created_at DESC`, [require('../services/orderManagement').branchScope(req.user)]);
+    const cancelled = await pool.query(`SELECT 'CANCEL-'||c.sale_id::text AS id,c.sale_id,'CANCELLATION'::text AS type,
+      COALESCE(op.status,c.refund_status) AS status,c.refund_status,c.created_at,c.updated_at,
+      c.reason AS remarks,s.customer_name,s.customer_email,s.customer_mobile,c.refund_amount_paise/100.0 AS amount,
+      NULL::text AS return_request_id,CASE WHEN s.payment_method='COD' THEN 'BANK/UPI' ELSE 'RAZORPAY' END AS mode,
+      COALESCE(c.source,'CUSTOMER') AS initiated_by,c.refund_reference
+      FROM storefront_cancellations c JOIN sales s ON s.id=c.sale_id
+      LEFT JOIN order_refund_operations op ON op.kind='CANCELLATION' AND op.request_id=c.sale_id::text
+      WHERE c.refund_status<>'NOT_DUE' AND ($1::bigint IS NULL OR s.branch_id=$1)`, [require('../services/orderManagement').branchScope(req.user)]);
+    res.json({ ok:true,rows:[...q.rows,...cancelled.rows].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)) });
   } catch (e) {
     res.status(500).json({
       ok: false,
@@ -333,9 +333,9 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
       }
     });
   } catch (e) {
-    res.status(500).json({
+    res.status(e.status || 500).json({
       ok: false,
-      message: e.message || 'fetch failed'
+      message: e.status ? e.message : 'Return details could not load.'
     });
   }
 });
@@ -350,6 +350,8 @@ router.post('/returns/:id/details', requireStaff, async (req, res) => {
         message: 'Return request not found'
       });
     }
+    const sale = (await pool.query('SELECT branch_id FROM sales WHERE id=$1',[check.rows[0].sale_id])).rows[0];
+    require('../services/orderCancellation').staffAccess(req.user,sale);
     const {
       bankDetails,
       imageUrls
@@ -433,17 +435,14 @@ router.post('/returns/:id/approve', requireStaff, async (req, res) => {
           status: 409
         });
         const svc = new ReturnsService({
-          pool
+          pool:db
         });
         await svc.init();
+        const context={request,sale,items,branch,parcel:req.body?.parcel||{}};
+        if(svc.returnPayload)await svc.returnPayload(context);
         await db.query('UPDATE return_requests SET reverse_pickup_attempted=true,reverse_pickup_error=NULL WHERE id=$1', [request.id]);
         try {
-          reverse = await svc.createReversePickup({
-            request,
-            sale,
-            items,
-            branch
-          });
+          reverse = await svc.createReversePickup(context);
         } catch (e) {
           await db.query('UPDATE return_requests SET reverse_pickup_error=$2 WHERE id=$1', [request.id, String(e.message).slice(0, 1000)]);
           throw Object.assign(new Error('Reverse pickup is awaiting store reconciliation. Check Shiprocket before trying again.'), {
@@ -464,6 +463,35 @@ router.post('/returns/:id/approve', requireStaff, async (req, res) => {
     });
   }
 });
+async function reverseAction(req,res) {
+  try {
+    const initial=(await pool.query('SELECT sale_id FROM return_requests WHERE id=$1',[req.params.id])).rows[0];
+    if(!initial)return res.status(404).json({message:'Return request not found.'});
+    const result=await require('../services/orderCancellation').locked(initial.sale_id,async db=>{
+      const request=(await db.query('SELECT * FROM return_requests WHERE id=$1',[req.params.id])).rows[0];
+      const sale=(await db.query('SELECT * FROM sales WHERE id=$1',[initial.sale_id])).rows[0];
+      require('../services/orderCancellation').staffAccess(req.user,sale);
+      if(['REJECTED','CANCELLED'].includes(request.status))throw Object.assign(new Error('This return request is closed.'),{status:409});
+      const svc=new ReturnsService({pool:db});
+      const action=req.params.action;
+      try {
+        if(action==='reconcile'&&req.method==='POST') {
+          const reverse=await svc.reconcile(request,req.body.order_id);
+          await db.query('UPDATE return_requests SET reverse_pickup_error=NULL,reverse_pickup_attempted=true WHERE id=$1',[request.id]);
+          return {ok:true,reverse};
+        }
+        if(request.status!=='APPROVED'||request.items_received_at)throw Object.assign(new Error('Approve the return before arranging pickup. Received returns do not need another pickup.'),{status:409});
+        if(action==='couriers'&&req.method==='GET')return svc.couriers(request,sale);
+        if(action==='awb'&&req.method==='POST')return svc.assignAwb(request,req.body.courier_id,sale);
+        if(action==='pickup'&&req.method==='POST')return svc.pickup(request);
+        throw Object.assign(new Error('Unknown return shipping action.'),{status:400});
+      }catch(e){await db.query('UPDATE reverse_shipments SET last_error=$2 WHERE request_id=$1',[request.id,String(e.message).slice(0,1000)]);throw e;}
+    });
+    res.json(result);
+  }catch(e){res.status(e.status||502).json({message:e.status?e.message:'The return shipping action could not be completed. Check the saved booking before retrying.'});}
+}
+router.get('/returns/:id/shipping/:action',requireStaff,reverseAction);
+router.post('/returns/:id/shipping/:action',requireStaff,reverseAction);
 router.post('/returns/:id/reject', requireStaff, async (req, res) => {
   try {
     const row = (await pool.query('SELECT r.*,s.branch_id FROM return_requests r JOIN sales s ON s.id=r.sale_id WHERE r.id=$1', [req.params.id])).rows[0];

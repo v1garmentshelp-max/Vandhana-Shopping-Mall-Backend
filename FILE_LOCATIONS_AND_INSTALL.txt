@@ -1,0 +1,275 @@
+V1GARMENTS — EXACT FILE LOCATIONS / ORIGINAL ZIP STRUCTURE
+Release 1.6, 03 October 2026
+
+Nuvvu icchina ZIP folder names ni preserve chesi files arrange chesanu.
+Ae file ADD cheyali / ae file REPLACE cheyali ane complete list kindha undi.
+Nee existing projects ni delete cheyyaku. ZIP lo unna files ni matching paths
+lo copy chesi replace cheyyi. Existing credentials/config files ni keep cheyyi.
+
+PROJECT ROOTS
+
+Backend: vandhana-backend/
+  Root marker: package.json + app.js + routes/ + services/
+  Example: ZIP vandhana-backend/routes/orderManagementRoutes.js
+           -> nee existing backend/routes/orderManagementRoutes.js
+
+Website: vandhana-website/
+  Root marker: package.json + src/ + vite.config.ts
+  Example: ZIP vandhana-website/src/components/OrderHistory.tsx
+           -> nee existing website/src/components/OrderHistory.tsx
+
+Mobile: V1Garments-Mobile-Source/V1Garments-Mobile/
+  Root marker: package.json + app.config.ts + app/ + src/ + android/ + ios/
+  Example: ZIP V1Garments-Mobile-Source/V1Garments-Mobile/src/components/OrderCare.tsx
+           -> nee existing mobile app/src/components/OrderCare.tsx
+
+Admin: nee existing admin project root/
+  Root marker: package.json + src/App.js + src/pages/NavbarAdmin.js
+  Main ZIP lo vandhana-admin/ anedi admin changes folder label. Nee actual admin
+  folder peru vere unte aa folder CONTENTS ni nee admin project root lo copy cheyyi.
+  Separate vandhana-admin-Changed-Files.zip root lo src/ untundi; admin ROOT lo extract.
+
+ZIP OPTIONS — OKA METHOD CHOOSE CHEYYI
+
+1. V1Garments-Changed-Files-Correct-Paths.zip
+   Recommended for your existing projects. Only changed/new code/config files.
+   Extract to a temporary folder, open each project folder and copy its contents
+   into the MATCHING existing project root. Confirm file replacement when asked.
+   Do not put the whole ZIP inside backend/src or website/src.
+
+2. Individual project source ZIPs / V1Garments-Correct-Structure-1.6.zip
+   Backend, website and mobile are complete updated source copies without
+   node_modules/build caches. Original folder names are preserved. Keep your
+   existing environment configuration when copying into a project.
+   Admin is clearly marked CHANGES ONLY because its full archive could not be
+   opened; no original App.js/Navbar/login/stock/POS pages are overwritten.
+
+Mobile source bundle lo V1Garments-Backend and V1Garments-Website copies kuda
+same updated code tho sync chesanu. Actual deployment ki nee existing primary
+vandhana-backend and vandhana-website projects ni use cheyyi. Same backend ni
+two separate deployments ga create cheyyalsina avasaram ledhu.
+V1Garments-Admin-Patch / V1Garments-Website-Patch are integration copies.
+Historical notes under legacy-reference/ are not current installation steps.
+
+ADMIN — EXACT 3 FILES
+
+ADD     src/components/OrderOperations.jsx
+ADD     src/components/OrderOperations.css
+REPLACE src/pages/OrderIssues.js
+
+The supplied earlier Admin-Patch has this existing protected route in src/App.js:
+    import OrderIssues from './pages/OrderIssues'
+    <Route path="/order-issues" element={<RequireAuth><OrderIssues /></RequireAuth>} />
+
+If your actual App.js already has that route, no App.js change is required.
+If it is absent, add only the import/route within your existing protected routing.
+Keep the current App.js, NavbarAdmin.js and authentication providers.
+If needed, add a Navbar link to /order-issues within your existing menu.
+OrderIssues.js imports NavbarAdmin from ./NavbarAdmin, matching your supplied patch.
+Do not replace App.js with a small sample app or the separate standalone order admin.
+
+The original vandhana-admin(2).zip exists, but downloading/opening it returned
+HTTP 502. It is not accurate to say you did not provide it or that the upload
+necessarily failed. Admin relative paths above come from the supplied mobile
+Admin-Patch; the complete original admin build cannot be verified from that patch.
+
+ENVIRONMENT / RUN ORDER
+
+Backend existing environment: keep DATABASE_URL, JWT_SECRET and provider credentials.
+.env.example is a sample. Never copy it over your real .env/environment values.
+Set SHIPROCKET_WEBHOOK_TOKEN and the Razorpay webhook secret on the backend.
+Admin token keys recognized: auth_token/admin_token/token/adminToken/accessToken.
+Add your admin origin to backend CORS_ORIGINS. Branch tokens need branch_id.
+
+Backend root (Node 24):
+    npm ci
+    npm run migrate:mobile
+    npm run migrate:commerce
+    npm run preflight:mobile
+    npm run preflight:commerce
+    npm start
+
+Website root:
+    npm ci
+    npm run build
+
+Admin root after copying these 3 files:
+    npm ci
+    npm run build
+
+Mobile app root:
+    npm ci
+    npm run typecheck
+    npm test
+
+Deploy the migrated backend first, then website/admin, then test the mobile app.
+The APK already delivered is still V1Garments-Android-Test-1.6.apk, build 7.
+No code was changed for this packaging correction, so rebuilding that APK is
+not required solely because folder names/file-location instructions changed.
+
+Existing isolated verification: 75 backend + 19 mobile tests passed; website,
+standalone order-admin and Android test APK builds passed. The original full
+admin, live database/provider flows and native phone acceptance remain pending.
+Read SETUP_AND_CHANGES.txt and API_AND_OPERATIONS.txt for provider setup/limits.
+
+FULL ADD/REPLACE LIST
+Paths are relative to the extracted folder above. Each target file already
+contains its complete updated content; these are not snippets or diff hunks.
+
+BACKEND — 36 FILES
+REPLACE vandhana-backend/.env.example
+REPLACE vandhana-backend/app.js
+ADD     vandhana-backend/middleware/legacyCustomerAccess.js
+ADD     vandhana-backend/middleware/orderStaffAuth.js
+ADD     vandhana-backend/migrations/20261003_order_operations.sql
+REPLACE vandhana-backend/routes/cartRoutes.js
+REPLACE vandhana-backend/routes/mobileRoutes.js
+REPLACE vandhana-backend/routes/mobileWebhook.js
+ADD     vandhana-backend/routes/orderManagementRoutes.js
+REPLACE vandhana-backend/routes/orderRoutes.js
+REPLACE vandhana-backend/routes/orderShippingRoutes.js
+REPLACE vandhana-backend/routes/returnsRoutes.js
+REPLACE vandhana-backend/routes/salesRoutes.js
+REPLACE vandhana-backend/routes/shipmentRoutes.js
+REPLACE vandhana-backend/routes/shiprocketPublicRoutes.js
+REPLACE vandhana-backend/routes/shiprocketRoutes.js
+REPLACE vandhana-backend/routes/storefrontRoutes.js
+REPLACE vandhana-backend/routes/userRoutes.js
+REPLACE vandhana-backend/routes/wishlistRoutes.js
+REPLACE vandhana-backend/scripts/migrateCommerce.js
+REPLACE vandhana-backend/scripts/preflightCommerce.js
+REPLACE vandhana-backend/services/orderCancellation.js
+ADD     vandhana-backend/services/orderManagement.js
+REPLACE vandhana-backend/services/orderShippingWorkflow.js
+REPLACE vandhana-backend/services/orderStatusSync.js
+ADD     vandhana-backend/services/refundOperations.js
+REPLACE vandhana-backend/services/returnPolicy.js
+ADD     vandhana-backend/services/returnTracking.js
+REPLACE vandhana-backend/services/returnsService.js
+ADD     vandhana-backend/services/shippingValidation.js
+REPLACE vandhana-backend/services/storeRefunds.js
+REPLACE vandhana-backend/tests/commerceIntegration.test.js
+ADD     vandhana-backend/tests/commerceSchema.test.js
+REPLACE vandhana-backend/tests/mobileCheckout.test.js
+REPLACE vandhana-backend/tests/orderShipping.test.js
+ADD     vandhana-backend/tests/returnShipping.test.js
+
+WEBSITE — 11 FILES
+ADD     vandhana-website/.env.example
+ADD     vandhana-website/src/components/OrderHistory.tsx
+REPLACE vandhana-website/src/components/ProductCard.tsx
+REPLACE vandhana-website/src/pages/OrderDetails.tsx
+REPLACE vandhana-website/src/pages/ProductDetails/ProductDetails.tsx
+REPLACE vandhana-website/src/pages/ProductDetails/ProductDetailsPage.tsx
+REPLACE vandhana-website/src/pages/Profile.tsx
+REPLACE vandhana-website/src/pages/Wishlist.tsx
+REPLACE vandhana-website/src/services/cartApi.ts
+REPLACE vandhana-website/src/services/storefrontApi.ts
+REPLACE vandhana-website/src/styles/commerce.css
+
+MOBILE APP — 13 FILES
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/android/app/build.gradle
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app/checkout.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app/order/[id].tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app/order/return.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app/order/returns.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app/orders.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/app.config.ts
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/ios/V1Garments/Info.plist
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/ios/V1Garments.xcodeproj/project.pbxproj
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/package-lock.json
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/package.json
+ADD     V1Garments-Mobile-Source/V1Garments-Mobile/src/components/OrderCare.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Mobile/src/lib/types.ts
+
+MOBILE BUNDLE BACKEND COPY — 49 FILES
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/.env.example
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/app.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/middleware/customerAuth.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/middleware/legacyCustomerAccess.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/middleware/orderStaffAuth.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/migrations/20260929_store_commerce.sql
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/migrations/20261003_order_operations.sql
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/package.json
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/cartRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/mobileRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/mobileWebhook.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/routes/orderManagementRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/orderRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/orderShippingRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/razorpayRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/returnsRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/rewardPointsRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/salesRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/shipmentRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/shiprocketPublicRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/shiprocketRoutes.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/routes/storefrontRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/userRoutes.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/routes/wishlistRoutes.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/scripts/migrateCommerce.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/scripts/preflightCommerce.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/commercePolicy.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/mobileCheckout.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/mobileRules.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/orderCancellation.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/orderManagement.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/orderShippingWorkflow.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/orderStatusSync.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/razorpayService.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/refundOperations.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/returnPolicy.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/returnTracking.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/returnsService.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/services/rewardPointsService.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/shippingValidation.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/services/storeRefunds.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/tests/commerceIntegration.test.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/tests/commercePolicy.test.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/tests/commerceSchema.test.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/tests/mobileCheckout.test.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/tests/mobileStore.test.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/tests/orderShipping.test.js
+ADD     V1Garments-Mobile-Source/V1Garments-Backend/tests/returnShipping.test.js
+REPLACE V1Garments-Mobile-Source/V1Garments-Backend/tests/support/mobile-schema.sql
+
+MOBILE BUNDLE WEBSITE COPY — 16 FILES
+ADD     V1Garments-Mobile-Source/V1Garments-Website/.env.example
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/package-lock.json
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/package.json
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/App.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website/src/components/OrderHistory.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/components/ProductCard.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/Cart.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/Checkout.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website/src/pages/OrderDetails.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/ProductDetails/ProductDetails.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/ProductDetails/ProductDetailsPage.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/Profile.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/pages/Wishlist.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website/src/services/cartApi.ts
+ADD     V1Garments-Mobile-Source/V1Garments-Website/src/services/storefrontApi.ts
+ADD     V1Garments-Mobile-Source/V1Garments-Website/src/styles/commerce.css
+
+MOBILE BUNDLE ADMIN PATCH — 3 FILES
+ADD     V1Garments-Mobile-Source/V1Garments-Admin-Patch/src/components/OrderOperations.css
+ADD     V1Garments-Mobile-Source/V1Garments-Admin-Patch/src/components/OrderOperations.jsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Admin-Patch/src/pages/OrderIssues.js
+
+MOBILE BUNDLE WEBSITE PATCH — 11 FILES
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/.env.example
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/components/OrderHistory.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/components/ProductCard.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/pages/OrderDetails.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/pages/ProductDetails/ProductDetails.tsx
+REPLACE V1Garments-Mobile-Source/V1Garments-Website-Patch/src/pages/ProductDetails/ProductDetailsPage.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/pages/Profile.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/pages/Wishlist.tsx
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/services/cartApi.ts
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/services/storefrontApi.ts
+ADD     V1Garments-Mobile-Source/V1Garments-Website-Patch/src/styles/commerce.css
+
+ADMIN — 3 FILES
+ADD     vandhana-admin/src/components/OrderOperations.jsx
+ADD     vandhana-admin/src/components/OrderOperations.css
+REPLACE vandhana-admin/src/pages/OrderIssues.js

@@ -2,6 +2,7 @@ const express = require('express')
 const pool = require('../db')
 
 const router = express.Router()
+router.use(require('../middleware/customerAuth').requireCustomerAuth)
 
 const DB_SCHEMA = process.env.DB_SCHEMA || 'public'
 const USERS_TABLE = `"${DB_SCHEMA}"."vandana_users"`
@@ -17,8 +18,8 @@ router.get('/by-email/:email', async (req, res) => {
     }
 
     const q = await pool.query(
-      `SELECT id, name, email, mobile, type FROM ${USERS_TABLE} WHERE lower(email) = $1 LIMIT 1`,
-      [email]
+      `SELECT id, name, email, mobile, type FROM ${USERS_TABLE} WHERE lower(email) = $1 AND id=$2 LIMIT 1`,
+      [email,req.customer.id]
     )
 
     if (!q.rowCount) {
@@ -61,8 +62,8 @@ router.post('/update-mobile', async (req, res) => {
     }
 
     const upd = await pool.query(
-      `UPDATE ${USERS_TABLE} SET mobile = $1, updated_at = NOW() WHERE lower(email) = $2 RETURNING id, name, email, mobile, type`,
-      [mobile, email]
+      `UPDATE ${USERS_TABLE} SET mobile = $1, updated_at = NOW() WHERE lower(email) = $2 AND id=$3 RETURNING id, name, email, mobile, type`,
+      [mobile, email,req.customer.id]
     )
 
     if (!upd.rowCount) {

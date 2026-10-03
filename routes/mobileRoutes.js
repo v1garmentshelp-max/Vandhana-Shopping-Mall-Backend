@@ -126,8 +126,11 @@ router.post('/account-deletion-request', wrap(async (req, res) => {
 }));
 router.get('/orders', wrap(async (req, res) => {
   const rows = await pool.query(`SELECT s.id,s.status,s.payment_status,s.payment_method,s.created_at,s.total,s.totals,s.customer_name,s.customer_email,s.customer_mobile,s.shipping_address,
+    c.status AS cancellation_status,c.refund_status AS cancellation_refund_status,
+    CASE WHEN c.status IN ('REQUESTED','REVIEW_REQUIRED') THEN 'CANCELLATION REQUESTED' ELSE s.status::text END AS display_status,
     (SELECT COALESCE(json_agg(json_build_object('id',si.id,'product_id',si.product_id,'variant_id',si.variant_id,'qty',si.qty,'price',si.price,'size',si.size,'colour',si.colour,'image_url',si.image_url,'product_name',COALESCE(si.custom_title,p.name))), '[]'::json) FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=s.id) AS items,
     m.request_key AS checkout_key FROM sales s LEFT JOIN mobile_checkouts m ON m.sale_id=s.id
+    LEFT JOIN storefront_cancellations c ON c.sale_id=s.id
     WHERE s.source='WEB' AND (lower(s.login_email)=lower($1) OR lower(s.customer_email)=lower($1)) ORDER BY s.created_at DESC LIMIT 200`, [req.customer.email]);
   res.json(rows.rows);
 }));
@@ -139,20 +142,29 @@ async function ownedSale(req, _res, next) {
   next();
 }
 router.get('/orders/:id', wrap(ownedSale), wrap(async (req, res) => {
-  const [items, shipments, mobile] = await Promise.all([pool.query('SELECT si.*,COALESCE(si.custom_title,p.name) AS product_name FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=$1', [req.sale.id]), pool.query('SELECT status,awb,created_at FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [req.sale.id]), pool.query('SELECT request_key FROM mobile_checkouts WHERE sale_id=$1 AND user_id=$2', [req.sale.id, req.customer.id])]);
+  const [items, shipments, mobile, cancellation] = await Promise.all([pool.query('SELECT si.*,COALESCE(si.custom_title,p.name) AS product_name FROM sale_items si LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=$1', [req.sale.id]), pool.query('SELECT status,raw_status,awb,current_location,tracking_url,delivered_at,status_synced_at,created_at FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [req.sale.id]), pool.query('SELECT request_key FROM mobile_checkouts WHERE sale_id=$1 AND user_id=$2', [req.sale.id, req.customer.id]), pool.query('SELECT * FROM storefront_cancellations WHERE sale_id=$1',[req.sale.id])]);
   res.json({
     ...req.sale,
     items: items.rows,
     shipments: shipments.rows,
+    cancellation: require('../services/orderCancellation').publicRequest(cancellation.rows[0]),
     checkout_key: mobile.rows[0]?.request_key
   });
 }));
 const returns = require('../services/returnPolicy');
+router.get('/orders/:id/cancellation',wrap(ownedSale),wrap(async(req,res)=>res.json(await require('../services/orderCancellation').eligibility(req.sale.id))));
+router.post('/orders/:id/cancel',wrap(ownedSale),wrap(async(req,res)=>res.status(202).json(await require('../services/orderCancellation').requestCancellation(req.customer,req.sale.id,req.body))));
+router.get('/orders/:id/timeline',wrap(ownedSale),wrap(async(req,res)=>res.json(await require('../services/orderManagement').timeline(pool,req.sale.id))));
+router.get('/orders/:id/refunds',wrap(ownedSale),wrap(async(req,res)=>{
+  const operations=(await pool.query('SELECT * FROM order_refund_operations WHERE sale_id=$1 ORDER BY created_at DESC',[req.sale.id])).rows;
+  res.json(operations.map(require('../services/refundOperations').publicOperation));
+}));
 router.get('/orders/:id/return-eligibility', wrap(ownedSale), wrap(async (req, res) => res.json(await returns.eligibility(pool, req.sale.id))));
 router.get('/orders/:id/tracking', wrap(ownedSale), wrap(async (req, res) => res.json(await createWorkflow(pool).tracking(req.sale.id))));
 router.post('/orders/:id/return', wrap(ownedSale), wrap(async (req, res) => res.json(await returns.createReturn(pool, req.sale.id, req.body))));
-router.get('/orders/:id/returns', wrap(ownedSale), wrap(async (req, res) => res.json((await pool.query(`SELECT r.id,r.type,r.reason,r.status,r.refund_status,r.refund_amount_paise,r.refund_points,r.excluded_fees_paise,r.created_at,
-  (SELECT json_agg(json_build_object('sale_item_id',i.sale_item_id,'qty',i.qty)) FROM return_items i WHERE i.request_id=r.id) AS items
+router.get('/orders/:id/returns', wrap(ownedSale), wrap(async (req, res) => res.json((await pool.query(`SELECT r.id,r.type,r.reason,r.notes,r.status,r.refund_status,r.refund_reference,r.refund_received_at,r.items_received_at,r.refund_amount_paise,r.refund_points,r.excluded_fees_paise,r.created_at,r.updated_at,
+  (SELECT json_agg(json_build_object('sale_item_id',i.sale_item_id,'qty',i.qty)) FROM return_items i WHERE i.request_id=r.id) AS items,
+  (SELECT json_build_object('awb',rs.awb,'status',rs.status,'updated_at',rs.status_synced_at) FROM reverse_shipments rs WHERE rs.request_id=r.id ORDER BY rs.id DESC LIMIT 1) AS reverse_shipment
   FROM return_requests r WHERE r.sale_id=$1 ORDER BY r.created_at DESC`, [req.sale.id])).rows)));
 router.post('/checkout/quote', wrap(async (req, res) => {
   if (Number(req.body.quote_version) === 2 && !['COD', 'ONLINE'].includes(req.body.payment_method)) throw fail('Choose a payment method.', 400, 'PAYMENT_METHOD_REQUIRED');

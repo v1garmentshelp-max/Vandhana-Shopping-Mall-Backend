@@ -38,6 +38,7 @@ app.post('/api/mobile/payments/webhook', express.raw({
   type: 'application/json',
   limit: '1mb'
 }), require('./routes/mobileWebhook'));
+app.post('/api/storefront/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), require('./routes/mobileWebhook'));
 app.use(express.json({
   limit: '10mb'
 }));
@@ -61,6 +62,7 @@ app.use('/api/wishlist', require('./routes/wishlistRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/order-management', require('./routes/orderManagementRoutes'));
 app.use('/api/auth-branch', require('./routes/authBranchRoutes'));
 app.use('/api/barcodes', require('./routes/barcodeRoutes'));
 app.use('/api/branch', require('./routes/branchInventoryRoutes'));

@@ -1,10 +1,21 @@
 const statusText = (s) => String(s || '').trim().toUpperCase()
+const carrierDate = value => {
+  if (!value) return null
+  let text=String(value).trim()
+  const dmy=text.match(/^(\d{2})[ /-](\d{2})[ /-](\d{4})[ T](\d{2}:\d{2}:\d{2})$/)
+  if(dmy) text=`${dmy[3]}-${dmy[2]}-${dmy[1]}T${dmy[4]}+05:30`
+  else if(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(text)) text=text.replace(' ','T')+'+05:30'
+  else if(/^\d{4}-\d{2}-\d{2}$/.test(text)) text+='T00:00:00+05:30'
+  const date=new Date(text)
+  return Number.isFinite(date.getTime())?date.toISOString():null
+}
 
 const normalizeOrderStatus = (value) => {
   const s = statusText(value)
 
   if (!s) return ''
-  if (s.includes('CANCEL')) return 'CANCELLED'
+  if (/^CANCELLED(?:$| BEFORE)|^CANCELED(?:$| BEFORE)/.test(s)) return 'CANCELLED'
+  if (s.includes('CANCELLATION') || s.includes('CANCEL REQUEST')) return ''
   if (s.includes('RTO')) return 'RTO'
   if (s.includes('UNDELIVERED') || s.includes('DELIVERY FAILED')) return 'SHIPPED'
   if (s === 'DELIVERED' || s.startsWith('DELIVERED TO ')) return 'DELIVERED'
@@ -25,6 +36,7 @@ const statusRank = (status) => {
   if (s === 'PACKED') return 2
   if (s === 'SHIPPED') return 3
   if (s === 'DELIVERED') return 4
+  if (s === 'RTO') return 5
   return -1
 }
 
@@ -75,6 +87,7 @@ const bestOrderStatus = (values, fallback = 'PLACED') => {
     if (!next) continue
 
     if (next === 'CANCELLED') return 'CANCELLED'
+    if (next === 'RTO') return 'RTO'
 
     const rank = statusRank(next)
     if (rank > bestRank) {
@@ -92,6 +105,7 @@ const shouldUpdateStatus = (current, next) => {
 
   if (!nextStatus) return false
   if (currentStatus === 'CANCELLED') return false
+  if (currentStatus === 'RTO' || currentStatus === 'RETURNED') return false
   if (currentStatus === 'DELIVERED' && nextStatus !== 'DELIVERED') return false
   if (nextStatus === 'CANCELLED') return currentStatus !== 'DELIVERED' && currentStatus !== 'CANCELLED'
 
@@ -158,24 +172,27 @@ const extractUuid = (value) => {
 
 const extractShipmentInfo = (raw, fallbackStatus = '') => {
   const data = extractTrackingData(raw) || raw || {}
-  const statuses = collectStatusValues(data)
+  // Current status is authoritative. Older scan descriptions are history only.
+  const current = data.shipment_track?.[0] || data
   const rawStatus =
-    findFirstByKeys(data, ['current_status', 'shipment_status', 'status', 'track_status', 'activity']) ||
-    statuses[0] ||
+    current.current_status || current.shipment_status || current.status || current.track_status ||
     fallbackStatus ||
     ''
-
-  const status = bestOrderStatus([...statuses, rawStatus], fallbackStatus || '')
+  const statuses = typeof rawStatus === 'string' && !/^\d+$/.test(rawStatus) ? [rawStatus] : []
+  const status = normalizeOrderStatus(statuses[0]) || normalizeOrderStatus(fallbackStatus)
   const awb = findFirstByKeys(data, ['awb_code', 'awb_number', 'awb'])
   const trackingUrl = findFirstByKeys(data, ['tracking_url', 'track_url'])
   const labelUrl = findFirstByKeys(data, ['label_url'])
-  const currentLocation = findFirstByKeys(data, ['current_location', 'current_city', 'destination_city', 'scan_location', 'scanned_location'])
+  const scans = data.scans || data.shipment_track_activities || []
+  const latestScan = Array.isArray(scans) ? [...scans].sort((a,b)=>new Date(carrierDate(b.date)||0)-new Date(carrierDate(a.date)||0))[0] : null
+  const currentLocation = current.current_location || current.current_city || current.location || latestScan?.location || null
   // Expected/estimated delivery dates are not evidence of actual delivery.
   const deliveredAt = findFirstByKeys(data, ['delivered_at', 'delivered_date', 'delivery_date'], 0, true)
-  const shiprocketOrderId = findFirstByKeys(data, ['shiprocket_order_id', 'order_id'])
+  const eventAt = carrierDate(findFirstByKeys(data, ['current_timestamp','status_timestamp','event_timestamp'], 0, true))
+  const shiprocketOrderId = findFirstByKeys(data, ['sr_order_id','shiprocket_order_id'],0,true) || findFirstByKeys(data,['order_id'],0,true)
   const shiprocketShipmentId = findFirstByKeys(data, ['shiprocket_shipment_id', 'shipment_id'])
   const channelOrderId = findFirstByKeys(data, ['channel_order_id'])
-  const saleId = extractUuid(channelOrderId) || extractUuid(findFirstByKeys(data, ['sale_id']))
+  const saleId = extractUuid(channelOrderId) || extractUuid(findFirstByKeys(data, ['sale_id'],0,true)) || extractUuid(data.order_id)
 
   return {
     raw: data,
@@ -186,7 +203,8 @@ const extractShipmentInfo = (raw, fallbackStatus = '') => {
     tracking_url: trackingUrl != null && trackingUrl !== '' ? String(trackingUrl) : null,
     label_url: labelUrl != null && labelUrl !== '' ? String(labelUrl) : null,
     current_location: currentLocation != null && currentLocation !== '' ? String(currentLocation) : null,
-    delivered_at: deliveredAt || null,
+    delivered_at: carrierDate(deliveredAt) || (status==='DELIVERED'?eventAt:null),
+    event_at: eventAt,
     shiprocket_order_id: shiprocketOrderId != null && shiprocketOrderId !== '' ? String(shiprocketOrderId) : null,
     shiprocket_shipment_id: shiprocketShipmentId != null && shiprocketShipmentId !== '' ? String(shiprocketShipmentId) : null,
     sale_id: saleId
@@ -256,6 +274,7 @@ const syncShipmentRows = async (pool, rows, raw, fallbackStatus = '') => {
   const updated = []
 
   for (const row of rows || []) {
+    if (info.event_at && row.carrier_event_at && new Date(info.event_at) < new Date(row.carrier_event_at)) continue
     const finalStatus = bestOrderStatus(
       [
         row.status,
@@ -280,6 +299,7 @@ const syncShipmentRows = async (pool, rows, raw, fallbackStatus = '') => {
            current_location = COALESCE(NULLIF($7, ''), current_location),
            status_synced_at = now(),
            last_tracking_payload = COALESCE($8::jsonb, last_tracking_payload),
+           carrier_event_at = COALESCE($10::timestamptz,carrier_event_at),
            delivered_at = CASE
              WHEN $2 = 'DELIVERED' THEN COALESCE(delivered_at, $9::timestamptz)
              ELSE delivered_at
@@ -300,7 +320,8 @@ const syncShipmentRows = async (pool, rows, raw, fallbackStatus = '') => {
         info.label_url || '',
         info.current_location || '',
         JSON.stringify(info.raw || raw || {}),
-        deliveredAt && !Number.isNaN(deliveredAt.getTime()) ? deliveredAt.toISOString() : null
+        deliveredAt && !Number.isNaN(deliveredAt.getTime()) ? deliveredAt.toISOString() : null,
+        info.event_at
       ]
     )
 
@@ -329,6 +350,7 @@ const syncShipmentByIdentifiers = async (pool, identifiers = {}, raw = {}, fallb
 }
 
 module.exports = {
+  carrierDate,
   statusText,
   normalizeOrderStatus,
   statusRank,
