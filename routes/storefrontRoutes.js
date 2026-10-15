@@ -14,6 +14,11 @@ const {
 } = require('../services/commercePolicy');
 const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 router.get('/policy', (_req, res) => res.json(policy()));
+const shiwang = require('../services/shiwangOffer');
+router.get('/offers', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ server_now: new Date().toISOString(), offers: [shiwang.campaign()] });
+});
 router.use((_req, res, next) => {
   if (!process.env.JWT_SECRET || ['dev_secret', 'change-me-in-env'].includes(process.env.JWT_SECRET)) return res.status(503).json({
     message: 'Store authentication needs configuration.'
@@ -26,6 +31,20 @@ router.use('/admin', requireAuth, (req, res, next) => {
   });
   next();
 });
+router.get('/admin/offers/shiwang', wrap(async (req, res) => {
+  const role = String(req.user.role_enum || req.user.role);
+  const branch = role === 'SUPER_ADMIN' ? Number(process.env.MOBILE_BRANCH_ID || 3) : Number(req.user.branch_id || 0);
+  const result = await pool.query(`SELECT p.id AS product_id,p.name,p.brand_name,p.gender,p.category_id,
+    ${shiwang.CATEGORY_NAMES_SQL} AS category_names,v.id AS variant_id,v.size,v.colour,v.mrp,v.sale_price,v.b2c_discount_pct,
+    GREATEST(0,COALESCE(s.on_hand,0)-COALESCE(s.reserved,0)) AS available,
+    (p.is_active AND v.is_active AND COALESCE(s.is_active,false)) AS active
+    FROM products p JOIN product_variants v ON v.product_id=p.id
+    LEFT JOIN branch_variant_stock s ON s.variant_id=v.id AND s.branch_id=$1
+    WHERE lower(trim(p.brand_name))='shiwang' ORDER BY p.id,v.id`, [branch]);
+  res.set('Cache-Control', 'no-store');
+  res.json({ server_now: new Date().toISOString(), offer: shiwang.campaign(), branch_id: branch,
+    products: result.rows.filter(shiwang.eligible) });
+}));
 router.get('/admin/cancellations', wrap(async (req, res) => {
   const branch = String(req.user.role_enum || req.user.role) === 'SUPER_ADMIN' ? null : Number(req.user.branch_id || 0);
   const rows = await pool.query(`SELECT c.*,s.branch_id,s.customer_name,s.customer_email,s.payment_method,s.status AS order_status

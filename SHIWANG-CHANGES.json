@@ -1,0 +1,22 @@
+{
+  "changed": [
+    ".env.example",
+    "package.json",
+    "routes/productRoutes.js",
+    "routes/storefrontRoutes.js",
+    "services/mobileCheckout.js",
+    "services/mobileRules.js",
+    "services/shiprocketService.js"
+  ],
+  "added": [
+    "scripts/preflightShiwang.js",
+    "scripts/verify-shiwang-offer.sql",
+    "tests/shiwangOffer.test.js",
+    "tests/shiwangCheckout.test.js",
+    "services/shiwangOffer.js",
+    "SHIWANG-DEPLOYMENT-GUIDE.md",
+    "SHIWANG-CHANGES.json"
+  ],
+  "release": "Shiwang pair offer — 15 October 2026",
+  "database_migration_required": false
+}

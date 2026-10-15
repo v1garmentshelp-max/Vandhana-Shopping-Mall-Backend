@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const shiwang = require('./shiwangOffer');
 const fail = (message, status = 400, code) => Object.assign(new Error(message), {
   status,
   code
@@ -28,7 +29,7 @@ function addressOf(value) {
 function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
   if (!rows.length) throw fail('Your bag is empty.', 409);
   const points = integer(requestedPoints || 0, 0, 1000000);
-  const items = rows.map(row => {
+  const baseItems = rows.map(row => {
     if (row.is_custom) {
       if (!row.server_custom) throw fail('Custom garment pricing is unavailable.', 409);
       return {
@@ -51,6 +52,7 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
       product_id: Number(row.product_id),
       qty,
       ...priceOf(row),
+      offer_eligible: shiwang.eligible(row),
       name: row.name,
       size: row.size,
       colour: row.colour,
@@ -59,6 +61,8 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
       is_innerwear: !!row.is_innerwear
     };
   }).sort((a, b) => a.variant_id - b.variant_id || a.cart_item_id - b.cart_item_id);
+  const promotion = shiwang.applyOffer(baseItems, settings.now ?? Date.now());
+  const items = promotion.items;
   const subtotal = money(items.reduce((sum, i) => sum + i.price * i.qty, 0));
   const mrp = money(items.reduce((sum, i) => sum + i.mrp * i.qty, 0));
   const threshold = Number(settings.freeShippingThreshold ?? 1000);
@@ -71,6 +75,8 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
   if (points > Math.floor(paymentMethod ? subtotal : subtotal + shipping)) throw fail('Reward points exceed this order total.', 409);
   const quote = {
     items,
+    offers: promotion.offers,
+    offer_discount: promotion.offer_discount,
     subtotal,
     mrp,
     discount: money(mrp - subtotal),

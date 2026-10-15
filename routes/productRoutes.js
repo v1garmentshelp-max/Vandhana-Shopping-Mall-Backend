@@ -2,6 +2,7 @@ const { compareSizes } = require('../utils/sizeOrder');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { annotateProduct } = require('../services/shiwangOffer');
 const WEB_BRANCH_ID = (() => {
     const v = parseInt(process.env.WEB_BRANCH_ID || '', 10);
     return Number.isFinite(v) && v > 0 ? v : null;
@@ -348,6 +349,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => {
 `;
 };
 const makeVariantPayload = row => ({
+    offer: row.offer || null,
     id: row.variant_id,
     variant_id: row.variant_id,
     variantId: row.variant_id,
@@ -488,6 +490,7 @@ const groupProductRows = (rows, { includeGroupedValues = false, groupBy = 'desig
         const totalAvailable = group.variants.reduce((sum, v) => sum + toNumber(v.available_qty), 0);
         const selectedVariant = group.variants.find(v => String(v.variant_id) === String(selected.variant_id)) || group.variants[0] || {};
         out.push({
+            offer: selectedVariant.offer || null,
             id: group.product_id,
             product_id: group.product_id,
             productId: group.product_id,
@@ -764,7 +767,7 @@ const fetchProducts = async ({ req, gender, category, brand, q, id, productId, v
     LIMIT $${limIdx} OFFSET $${offIdx}
   `;
     const { rows } = await pool.query(sql, params);
-    return groupProductRows(rows, { includeGroupedValues, groupBy });
+    return groupProductRows(rows.map(annotateProduct), { includeGroupedValues, groupBy });
 };
 const resolveVariantForWrite = async ({ client, id, variantIdFromBody, barcodeFromBody, mode = 'auto' }) => {
     const numericId = parseInt(id, 10);

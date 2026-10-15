@@ -13,6 +13,7 @@ const {
   capturedPayment
 } = require('./mobileRules');
 const store = require('./mobileStore');
+const { CATEGORY_NAMES_SQL } = require('./shiwangOffer');
 const branch = () => Number(process.env.MOBILE_BRANCH_ID || 3);
 const settings = () => ({
   freeShippingThreshold: process.env.MOBILE_FREE_SHIPPING_THRESHOLD || 1000,
@@ -48,7 +49,8 @@ async function quote(db, userId, points, lock = false, paymentMethod = null) {
   const result = await db.query(`SELECT c.id AS cart_item_id,c.quantity,c.is_custom,c.custom_payload,c.custom_image_url,c.custom_title,v.id AS variant_id,v.product_id,
     v.size,v.colour,v.mrp,v.sale_price,v.b2c_discount_pct,
     COALESCE(NULLIF(v.image_url,''),(SELECT pi.image_url FROM product_images pi JOIN barcodes ib ON ib.ean_code=pi.ean_code WHERE ib.variant_id=v.id ORDER BY CASE WHEN lower(pi.image_type)='front' THEN 0 ELSE 1 END,pi.image_url LIMIT 1)) AS image_url,v.is_active AS variant_active,p.is_active AS product_active,
-    p.name,s.on_hand,s.reserved,s.is_active AS stock_active,
+    p.name,p.brand_name,p.gender,${CATEGORY_NAMES_SQL} AS category_names,
+    s.on_hand,s.reserved,s.is_active AS stock_active,
     EXISTS (WITH RECURSIVE inner_categories AS (
       SELECT id FROM product_categories WHERE regexp_replace(lower(name),'[^a-z]','','g') IN ('innerwear','underwear','lingerie','intimates')
       UNION SELECT cat.id FROM product_categories cat JOIN inner_categories parent ON cat.parent_id=parent.id
