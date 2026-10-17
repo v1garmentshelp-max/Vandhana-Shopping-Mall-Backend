@@ -1,11 +1,11 @@
-// services/shiprocketClient.js
+                               
 const axios = require('axios');
 
 const BASE = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in';
 
 let token = null;
 let fetchedAt = 0;
-const TTL = 25 * 60 * 1000; // refresh every ~25 mins (conservative)
+const TTL = 25 * 60 * 1000;                                         
 
 async function login() {
   const email = process.env.SHIPROCKET_API_USER_EMAIL;
@@ -25,7 +25,7 @@ async function withAuth(cfg) {
   return data;
 }
 
-// ========== Public helpers we’ll use in controllers ==========
+                                                                
 exports.listOrders = async (page = 1) =>
   withAuth({ method: 'get', url: '/v1/external/orders', params: { per_page: 50, page } });
 

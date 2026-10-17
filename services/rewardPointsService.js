@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { MAX_POINTS_PER_PRODUCT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
 const asInt = value => {
   if (value == null || String(value).trim() === '') return null;
   const n = Number(value);
@@ -32,7 +33,8 @@ async function getSettings(db = pool) {
     enabled: ['true', '1', 'yes', 'on'].includes(String(raw.enabled || 'false').trim().toLowerCase()),
     signup_bonus_points: asNonNegativeInt(raw.signup_bonus_points) ?? 1000,
     validity_days: asPositiveInt(raw.validity_days) ?? 90,
-    warning_days: asNonNegativeInt(raw.warning_days) ?? 10
+    warning_days: asNonNegativeInt(raw.warning_days) ?? 10,
+    max_points_per_product: MAX_POINTS_PER_PRODUCT
   };
 }
 async function expireLots(db = pool, userId = null) {
@@ -144,6 +146,7 @@ async function getWalletSummary(userId, db = pool) {
     user: userQ.rows[0],
     balance,
     point_value_rupees: 1,
+    max_points_per_product: MAX_POINTS_PER_PRODUCT,
     signup_bonus_points: settings.signup_bonus_points,
     validity_days: settings.validity_days,
     warning_days: settings.warning_days,
@@ -216,6 +219,7 @@ async function getRedeemableBalance(userId, db = pool, lock = false) {
 async function previewRedemption({
   userId,
   requestedPoints,
+  items,
   orderSubtotal
 }, db = pool) {
   const points = asNonNegativeInt(requestedPoints);
@@ -232,13 +236,14 @@ async function previewRedemption({
   }
   const settings = await getSettings(db);
   const wallet = await getRedeemableBalance(userId, db, false);
-  const maxByOrder = Math.max(Math.floor(subtotal), 0);
+  const maxByOrder = redemptionLimit(items, subtotal);
   const maxRedeemable = Math.min(wallet.balance, maxByOrder);
   return {
     enabled: settings.enabled,
     balance: wallet.balance,
     requested_points: points,
     max_redeemable: settings.enabled ? maxRedeemable : 0,
+    max_points_per_product: MAX_POINTS_PER_PRODUCT,
     can_redeem: settings.enabled && points <= maxRedeemable,
     reward_discount: settings.enabled && points <= maxRedeemable ? points : 0,
     payable_after_rewards: settings.enabled && points <= maxRedeemable ? asMoney(Math.max(subtotal - points, 0)) : subtotal,
@@ -276,8 +281,10 @@ async function redeemPoints(db, {
       code: 'REWARDS_DISABLED'
     });
   }
+  const itemResult = await db.query('SELECT qty, price FROM sale_items WHERE sale_id = $1::uuid', [saleId]);
+  const items = itemResult.rows;
   const wallet = await getRedeemableBalance(uid, db, true);
-  const maxByOrder = Math.max(Math.floor(subtotal), 0);
+  const maxByOrder = redemptionLimit(items, subtotal);
   const maxRedeemable = Math.min(wallet.balance, maxByOrder);
   if (points > wallet.balance) {
     throw Object.assign(new Error('Insufficient reward points'), {
@@ -288,12 +295,7 @@ async function redeemPoints(db, {
     });
   }
   if (points > maxByOrder) {
-    throw Object.assign(new Error('Reward points cannot exceed the order payable amount'), {
-      status: 409,
-      code: 'REWARD_EXCEEDS_ORDER',
-      available_points: wallet.balance,
-      max_redeemable: maxRedeemable
-    });
+    throw Object.assign(redemptionLimitError(maxRedeemable), { available_points: wallet.balance });
   }
   let remaining = points;
   const deductions = [];

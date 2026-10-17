@@ -16,7 +16,7 @@ router.put('/admin/store',configuredAuth,requireAuth,superAdmin,wrap(async(req,r
   await pool.query('UPDATE mobile_store_settings SET config=$1::jsonb,updated_at=now() WHERE id=true',[JSON.stringify(config)])
   res.json(await store.config(pool))
 }))
-// All customer data is selected using the authenticated owner, never a body user_id.
+                                                                                     
 router.use(['/addresses','/designs','/uploads'],configuredAuth,requireCustomerAuth,wrap(async(req,_res,next)=>{
   const customer=await pool.query('SELECT id,type FROM vandana_users WHERE id=$1',[req.customer.id])
   if(!customer.rowCount||customer.rows[0].type!=='B2C')throw fail('A customer account is required.',403)

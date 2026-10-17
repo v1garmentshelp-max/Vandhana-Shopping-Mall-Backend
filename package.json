@@ -12,7 +12,8 @@
     "preflight:commerce": "node scripts/preflightCommerce.js",
     "migrate:commerce": "node scripts/migrateCommerce.js",
     "test:offers": "node --test tests/shiwang*.test.js",
-    "preflight:shiwang": "node scripts/preflightShiwang.js"
+    "preflight:shiwang": "node scripts/preflightShiwang.js",
+    "test:rewards-email": "node --test tests/rewardEmailFix.test.js"
   },
   "engines": {
     "node": "24.x"

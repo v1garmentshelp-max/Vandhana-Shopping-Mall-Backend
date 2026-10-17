@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const shiwang = require('./shiwangOffer');
+const { MAX_POINTS_PER_PRODUCT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
 const fail = (message, status = 400, code) => Object.assign(new Error(message), {
   status,
   code
@@ -72,7 +73,8 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
     shipping: subtotal >= threshold ? 0 : fee
   };
   const shipping = charges.shipping;
-  if (points > Math.floor(paymentMethod ? subtotal : subtotal + shipping)) throw fail('Reward points exceed this order total.', 409);
+  const maxRewardPoints = redemptionLimit(items, subtotal);
+  if (points > maxRewardPoints) throw redemptionLimitError(maxRewardPoints);
   const quote = {
     items,
     offers: promotion.offers,
@@ -82,6 +84,8 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
     discount: money(mrp - subtotal),
     ...charges,
     reward_points: points,
+    max_reward_points: maxRewardPoints,
+    max_points_per_product: MAX_POINTS_PER_PRODUCT,
     payable: money(subtotal + shipping - points)
   };
   return {

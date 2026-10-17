@@ -63,7 +63,7 @@ async function timeline(db, id) {
   const sale = (await db.query('SELECT status,payment_status,created_at FROM sales WHERE id=$1', [id])).rows[0];
   if (!sale) throw error('Order not found.',404);
   if (!events.some(e => e.event_type === 'ORDER_PLACED')) events.unshift({ id: 'original',event_type: 'ORDER_PLACED',source: 'original_order',status: 'PLACED',details: {historical:true},occurred_at: sale.created_at });
-  // Older records have no reconstructed transition times. Show the saved facts explicitly.
+                                                                                           
   if (!events.some(e => e.source === 'storefront_cancellations')) {
     const row = (await db.query('SELECT status,reason,created_at,refund_status FROM storefront_cancellations WHERE sale_id=$1',[id])).rows[0];
     if (row) events.push({ id:'historical-cancellation',event_type:'CANCELLATION_UPDATED',source:'original_cancellation',status:row.status,details:{reason:row.reason,refund_status:row.refund_status,historical:true},occurred_at:row.created_at });

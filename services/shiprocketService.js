@@ -97,7 +97,7 @@ class Shiprocket {
       shipping_is_billing: true,
       order_items: (order.items || []).map(it => ({
         name: it.name || `Variant ${it.variant_id}`,
-        // A promotion may split one variant into paired and unpaired price lines.
+                                                                                  
         sku: (order.items || []).filter(line => line.variant_id === it.variant_id).length > 1
           ? `${it.variant_id || 'item'}-${it.id}` : String(it.variant_id || it.id),
         units: Number(it.qty || 0),

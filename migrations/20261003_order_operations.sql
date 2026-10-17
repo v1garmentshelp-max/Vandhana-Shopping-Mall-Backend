@@ -1,5 +1,5 @@
 BEGIN;
--- Some older installations use enums for these columns.
+
 DO $$
 DECLARE target record; val text;
 BEGIN
@@ -14,7 +14,7 @@ BEGIN
     LOOP EXECUTE format('ALTER TYPE %I.%I ADD VALUE IF NOT EXISTS %L',target.nspname,target.typname,val); END LOOP;
   END LOOP;
 END $$;
--- Extend simple legacy status checks while keeping their existing allowed states.
+
 DO $$
 DECLARE target record; states text[]; expression text;
 BEGIN
@@ -101,7 +101,7 @@ ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS carrier_event_at timestam
 ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS last_tracking_payload jsonb;
 ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS last_error text;
 
--- A database audit follows every writer, including legacy admin endpoints.
+
 CREATE OR REPLACE FUNCTION record_order_operation_event() RETURNS trigger AS $$
 DECLARE
   row_data jsonb := to_jsonb(NEW);

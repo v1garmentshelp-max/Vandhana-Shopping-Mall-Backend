@@ -245,32 +245,32 @@ test('website quote and placement use authoritative method-aware totals and igno
   await auth(http.post('/api/storefront/checkout/quote')).send({}).expect(400);
   const q = await auth(http.post('/api/storefront/checkout/quote')).send({
     payment_method: 'COD',
-    reward_points: 20
+    reward_points: 10
   }).expect(200);
   assert.equal(q.body.shipping, 40);
-  assert.equal(q.body.payable, 560);
+  assert.equal(q.body.payable, 570);
   const body = {
     request_key: crypto.randomUUID(),
     address,
     payment_method: 'COD',
-    reward_points: 20,
+    reward_points: 10,
     fingerprint: q.body.fingerprint,
     total: 1,
     shipping: 0
   };
   const saved = await auth(http.post('/api/storefront/checkouts')).send(body).expect(200);
-  assert.equal(saved.body.amount, 56000);
+  assert.equal(saved.body.amount, 57000);
   const replay = await auth(http.post('/api/storefront/checkouts')).send(body).expect(200);
   assert.equal(replay.body.sale_id, saved.body.sale_id);
   assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 9);
 });
 test('a payment-method change invalidates a displayed quote before stock or rewards change', async () => {
-  const q = await checkout.quote(pool, 1, 20, false, 'ONLINE');
+  const q = await checkout.quote(pool, 1, 10, false, 'ONLINE');
   await assert.rejects(checkout.create(user, {
     request_key: crypto.randomUUID(),
     address,
     payment_method: 'COD',
-    reward_points: 20,
+    reward_points: 10,
     fingerprint: q.fingerprint,
     quote_version: 2
   }), /prices changed/);
@@ -307,7 +307,7 @@ test('customers can only cancel their own order and cannot call staff processing
   await auth(http.get('/api/rewards/admin/summary')).expect(403);
 });
 test('unpaid COD cancellation restores stock and redeemed rewards once, with no cash refund', async () => {
-  const saved = await place('COD', 100);
+  const saved = await place('COD', 10);
   const request = await cancellations.requestCancellation(user, saved.sale_id, {
     reason: 'Ordered wrong size'
   });
@@ -377,12 +377,12 @@ test('online cancellation blocks new payment sessions and a late capture queues 
   assert.equal((await query('SELECT quantity FROM vandana_cart')).rows[0].quantity, 1);
 });
 test('paid cancellation exposes only product cash and verifies exact processed Razorpay refund', async () => {
-  const saved = await paid(100);
+  const saved = await paid(10);
   await cancellations.requestCancellation(user, saved.sale_id, {
     reason: 'Wrong size'
   });
   const result = await cancellations.processCancellation(staff, saved.sale_id);
-  assert.equal(result.refund_amount, 440);
+  assert.equal(result.refund_amount, 530);
   assert.equal(result.excluded_fees, 30);
   await assert.rejects(refundService.completeCancellation(staff, saved.sale_id, {
     amount_paise: 47000,
@@ -393,26 +393,26 @@ test('paid cancellation exposes only product cash and verifies exact processed R
     payment_id: 'pay_other',
     status: 'processed',
     currency: 'INR',
-    amount: 44000
+    amount: 53000
   };
   await assert.rejects(refundService.completeCancellation(staff, saved.sale_id, {
-    amount_paise: 44000,
+    amount_paise: 53000,
     reference: 'rfnd_exact'
   }), /Razorpay/);
   refunds.rfnd_exact.payment_id = 'pay_commerce';
   const done = await refundService.completeCancellation(staff, saved.sale_id, {
-    amount_paise: 44000,
+    amount_paise: 53000,
     reference: 'rfnd_exact'
   });
   assert.equal(done.refund.status, 'REFUNDED');
   assert.equal((await refundService.completeCancellation(staff, saved.sale_id, {
-    amount_paise: 44000,
+    amount_paise: 53000,
     reference: 'rfnd_exact'
   })).refund.status, 'REFUNDED');
 });
 test('COD partial returns exclude all fees, require receipt and transfer proof, and restore only allocated points', async () => {
   await query('UPDATE vandana_cart SET quantity=2 WHERE user_id=1');
-  const saved = await place('COD', 100);
+  const saved = await place('COD', 20);
   await delivered(saved);
   const item = (await query('SELECT id FROM sale_items WHERE sale_id=$1', [saved.sale_id])).rows[0];
   const requested = await returnPolicy.createReturn(pool, saved.sale_id, {
@@ -422,12 +422,12 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
       qty: 1
     }]
   });
-  assert.equal(requested.request.refund.amount, 490);
-  assert.equal(requested.request.refund.reward_points, 50);
+  assert.equal(requested.request.refund.amount, 530);
+  assert.equal(requested.request.refund.reward_points, 10);
   assert.equal(requested.request.refund.excluded_delivery_and_cod, 30);
   await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1", [requested.request.id]);
   const body = {
-    amount_paise: 49000,
+    amount_paise: 53000,
     reference: 'BANK123456',
     items_received: true,
     transfer_confirmed: true
@@ -443,7 +443,7 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
   }, requested.request.id, body), /access/);
   await refundService.completeReturn(staff, requested.request.id, body);
   await refundService.completeReturn(staff, requested.request.id, body);
-  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 50);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 90);
   const second = await returnPolicy.createReturn(pool, saved.sale_id, {
     reason: 'The second shirt also does not fit',
     items: [{
@@ -451,7 +451,7 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
       qty: 1
     }]
   });
-  assert.equal(second.request.refund.amount, 490);
+  assert.equal(second.request.refund.amount, 530);
   await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1", [second.request.id]);
   await assert.rejects(refundService.completeReturn(staff, second.request.id, body), /already recorded/);
   await refundService.completeReturn(staff, second.request.id, {
@@ -461,10 +461,10 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 100);
 });
 test('commerce migration can be reapplied without changing saved orders or balances', async () => {
-  const saved = await place('COD', 20);
+  const saved = await place('COD', 10);
   await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations/20260929_store_commerce.sql'), 'utf8'));
-  assert.equal(Number((await query('SELECT total FROM sales WHERE id=$1', [saved.sale_id])).rows[0].total), 560);
-  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 80);
+  assert.equal(Number((await query('SELECT total FROM sales WHERE id=$1', [saved.sale_id])).rows[0].total), 570);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 90);
 });
 
 test('staff cancellation through the existing admin endpoint is audited and cannot bypass branch ownership',async()=>{
@@ -476,13 +476,13 @@ test('staff cancellation through the existing admin endpoint is audited and cann
  assert.equal(row.source,'ADMIN');assert.equal(Number(row.requested_by),9);assert.equal(row.status,'COMPLETED');
 });
 test('return approval is idempotent and a refunded return cannot be rejected to reset its entitlement',async()=>{
- const saved=await place('COD',100);await delivered(saved);
+ const saved=await place('COD',10);await delivered(saved);
  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
  const created=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'The shirt size does not fit',items:[{sale_item_id:item.id,qty:1}]});
  const id=created.request.id,admin=jwt.sign(staff,process.env.JWT_SECRET);
  const send=(action,body={})=>http.post(`/api/returns/${id}/${action}`).set('Authorization',`Bearer ${admin}`).send(body);
  await send('approve').expect(200);await send('approve').expect(200);assert.equal(reverseCalls,1);
- await send('refund-complete',{amount_paise:44000,reference:'BANK999001',items_received:true,transfer_confirmed:true}).expect(200);
+ await send('refund-complete',{amount_paise:53000,reference:'BANK999001',items_received:true,transfer_confirmed:true}).expect(200);
  await send('reject',{reason:'Try to reset a refunded return'}).expect(409);
  assert.equal((await query('SELECT refund_status FROM return_requests WHERE id=$1',[id])).rows[0].refund_status,'REFUNDED');
  assert.equal((await returnPolicy.eligibility(pool,saved.sale_id)).ok,false);
@@ -497,7 +497,7 @@ test('an uncertain return pickup is never created again on approval retry',async
 });
 
 test('pending mobile cancellation appears immediately in admin queues and branch permissions apply',async()=>{
- const saved=await place('COD',20);
+ const saved=await place('COD',10);
  await auth(http.post(`/api/mobile/orders/${saved.sale_id}/cancel`)).send({reason:'Customer no longer needs this shirt'}).expect(202);
  const admin=jwt.sign(staff,process.env.JWT_SECRET),branch=jwt.sign({id:9,role:'BRANCH_ADMIN',branch_id:8},process.env.JWT_SECRET);
  const result=await http.get('/api/order-management/orders?queue=cancellations').set('Authorization',`Bearer ${admin}`).expect(200);
@@ -512,13 +512,13 @@ test('pending mobile cancellation appears immediately in admin queues and branch
  await http.get(`/api/mobile/orders/${saved.sale_id}/timeline`).set('Authorization',`Bearer ${other}`).expect(404);
 });
 test('a refund timeout reuses the same immutable gateway key and provider reconciliation settles it once',async()=>{
- const saved=await paid(20);
+ const saved=await paid(10);
  await cancellations.requestCancellation(user,saved.sale_id,{reason:'Please cancel my clothing order'});
  await cancellations.processCancellation(staff,saved.sale_id);
  const operations=require('../services/refundOperations');refundMode='timeout';
- await assert.rejects(operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:52000}),/confirmation is pending/);
+ await assert.rejects(operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:53000}),/confirmation is pending/);
  assert.equal(refundCreates,1);
- refundMode='';const retried=await operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:52000});
+ refundMode='';const retried=await operations.initiate(staff,'CANCELLATION',saved.sale_id,{amount_paise:53000});
  assert.equal(retried.operation.status,'PENDING');assert.equal(refundCreates,1);assert.equal(refundPosts.length,2);
  assert.deepEqual(refundPosts[0],refundPosts[1]);
  assert.equal((await query('SELECT payment_status FROM sales WHERE id=$1',[saved.sale_id])).rows[0].payment_status,'PAID');
@@ -530,7 +530,7 @@ test('a refund timeout reuses the same immutable gateway key and provider reconc
  assert.equal((await query("SELECT COUNT(*)::int AS count FROM reward_point_transactions WHERE transaction_type='REFUNDED'")).rows[0].count,1);
 });
 test('return inspection restocks only sellable goods once and COD refund stays separate from receipt',async()=>{
- const saved=await place('COD',100);await delivered(saved);
+ const saved=await place('COD',10);await delivered(saved);
  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
  const result=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size clothing received',items:[{sale_item_id:item.id,qty:1}]});
  const id=result.request.id;
@@ -540,7 +540,7 @@ test('return inspection restocks only sellable goods once and COD refund stays s
  await refundService.receiveReturn(staff,id,{restock:true,inspection_notes:'Duplicate receipt must not restore twice'});
  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand,10);
  assert.equal((await query('SELECT refund_status FROM return_requests WHERE id=$1',[id])).rows[0].refund_status,'PENDING_REFUND');
- await refundService.completeReturn(staff,id,{amount_paise:44000,reference:'BANK_RESTOCK_001',transfer_confirmed:true});
+ await refundService.completeReturn(staff,id,{amount_paise:53000,reference:'BANK_RESTOCK_001',transfer_confirmed:true});
  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining,100);
 });
 test('gateway refunds require return receipt and failed refunds cannot create a second key',async()=>{

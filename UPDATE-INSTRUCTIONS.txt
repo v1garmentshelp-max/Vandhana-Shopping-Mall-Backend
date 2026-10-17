@@ -1,0 +1,42 @@
+V1 GARMENTS UPDATE
+
+Reward redemption is limited to 10 points per purchased product unit. Two units allow up to 20 points, three allow up to 30, and four allow up to 40. The available wallet balance and product value may lower this limit. Points cannot cover the full product value, delivery charges or COD charges. Existing points balances, expiry dates and order history are preserved.
+
+Shiwang offer pricing remains 990 for one set, 1599 for two, 2589 for three and 3198 for four, before rewards and delivery charges. The offer ends after 20 October 2026, India time.
+
+No database migration or SQL update is required for these two fixes.
+
+Deploy the backend first, then rebuild and deploy the website and admin using your existing projects and environment variables. Node.js 24 is the backend runtime.
+
+Backend commands, from the vandhana-backend directory:
+npm ci
+npm run test:rewards-email
+npm run test:mobile
+npm run test:commerce
+npm run test:offers
+npm run preflight:mobile
+npm run preflight:commerce
+
+The preflight commands use the existing DATABASE_URL and JWT_SECRET and perform read-only checks. Keep the current production database configuration.
+
+Website commands, from the vandhana-website directory:
+npm ci
+npm run build
+
+Admin commands, from the vandhana-admin directory:
+npm ci
+npm run build
+
+Set VITE_API_BASE for the website and REACT_APP_API_BASE for the admin to the same deployed V1 Garments backend origin. The website login and password-reset pages now use VITE_API_BASE, just like checkout. The default origin remains https://vandhana-shopping-mall-backend.vercel.app. Rebuild the frontend after changing its environment variables.
+
+Email configuration on the backend:
+SMTP_HOST: your SMTP provider host
+SMTP_PORT: 465 for implicit TLS or 587 for STARTTLS
+SMTP_USER: the SMTP username for your store
+SMTP_PASS: the matching SMTP password or provider credential
+FROM_EMAIL: one verified sender email address for V1 Garments
+PASSWORD_RESET_SECRET: retain the existing secret
+
+The application sets the outgoing display name to V1 Garments even if FROM_EMAIL contains an old display name. The reset subject and body also use V1 Garments. No production SMTP account or API key was inspected or changed. If the delivered email still shows the old brand, check the provider's verified sender identity and any saved sender contact name in the receiving mailbox. Confirm delivery with a test account after deployment.
+
+Validation completed: backend reward, checkout, offer, refund and password-reset tests; website and admin production builds; checkout input validation and wallet balance handling. Email tests use a local transport and do not send messages.

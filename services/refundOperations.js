@@ -78,7 +78,7 @@ async function initiate(staff, rawKind, id, body = {}) {
         || !['captured','refunded'].includes(remote.status)) throw error('The saved order and captured payment do not match.');
       if (!previous && amount > Number(remote.amount)-Number(remote.amount_refunded || 0)) throw error('The payment has already been refunded. Reconcile its refunds before continuing.');
     }
-    // Commit the same immutable key and amount before making any gateway call.
+                                                                               
     const op = previous || (await db.query(`INSERT INTO order_refund_operations(id,sale_id,kind,request_id,amount_paise,
       payment_id,idempotency_key,provider,status,initiated_by) VALUES($1::uuid,$2,$3,$4,$5,$6,$1::text,$7,'REQUESTED',$8) RETURNING *`,
       [crypto.randomUUID(),sale.id,kind,String(id),amount,payment?.razorpay_payment_id || null,amount ? 'RAZORPAY' : 'REWARDS',staff.id])).rows[0];
@@ -119,7 +119,7 @@ async function processWebhook(entity) {
     [entity.id, entity.payment_id, /^[0-9a-f-]{36}$/i.test(String(entity.receipt)) ? entity.receipt : null])).rows[0];
   if (!op) return { matched: false };
   return locked(op.sale_id, async db => {
-    // Fetch the authoritative refund to handle reordered webhook deliveries.
+                                                                             
     const { data } = await new Razorpay({}).client.get(`/payments/${encodeURIComponent(op.payment_id)}/refunds/${encodeURIComponent(entity.id)}`);
     return { matched: true, operation: await applyProviderResult(db, op, data) };
   });

@@ -1,7 +1,7 @@
--- READ ONLY. Run in the existing production database (DBeaver SQL editor or psql).
--- No ALTER/UPDATE/INSERT is required for this offer. Do not lower every variant
--- to 799.50: that would incorrectly discount single sets and would not expire.
--- Existing category ID observed on v1garments.com: 15. Match names, not a hardcoded ID.
+
+
+
+
 WITH RECURSIVE eligible_categories AS (
   SELECT id FROM product_categories
   WHERE regexp_replace(lower(name),'[^a-z0-9]','','g') IN
@@ -22,7 +22,7 @@ WHERE regexp_replace(lower(p.brand_name),'[^a-z0-9]','','g')='shiwang'
   AND p.category_id IN (SELECT id FROM eligible_categories)
 ORDER BY p.id,v.id;
 
--- Expected merchandise totals. Delivery/COD and reward redemption are separate.
+
 SELECT quantity, (quantity/2)*1599+(quantity%2)*990 AS offer_total
 FROM generate_series(1,10) AS quantity;
 

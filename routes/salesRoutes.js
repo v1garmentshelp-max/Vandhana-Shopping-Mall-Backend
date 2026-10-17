@@ -1101,7 +1101,7 @@ router.post('/web/place', (_req, res) => res.status(410).json({
         userId: req.customer.id,
         requestedPoints: requestedRewardPoints,
         saleId,
-        orderSubtotal: payableBeforeRewards
+        orderSubtotal: Math.max(bagTotal - discountTotal - couponDiscount, 0)
       });
     }
     await client.query('COMMIT');

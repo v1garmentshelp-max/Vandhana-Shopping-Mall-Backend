@@ -12,7 +12,7 @@ async function syncReturnTracking(db,payload) {
       WHERE id=$1`,[row.id,info.raw_status,info.awb,info.event_at,JSON.stringify(payload)]);
     processed++;
   }
-  // A courier scan never substitutes for warehouse inspection or settles a refund.
+                                                                                   
   return {matched:rows.length,processed};
 }
 module.exports={syncReturnTracking};

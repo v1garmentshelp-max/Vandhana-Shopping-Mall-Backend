@@ -39,7 +39,7 @@ class ReturnsService {
     const {data}=await this.sr.api('post','/orders/create/return',payload);
     const orderId=positiveId(data?.order_id),shipmentId=positiveId(Array.isArray(data?.shipment_id)?data.shipment_id[0]:data?.shipment_id);
     if(!orderId||!shipmentId)throw fail('Shiprocket did not confirm a reverse order and shipment ID. Check its returns panel before retrying.');
-    // Save before any AWB/pickup action so those steps can be recovered separately.
+                                                                                    
     return (await this.pool.query(`INSERT INTO reverse_shipments(request_id,shiprocket_order_id,shiprocket_shipment_id,awb,status)
       VALUES($1,$2,$3,$4,'CREATED') RETURNING *`,[request.id,orderId,shipmentId,awbText(data.awb_code)])).rows[0];
   }

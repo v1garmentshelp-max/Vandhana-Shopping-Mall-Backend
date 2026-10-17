@@ -298,10 +298,12 @@ router.get('/history', requireCustomerAuth, async (req, res) => {
 });
 router.post('/preview', requireCustomerAuth, async (req, res) => {
   try {
+    const quote = await require('../services/mobileCheckout').quote(pool, req.customer.id, 0, false, 'ONLINE');
     const result = await previewRedemption({
       userId: req.customer.id,
       requestedPoints: req.body?.reward_points ?? req.body?.points ?? 0,
-      orderSubtotal: req.body?.order_subtotal ?? req.body?.subtotal ?? req.body?.payable ?? 0
+      items: quote.items,
+      orderSubtotal: quote.subtotal
     });
     return res.json(result);
   } catch (error) {

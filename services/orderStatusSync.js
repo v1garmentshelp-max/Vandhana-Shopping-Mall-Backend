@@ -172,7 +172,7 @@ const extractUuid = (value) => {
 
 const extractShipmentInfo = (raw, fallbackStatus = '') => {
   const data = extractTrackingData(raw) || raw || {}
-  // Current status is authoritative. Older scan descriptions are history only.
+                                                                               
   const current = data.shipment_track?.[0] || data
   const rawStatus =
     current.current_status || current.shipment_status || current.status || current.track_status ||
@@ -186,7 +186,7 @@ const extractShipmentInfo = (raw, fallbackStatus = '') => {
   const scans = data.scans || data.shipment_track_activities || []
   const latestScan = Array.isArray(scans) ? [...scans].sort((a,b)=>new Date(carrierDate(b.date)||0)-new Date(carrierDate(a.date)||0))[0] : null
   const currentLocation = current.current_location || current.current_city || current.location || latestScan?.location || null
-  // Expected/estimated delivery dates are not evidence of actual delivery.
+                                                                           
   const deliveredAt = findFirstByKeys(data, ['delivered_at', 'delivered_date', 'delivery_date'], 0, true)
   const eventAt = carrierDate(findFirstByKeys(data, ['current_timestamp','status_timestamp','event_timestamp'], 0, true))
   const shiprocketOrderId = findFirstByKeys(data, ['sr_order_id','shiprocket_order_id'],0,true) || findFirstByKeys(data,['order_id'],0,true)

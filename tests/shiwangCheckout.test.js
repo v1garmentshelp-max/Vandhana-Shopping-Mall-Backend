@@ -78,3 +78,16 @@ test('retail checkout rejects B2B accounts', async () => {
   await query("UPDATE vandana_users SET type='B2B' WHERE id=1");
   await auth(http.post('/api/storefront/checkout/quote')).send({ payment_method:'COD', reward_points:0 }).expect(403);
 });
+test('Shiwang split lines allow ten reward points per purchased set and preserve offer totals', async () => {
+  await query("INSERT INTO reward_point_lots(user_id,source_type,points_granted,points_remaining,expires_at,status) VALUES(1,'SIGNUP_BONUS',1000,1000,now()+interval '30 days','ACTIVE')");
+  const quote = await checkout.quote(pool, 1, 30, false, 'COD');
+  assert.equal(quote.items.length, 2);
+  assert.equal(quote.max_reward_points, 30);
+  assert.equal(quote.subtotal, 2589);
+  const saved = await checkout.create(user, { request_key: crypto.randomUUID(), address, payment_method: 'COD', reward_points: 30, quote_version: 2, fingerprint: quote.fingerprint });
+  assert.equal(saved.amount, 258900);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 970);
+  const sale = (await query('SELECT * FROM sales WHERE id=$1', [saved.sale_id])).rows[0];
+  const items = (await query('SELECT * FROM sale_items WHERE sale_id=$1', [saved.sale_id])).rows;
+  assert.equal(selectedRefund(orderRefundBasis(sale, items), items.map(i => ({ sale_item_id: i.id, qty: Number(i.qty) }))).amount_paise, 255900);
+});

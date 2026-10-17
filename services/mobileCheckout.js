@@ -65,8 +65,9 @@ async function quote(db, userId, points, lock = false, paymentMethod = null) {
     const preview = await rewards.previewRedemption({
       userId,
       requestedPoints: q.reward_points,
-      orderSubtotal: q.policy_version === 2 ? q.subtotal : q.subtotal + q.shipping
-    });
+      items: q.items,
+      orderSubtotal: q.subtotal
+    }, db);
     if (!preview.can_redeem) throw fail(preview.enabled ? 'Insufficient reward points. Update the points to use.' : 'Reward points are currently disabled.', 409, preview.enabled ? 'INSUFFICIENT_REWARD_POINTS' : 'REWARDS_DISABLED');
   }
   return q;
@@ -172,7 +173,7 @@ async function create(user, body) {
       userId: user.id,
       requestedPoints: q.reward_points,
       saleId,
-      orderSubtotal: q.policy_version === 2 ? q.subtotal : q.subtotal + q.shipping
+      orderSubtotal: q.subtotal
     });
     await db.query("INSERT INTO order_shipping_workflow(sale_id,phase) VALUES($1,'NEW') ON CONFLICT DO NOTHING", [saleId]);
     await db.query(`INSERT INTO mobile_checkouts(request_key,user_id,sale_id,fingerprint,request_hash,quote,amount_paise)

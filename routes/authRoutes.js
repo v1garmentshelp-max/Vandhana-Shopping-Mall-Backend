@@ -2,6 +2,7 @@ const express = require('express')
 const pool = require('../db')
 const bcrypt = require('bcryptjs')
 const nodemailer = require('nodemailer')
+const { mailTransportOptions, passwordResetMail } = require('../services/storeEmail')
 const jwt = require('jsonwebtoken')
 const crypto = require('crypto')
 const {
@@ -41,23 +42,7 @@ const getOtpReference = value =>
     .update(String(value || ''))
     .digest('hex')
 
-const transporter =
-  nodemailer.createTransport({
-    host:
-      process.env.SMTP_HOST ||
-      'smtp.gmail.com',
-    port: Number(
-      process.env.SMTP_PORT ||
-        465
-    ),
-    secure: true,
-    auth: {
-      user:
-        process.env.SMTP_USER,
-      pass:
-        process.env.SMTP_PASS
-    }
-  })
+const transporter = nodemailer.createTransport(mailTransportOptions())
 
 function signToken(user) {
   return jwt.sign(
@@ -817,18 +802,7 @@ router.post(
           ]
         )
 
-        await transporter.sendMail({
-          from:
-            process.env.FROM_EMAIL ||
-            process.env.SMTP_USER,
-          to: cleanEmail,
-          subject:
-            'V1 Garments password reset OTP',
-          text:
-            `Your V1 Garments password reset OTP is ${otp}. It is valid for 10 minutes.`,
-          html:
-            `<div style="font-family:Arial,sans-serif;color:#111;max-width:520px;margin:auto;padding:24px"><h2 style="margin:0 0 16px">Reset your V1 Garments password</h2><p>Use the OTP below to continue:</p><div style="font-size:32px;font-weight:700;letter-spacing:8px;margin:24px 0">${otp}</div><p>This OTP is valid for 10 minutes. Do not share it with anyone.</p></div>`
-        })
+        await transporter.sendMail(passwordResetMail(cleanEmail, otp))
 
         await client.query('COMMIT')
       } catch (err) {

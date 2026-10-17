@@ -6,7 +6,7 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 const router = express.Router()
 const { requireOrderStaff, requireOrderBranch } = require('../middleware/orderStaffAuth')
 const { requireSuperAdmin } = require('../middleware/auth')
-// Public serviceability and authenticated carrier webhooks remain available.
+                                                                             
 router.use('/shiprocket', (req,res,next) => {
   if (req.path === '/webhook' || req.path === '/pincode') return next()
   return requireOrderStaff(req,res,next)

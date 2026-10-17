@@ -165,13 +165,14 @@ test('a changed quote rejects the entire transaction without decrementing stock'
   await query('UPDATE product_variants SET sale_price=500,mrp=600 WHERE id=11');
 });
 test('rewards deduct once and a depleted wallet rolls back sale and stock', async () => {
-  const payload = await body('COD', 100);
+  await query('UPDATE reward_point_lots SET points_remaining=10');
+  const payload = await body('COD', 10);
   const a = await service.create(user, payload);
   await service.create(user, payload);
-  assert.equal(a.amount, 51500);
+  assert.equal(a.amount, 60500);
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 0);
   await query("INSERT INTO vandana_cart(user_id,product_id,selected_size,selected_color,quantity,is_custom) VALUES(1,11,'M','BLACK',1,false)");
-  const q = await service.quote(pool, 1, 100, true);
+  const q = await service.quote(pool, 1, 10, true);
   const forged = {
     ...payload,
     request_key: crypto.randomUUID(),
@@ -262,7 +263,8 @@ test('checkout rejection releases only a definitely uncreated attempt and reward
   }).expect(409);
   assert.equal(collision.body.checkout_not_created, undefined);
   await query("INSERT INTO vandana_cart(user_id,product_id,selected_size,selected_color,quantity,is_custom) VALUES(1,11,'M','BLACK',1,false)");
-  await assert.rejects(service.quote(pool, 1, 101), /Insufficient reward points/);
+  await query('UPDATE reward_point_lots SET points_remaining=5');
+  await assert.rejects(service.quote(pool, 1, 10), /Insufficient reward points/);
   const adminToken = jwt.sign({
     id: 1,
     role: 'SUPER_ADMIN'
@@ -322,19 +324,19 @@ test('wishlist, profile, cart and COD order work through the actual authenticate
     quantity: 1
   }).expect(200);
   const quote = await auth(http.post('/api/mobile/checkout/quote')).send({
-    reward_points: 20
+    reward_points: 10
   }).expect(200);
   const placed = await auth(http.post('/api/mobile/checkouts')).send({
     request_key: crypto.randomUUID(),
     address,
     payment_method: 'COD',
-    reward_points: 20,
+    reward_points: 10,
     fingerprint: quote.body.fingerprint
   }).expect(200);
   assert.equal(placed.body.payment_status, 'COD');
   const order = await auth(http.get(`/api/mobile/orders/${placed.body.sale_id}`)).expect(200);
   assert.equal(order.body.items.length, 1);
-  assert.equal(Number(order.body.totals.payable), 595);
+  assert.equal(Number(order.body.totals.payable), 605);
   assert.equal((await auth(http.get('/api/mobile/cart')).expect(200)).body.length, 0);
   assert.equal((await auth(http.get('/api/mobile/orders')).expect(200)).body.length, 1);
   await auth(http.delete('/api/mobile/wishlist')).send({

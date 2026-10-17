@@ -44,8 +44,8 @@ test('India-time start is inclusive and midnight after October 20 is exclusive',
 test('delivery, COD and rewards use the discounted subtotal; catalogue discount is not stacked', () => {
   const single = quote([row()], now, 0, 'COD');
   assert.equal(single.delivery_fee, 30); assert.equal(single.cod_fee, 10); assert.equal(single.payable, 1030);
-  const pair = quote([row(2, { b2c_discount_pct: 20 })], now, 100, 'COD');
-  assert.equal(pair.subtotal, 1599); assert.equal(pair.cod_fee, 30); assert.equal(pair.delivery_fee, 0); assert.equal(pair.payable, 1529);
+  const pair = quote([row(2, { b2c_discount_pct: 20 })], now, 20, 'COD');
+  assert.equal(pair.subtotal, 1599); assert.equal(pair.cod_fee, 30); assert.equal(pair.delivery_fee, 0); assert.equal(pair.payable, 1609);
   assert.equal(pair.discount, 781);
 });
 test('stock checks still prevent overselling eligible sets', () => {

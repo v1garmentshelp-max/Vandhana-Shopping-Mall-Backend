@@ -39,12 +39,12 @@ test('shipping threshold includes exactly 1000, and COD fees are method specific
   assert.throws(() => deliveryCharges(800, 'FAKE'), /Choose/);
 });
 test('reward redemption does not move a qualifying order below the threshold or cover shipping', () => {
-  const q = makeQuote([fixture], 900, {}, 'COD');
+  const q = makeQuote([fixture], 10, {}, 'COD');
   assert.equal(q.subtotal, 1000);
   assert.equal(q.shipping, 30);
-  assert.equal(q.payable, 130);
-  assert.throws(() => makeQuote([fixture], 1001, {}, 'COD'), /exceed/);
-  assert.notEqual(q.fingerprint, makeQuote([fixture], 900, {}, 'ONLINE').fingerprint);
+  assert.equal(q.payable, 1020);
+  assert.throws(() => makeQuote([fixture], 1001, {}, 'COD'), /10 points/);
+  assert.notEqual(q.fingerprint, makeQuote([fixture], 10, {}, 'ONLINE').fingerprint);
 });
 test('cancellation closes after 7 days and after dispatch, independently of payment state', () => {
   const now = Date.parse('2026-09-29T12:00:00Z'),

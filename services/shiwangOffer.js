@@ -1,10 +1,10 @@
-// This campaign changes retail quotes only; catalogue prices are never overwritten.
+                                                                                    
 const OFFER = Object.freeze({
   id: 'SHIWANG_PAIR_OCT2026',
   brand: 'Shiwang',
   category: 'Women Kurthi Pant Set',
   starts_at: '2026-10-15T00:00:00+05:30',
-  ends_at: '2026-10-21T00:00:00+05:30', // exclusive: includes all of October 20 in India
+  ends_at: '2026-10-21T00:00:00+05:30',                                                  
   timezone: 'Asia/Kolkata',
   single_price: 990,
   pair_price: 1599,
@@ -29,8 +29,8 @@ function campaign(now = Date.now()) {
 function annotateProduct(product) {
   return { ...product, offer: eligible(product) ? OFFER : null };
 }
-// Allocate complete pairs first. Splitting an odd line avoids rounding an average
-// unit price (e.g. 7 pieces) and keeps payment, invoice and partial refunds exact.
+                                                                                  
+                                                                                   
 function applyOffer(items, now = Date.now()) {
   const offer = campaign(now);
   const quantity = offer.active ? items.filter(item => item.offer_eligible && !item.is_custom).reduce((sum, item) => sum + item.qty, 0) : 0;
@@ -56,7 +56,7 @@ function applyOffer(items, now = Date.now()) {
     offer_discount: pairs * (2 * offer.single_price - offer.pair_price),
   };
 }
-// Only category names from the product's actual database ancestry are trusted.
+                                                                               
 const CATEGORY_NAMES_SQL = `(WITH RECURSIVE ancestry AS (
   SELECT id, name, parent_id FROM product_categories WHERE id=p.category_id
   UNION SELECT c.id, c.name, c.parent_id FROM product_categories c JOIN ancestry a ON c.id=a.parent_id

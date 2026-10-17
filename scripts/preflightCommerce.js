@@ -32,8 +32,8 @@ async function preflight(db, logger = console) {
   const context = contexts[0];
   logger.log('Commerce database connection:', JSON.stringify(context));
 
-  // Resolve names exactly as the application does. Missing tables never cause
-  // a raw 42P01 error here, and a matching table in another schema cannot pass.
+                                                                              
+                                                                                
   const { rows: tables } = await db.query(`SELECT required.table_name,
       ns.nspname AS resolved_schema, visible.relkind AS table_kind,
       CASE WHEN visible.oid IS NULL THEN false
@@ -98,7 +98,7 @@ async function preflight(db, logger = console) {
     throw error;
   }
 
-  // Also verify column access without fetching any customer or order records.
+                                                                              
   for (const [table, columns] of Object.entries(fields)) {
     await db.query(`SELECT ${columns.split(' ').map(quote).join(',')} FROM public.${quote(table)} LIMIT 0`);
   }

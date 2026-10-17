@@ -4,8 +4,8 @@ const crypto = require('node:crypto')
 const { makeQuote, priceOf, addressOf, validSignature, capturedPayment } = require('../services/mobileRules')
 const item = { cart_item_id: 1, variant_id: 11, product_id: 1, quantity: 2, mrp: 600, sale_price: 500, b2c_discount_pct: 10, on_hand: 5, reserved: 1, variant_active: true, product_active: true, stock_active: true, name: 'Test shirt' }
 test('server price follows catalogue discount and free shipping threshold', () => {
-  const q = makeQuote([item], 100)
-  assert.equal(q.subtotal, 1080); assert.equal(q.shipping, 0); assert.equal(q.payable, 980); assert.equal(q.discount, 120)
+  const q = makeQuote([item], 20)
+  assert.equal(q.subtotal, 1080); assert.equal(q.shipping, 0); assert.equal(q.payable, 1060); assert.equal(q.discount, 120)
   const small = makeQuote([{ ...item, quantity: 1 }], 0)
   assert.equal(small.shipping, 75); assert.equal(small.payable, 615)
 })
