@@ -43,7 +43,7 @@ test('reward redemption does not move a qualifying order below the threshold or 
   assert.equal(q.subtotal, 1000);
   assert.equal(q.shipping, 30);
   assert.equal(q.payable, 1020);
-  assert.throws(() => makeQuote([fixture], 1001, {}, 'COD'), /10 points/);
+  assert.throws(() => makeQuote([fixture], 1001, {}, 'COD'), /10%/);
   assert.notEqual(q.fingerprint, makeQuote([fixture], 10, {}, 'ONLINE').fingerprint);
 });
 test('cancellation closes after 7 days and after dispatch, independently of payment state', () => {

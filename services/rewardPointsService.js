@@ -1,5 +1,5 @@
 const pool = require('../db');
-const { MAX_POINTS_PER_PRODUCT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
+const { MAX_REDEMPTION_PERCENT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
 const asInt = value => {
   if (value == null || String(value).trim() === '') return null;
   const n = Number(value);
@@ -34,7 +34,7 @@ async function getSettings(db = pool) {
     signup_bonus_points: asNonNegativeInt(raw.signup_bonus_points) ?? 1000,
     validity_days: asPositiveInt(raw.validity_days) ?? 90,
     warning_days: asNonNegativeInt(raw.warning_days) ?? 10,
-    max_points_per_product: MAX_POINTS_PER_PRODUCT
+    max_redemption_percent: MAX_REDEMPTION_PERCENT
   };
 }
 async function expireLots(db = pool, userId = null) {
@@ -146,7 +146,7 @@ async function getWalletSummary(userId, db = pool) {
     user: userQ.rows[0],
     balance,
     point_value_rupees: 1,
-    max_points_per_product: MAX_POINTS_PER_PRODUCT,
+    max_redemption_percent: MAX_REDEMPTION_PERCENT,
     signup_bonus_points: settings.signup_bonus_points,
     validity_days: settings.validity_days,
     warning_days: settings.warning_days,
@@ -243,7 +243,7 @@ async function previewRedemption({
     balance: wallet.balance,
     requested_points: points,
     max_redeemable: settings.enabled ? maxRedeemable : 0,
-    max_points_per_product: MAX_POINTS_PER_PRODUCT,
+    max_redemption_percent: MAX_REDEMPTION_PERCENT,
     can_redeem: settings.enabled && points <= maxRedeemable,
     reward_discount: settings.enabled && points <= maxRedeemable ? points : 0,
     payable_after_rewards: settings.enabled && points <= maxRedeemable ? asMoney(Math.max(subtotal - points, 0)) : subtotal,

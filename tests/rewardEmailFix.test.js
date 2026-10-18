@@ -75,25 +75,32 @@ beforeEach(async () => {
 });
 after(async () => pg.close());
 
-test('redemption counts units across lines and leaves a positive value for every product', () => {
-  assert.equal(redemptionLimit([{ qty: 1, price: 990 }]), 10);
-  assert.equal(redemptionLimit([{ qty: 2, price: 799.5 }, { qty: 1, price: 990 }]), 30);
-  assert.equal(redemptionLimit([{ qty: 4, price: 799.5 }]), 40);
-  assert.equal(redemptionLimit([{ qty: 2, price: 10 }, { qty: 1, price: 0.99 }]), 18);
-  assert.equal(redemptionLimit([{ qty: 1, price: 10.5 }]), 10);
-  assert.equal(redemptionLimit([{ qty: 2, price: 990 }], 10), 9);
+test('redemption is ten percent of the discounted product subtotal rounded down once', () => {
+  for (const [price, expected] of [[1000, 100], [500, 50], [990, 99], [999.99, 99], [1000.01, 100], [10, 1], [0.99, 0]]) {
+    assert.equal(redemptionLimit([{ qty: 1, price }]), expected);
+  }
+  assert.equal(redemptionLimit([{ qty: 2, price: 799.5 }]), 159);
+  assert.equal(redemptionLimit([{ qty: 2, price: 799.5 }, { qty: 1, price: 990 }]), 258);
+  assert.equal(redemptionLimit([{ qty: 4, price: 799.5 }]), 319);
+  assert.equal(redemptionLimit([{ qty: 1, price: 799.5 }, { qty: 1, price: 799.5 }]), 159);
+  assert.equal(redemptionLimit([{ qty: 1, price: 1000 }, { qty: 2, price: 250 }]), 150);
+  assert.equal(redemptionLimit([{ qty: 2, price: 990 }], 1000), 100);
+  assert.equal(redemptionLimit([{ qty: 1, price: 1000 }], 99999), 100);
   assert.equal(redemptionLimit([]), 0);
   assert.throws(() => redemptionLimit([{ qty: 1.5, price: 990 }]));
   assert.throws(() => redemptionLimit([{ qty: 1, price: NaN }]));
+  assert.throws(() => redemptionLimit([{ qty: 1, price: 1000 }], -1));
 });
 
 test('website and mobile reject excess points regardless of forged client prices and quantities', async () => {
   for (const base of ['/api/storefront', '/api/mobile']) {
     for (const method of ['COD', 'ONLINE']) {
-      const quote = await auth(http.post(`${base}/checkout/quote`)).send({ payment_method: method, reward_points: 10, quote_version: 2 }).expect(200);
-      assert.equal(quote.body.max_reward_points, 10);
-      assert.equal(quote.body.max_points_per_product, 10);
-      const rejected = await auth(http.post(`${base}/checkout/quote`)).send({ payment_method: method, reward_points: 11, quantity: 99, subtotal: 99999, max_reward_points: 99999 }).expect(409);
+      const quote = await auth(http.post(`${base}/checkout/quote`)).send({ payment_method: method, reward_points: 54, quote_version: 2 }).expect(200);
+      assert.equal(quote.body.subtotal, 540);
+      assert.equal(quote.body.max_reward_points, 54);
+      assert.equal(quote.body.max_redemption_percent, 10);
+      assert.equal(quote.body.max_points_per_product, undefined);
+      const rejected = await auth(http.post(`${base}/checkout/quote`)).send({ payment_method: method, reward_points: 55, quantity: 99, subtotal: 99999, max_reward_points: 99999, max_redemption_percent: 100 }).expect(409);
       assert.equal(rejected.body.code, 'REWARD_LIMIT_EXCEEDED');
       const placed = await auth(http.post(`${base}/checkouts`)).send({ request_key: crypto.randomUUID(), address, payment_method: method, reward_points: 540, fingerprint: quote.body.fingerprint, quote_version: 2, items: [{ qty: 99, price: 1 }] }).expect(409);
       assert.equal(placed.body.checkout_not_created, true);
@@ -105,37 +112,53 @@ test('website and mobile reject excess points regardless of forged client prices
 });
 
 test('reward preview derives its cap from the authenticated cart and available wallet', async () => {
-  await http.post('/api/rewards/preview').send({ points: 10 }).expect(401);
-  const forged = { points: 11, quantity: 100, items: [{ qty: 100, price: 990 }], subtotal: 999999 };
+  await http.post('/api/rewards/preview').send({ points: 54 }).expect(401);
+  const forged = { points: 55, quantity: 100, items: [{ qty: 100, price: 990 }], subtotal: 999999 };
   const preview = await auth(http.post('/api/rewards/preview')).send(forged).expect(200);
-  assert.equal(preview.body.max_redeemable, 10);
+  assert.equal(preview.body.max_redeemable, 54);
   assert.equal(preview.body.can_redeem, false);
   await query('UPDATE vandana_cart SET quantity=3');
-  assert.equal((await auth(http.post('/api/rewards/preview')).send({ points: 30 }).expect(200)).body.max_redeemable, 30);
+  assert.equal((await auth(http.post('/api/rewards/preview')).send({ points: 162 }).expect(200)).body.max_redeemable, 162);
   await query('UPDATE reward_point_lots SET points_remaining=7');
   assert.equal((await auth(http.post('/api/rewards/preview')).send({ points: 8 }).expect(200)).body.max_redeemable, 7);
+  const available = await auth(http.post('/api/rewards/preview')).send({ points: 7 }).expect(200);
+  assert.equal(available.body.can_redeem, true);
   await query("UPDATE reward_settings SET setting_value='false' WHERE setting_key='enabled'");
   assert.equal((await auth(http.post('/api/rewards/preview')).send({ points: 1 }).expect(200)).body.max_redeemable, 0);
 });
 
 test('the saved sale enforces the same cap before deducting wallet points', async () => {
-  const q = await checkout.quote(pool, 1, 10, false, 'COD');
-  const payload = { request_key: crypto.randomUUID(), address, payment_method: 'COD', reward_points: 10, quote_version: 2, fingerprint: q.fingerprint };
+  const q = await checkout.quote(pool, 1, 54, false, 'COD');
+  const payload = { request_key: crypto.randomUUID(), address, payment_method: 'COD', reward_points: 54, quote_version: 2, fingerprint: q.fingerprint };
   const saved = await checkout.create(user, payload);
-  assert.equal(saved.amount, 57000);
+  assert.equal(saved.amount, 52600);
   await checkout.create(user, payload);
-  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 990);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 946);
   assert.equal((await query("SELECT count(*)::int AS n FROM reward_point_transactions WHERE transaction_type='REDEEMED'")).rows[0].n, 1);
-  await assert.rejects(rewards.redeemPoints(pool, { userId: 1, saleId: saved.sale_id, requestedPoints: 11, orderSubtotal: 99999, items: [{ qty: 100, price: 990 }] }), error => error.code === 'REWARD_LIMIT_EXCEEDED');
-  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 990);
+  await assert.rejects(rewards.redeemPoints(pool, { userId: 1, saleId: saved.sale_id, requestedPoints: 55, orderSubtotal: 99999, items: [{ qty: 100, price: 990 }] }), error => error.code === 'REWARD_LIMIT_EXCEEDED');
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 946);
+});
+
+test('a 1000 rupee dress with a 1000 point wallet permits 100 points and leaves 900 rupees payable', async () => {
+  await query('UPDATE product_variants SET mrp=1000,sale_price=1000,b2c_discount_pct=0');
+  const q = await checkout.quote(pool, 1, 100, false, 'ONLINE');
+  assert.equal(q.subtotal, 1000);
+  assert.equal(q.max_reward_points, 100);
+  assert.equal(q.shipping, 0);
+  assert.equal(q.payable, 900);
+  await assert.rejects(checkout.quote(pool, 1, 101, false, 'ONLINE'), error => error.code === 'REWARD_LIMIT_EXCEEDED');
+  const saved = await checkout.create(user, { request_key: crypto.randomUUID(), address, payment_method: 'ONLINE', reward_points: 100, quote_version: 2, fingerprint: q.fingerprint });
+  assert.equal(saved.amount, 90000);
+  assert.equal(saved.fully_paid, false);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 900);
 });
 
 test('low-priced products cannot be paid fully with points even when shipping is charged', async () => {
   await query('UPDATE product_variants SET mrp=10,sale_price=10,b2c_discount_pct=0');
-  const quote = await checkout.quote(pool, 1, 9, false, 'COD');
-  assert.equal(quote.max_reward_points, 9);
-  assert.equal(quote.subtotal - quote.reward_points, 1);
-  await assert.rejects(checkout.quote(pool, 1, 10, false, 'COD'), error => error.code === 'REWARD_LIMIT_EXCEEDED');
+  const quote = await checkout.quote(pool, 1, 1, false, 'COD');
+  assert.equal(quote.max_reward_points, 1);
+  assert.equal(quote.subtotal - quote.reward_points, 9);
+  await assert.rejects(checkout.quote(pool, 1, 2, false, 'COD'), error => error.code === 'REWARD_LIMIT_EXCEEDED');
 });
 
 test('email sender branding overrides a stale configured display name without changing its address', async () => {

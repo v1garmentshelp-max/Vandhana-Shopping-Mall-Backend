@@ -1,8 +1,7 @@
-const MAX_POINTS_PER_PRODUCT = 10;
+const MAX_REDEMPTION_PERCENT = 10;
 
 function redemptionLimit(items, orderSubtotal) {
   if (!Array.isArray(items)) throw new Error('Verified order items are required for reward redemption');
-  let itemLimit = 0;
   let subtotalPaise = 0;
   for (const item of items) {
     const qty = Number(item.qty);
@@ -10,23 +9,22 @@ function redemptionLimit(items, orderSubtotal) {
     if (!Number.isSafeInteger(qty) || qty <= 0 || !Number.isSafeInteger(pricePaise) || pricePaise < 0) {
       throw new Error('Invalid order items for reward redemption');
     }
-    itemLimit += qty * Math.min(MAX_POINTS_PER_PRODUCT, Math.max(0, Math.floor((pricePaise - 1) / 100)));
     subtotalPaise += qty * pricePaise;
   }
   const orderPaise = orderSubtotal == null ? subtotalPaise : Math.round(Number(orderSubtotal) * 100);
-  if (!Number.isSafeInteger(orderPaise) || orderPaise < 0 || !Number.isSafeInteger(subtotalPaise) || !Number.isSafeInteger(itemLimit)) {
+  if (!Number.isSafeInteger(orderPaise) || orderPaise < 0 || !Number.isSafeInteger(subtotalPaise)) {
     throw new Error('Invalid order subtotal for reward redemption');
   }
-  return Math.min(itemLimit, Math.max(0, Math.floor((Math.min(orderPaise, subtotalPaise) - 1) / 100)));
+  return Number(BigInt(Math.min(orderPaise, subtotalPaise)) * BigInt(MAX_REDEMPTION_PERCENT) / 10000n);
 }
 
 function redemptionLimitError(maxRedeemable, status = 409) {
-  return Object.assign(new Error(`Redeem up to ${MAX_POINTS_PER_PRODUCT} points per product. The maximum for this order is ${maxRedeemable} points. Rewards cannot cover the full product value or delivery charges.`), {
+  return Object.assign(new Error(`Redeem up to ${MAX_REDEMPTION_PERCENT}% of the product subtotal after discounts. The maximum for this order is ${maxRedeemable} points. Delivery and COD charges are excluded.`), {
     status,
     code: 'REWARD_LIMIT_EXCEEDED',
     max_redeemable: maxRedeemable,
-    max_points_per_product: MAX_POINTS_PER_PRODUCT
+    max_redemption_percent: MAX_REDEMPTION_PERCENT
   });
 }
 
-module.exports = { MAX_POINTS_PER_PRODUCT, redemptionLimit, redemptionLimitError };
+module.exports = { MAX_REDEMPTION_PERCENT, redemptionLimit, redemptionLimitError };

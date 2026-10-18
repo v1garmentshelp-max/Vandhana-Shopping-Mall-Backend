@@ -1,10 +1,10 @@
 V1 GARMENTS UPDATE
 
-Reward redemption is limited to 10 points per purchased product unit. Two units allow up to 20 points, three allow up to 30, and four allow up to 40. The available wallet balance and product value may lower this limit. Points cannot cover the full product value, delivery charges or COD charges. Existing points balances, expiry dates and order history are preserved.
+Reward redemption is limited to 10% of the product subtotal after discounts and offers, rounded down to whole points, and capped by the available wallet balance. One point is worth one rupee. A 1000-rupee dress allows up to 100 points; with a 1000-point balance, the customer pays 900 rupees for the dress and keeps 900 points. Delivery and COD charges are paid separately and do not increase the reward limit. A 500-rupee dress allows up to 50 points. Existing points balances, expiry dates and order history are preserved.
 
-Shiwang offer pricing remains 990 for one set, 1599 for two, 2589 for three and 3198 for four, before rewards and delivery charges. The offer ends after 20 October 2026, India time.
+Shiwang offer pricing remains 990 for one set, 1599 for two, 2589 for three and 3198 for four, before rewards and delivery charges. The offer ends after 20 October 2026, India time. The maximum reward redemption for these offer totals is 99, 159, 258 and 319 points respectively, subject to the wallet balance.
 
-No database migration or SQL update is required for these two fixes.
+No database migration or SQL update is required for the 10% redemption limit or the password-reset branding fix.
 
 Deploy the backend first, then rebuild and deploy the website and admin using your existing projects and environment variables. Node.js 24 is the backend runtime.
 

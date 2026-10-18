@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const shiwang = require('./shiwangOffer');
-const { MAX_POINTS_PER_PRODUCT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
+const { MAX_REDEMPTION_PERCENT, redemptionLimit, redemptionLimitError } = require('./rewardRedemptionPolicy');
 const fail = (message, status = 400, code) => Object.assign(new Error(message), {
   status,
   code
@@ -85,7 +85,7 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
     ...charges,
     reward_points: points,
     max_reward_points: maxRewardPoints,
-    max_points_per_product: MAX_POINTS_PER_PRODUCT,
+    max_redemption_percent: MAX_REDEMPTION_PERCENT,
     payable: money(subtotal + shipping - points)
   };
   return {
