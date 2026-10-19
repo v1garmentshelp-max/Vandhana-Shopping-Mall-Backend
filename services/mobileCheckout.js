@@ -144,10 +144,13 @@ async function create(user, body) {
     if (method === 'ONLINE' && (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET)) throw fail('Online payment is temporarily unavailable. Please choose cash on delivery.', 503, 'ONLINE_UNAVAILABLE');
     const q = await quote(db, user.id, body.reward_points, true, Number(body.quote_version) === 2 ? method : null);
     if (q.fingerprint !== body.fingerprint) throw fail('Your bag or prices changed. Review the updated total before placing your order.', 409, 'QUOTE_CHANGED');
+    const delivery = await require('./deliveryEstimate').estimate({ db, branchId: branch(), pincode: address.pincode, paymentMethod: method, items: q.items });
+    if (delivery.serviceable === false) throw fail(delivery.message, 409, 'DELIVERY_UNAVAILABLE');
     const saleId = crypto.randomUUID();
     const status = q.payable === 0 ? 'PAID' : method === 'COD' ? 'COD' : 'PENDING';
     const totals = {
       ...q,
+      delivery_estimate: delivery,
       bagTotal: q.mrp,
       discountTotal: q.discount,
       convenience: q.shipping,

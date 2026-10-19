@@ -166,6 +166,11 @@ router.get('/orders/:id/returns', wrap(ownedSale), wrap(async (req, res) => res.
   (SELECT json_agg(json_build_object('sale_item_id',i.sale_item_id,'qty',i.qty)) FROM return_items i WHERE i.request_id=r.id) AS items,
   (SELECT json_build_object('awb',rs.awb,'status',rs.status,'updated_at',rs.status_synced_at) FROM reverse_shipments rs WHERE rs.request_id=r.id ORDER BY rs.id DESC LIMIT 1) AS reverse_shipment
   FROM return_requests r WHERE r.sale_id=$1 ORDER BY r.created_at DESC`, [req.sale.id])).rows)));
+router.post('/delivery/estimate', wrap(async (req, res) => {
+  if (!require('../services/indiaLocations').validPin(req.body.pincode) || !['COD', 'ONLINE'].includes(req.body.payment_method)) throw fail('Enter a valid PIN code and payment method.', 400);
+  const q = await checkout.quote(pool, req.customer.id, 0, false, req.body.payment_method);
+  res.json(await require('../services/deliveryEstimate').estimate({ db: pool, branchId: checkout.branch(), pincode: req.body.pincode, paymentMethod: req.body.payment_method, items: q.items }));
+}));
 router.post('/checkout/quote', wrap(async (req, res) => {
   if (Number(req.body.quote_version) === 2 && !['COD', 'ONLINE'].includes(req.body.payment_method)) throw fail('Choose a payment method.', 400, 'PAYMENT_METHOD_REQUIRED');
   res.json(await checkout.quote(pool, req.customer.id, req.body.reward_points, false, Number(req.body.quote_version) === 2 ? req.body.payment_method : null));

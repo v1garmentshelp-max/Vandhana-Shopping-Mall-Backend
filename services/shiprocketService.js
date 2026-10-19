@@ -4,8 +4,10 @@ const ROOT = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in'
 const BASE = `${ROOT.replace(/\/+$/, '')}/v1/external`
 
 class Shiprocket {
-  constructor({ pool }) {
+  constructor({ pool, timeoutMs }) {
     this.pool = pool
+    this.timeoutMs = timeoutMs
+    this.loginPromise = null
     this.token = null
     this.fetchedAt = 0
     this.ttlMs = 25 * 60 * 1000
@@ -19,7 +21,7 @@ class Shiprocket {
     const { data } = await axios.post(`${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`, {
       email,
       password
-    }, { timeout: 12000 })
+    }, { timeout: this.timeoutMs || 12000 })
 
     if (!data || !data.token) throw new Error('Shiprocket login failed')
     this.token = data.token
@@ -28,7 +30,8 @@ class Shiprocket {
 
   async ensureToken() {
     if (this.token && Date.now() - this.fetchedAt < this.ttlMs) return
-    await this.login()
+    if (!this.loginPromise) this.loginPromise = this.login().finally(() => { this.loginPromise = null })
+    await this.loginPromise
   }
 
   async init() {
@@ -40,7 +43,7 @@ class Shiprocket {
 
     const config = {
       method,
-      timeout: 15000,
+      timeout: this.timeoutMs || 15000,
       url: `${BASE}${path}`,
       headers: { Authorization: `Bearer ${this.token}` }
     }
@@ -54,6 +57,7 @@ class Shiprocket {
     try {
       return await axios(config)
     } catch (err) {
+      if (err?.response?.status === 401) { this.token = null; this.fetchedAt = 0 }
       const msg = err?.response?.data ? JSON.stringify(err.response.data) : err?.message || String(err)
       const error = new Error(msg)
       error.status = err?.response?.status

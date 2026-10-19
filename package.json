@@ -7,13 +7,17 @@
     "test:mobile": "node --test tests/mobile*.test.js",
     "migrate:mobile": "node scripts/migrateMobile.js",
     "preflight:mobile": "node scripts/preflightMobile.js",
-    "vercel-build": "node scripts/preflightMobile.js && node scripts/preflightCommerce.js",
+    "vercel-build": "node scripts/preflightMobile.js && node scripts/preflightCommerce.js && node scripts/preflightAddresses.js",
     "test:commerce": "node --test tests/commerce*.test.js",
     "preflight:commerce": "node scripts/preflightCommerce.js",
     "migrate:commerce": "node scripts/migrateCommerce.js",
     "test:offers": "node --test tests/shiwang*.test.js",
     "preflight:shiwang": "node scripts/preflightShiwang.js",
-    "test:rewards-email": "node --test tests/rewardEmailFix.test.js"
+    "test:rewards-email": "node --test tests/rewardEmailFix.test.js",
+    "migrate:addresses": "node scripts/migrateAddresses.js",
+    "test:addresses": "node --test tests/address*.test.js",
+    "preflight:delivery": "node scripts/preflightDelivery.js",
+    "preflight:addresses": "node scripts/preflightAddresses.js"
   },
   "engines": {
     "node": "24.x"

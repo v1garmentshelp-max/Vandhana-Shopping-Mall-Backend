@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 app.set('etag', false);
-const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001', 'http://localhost:3002', 'http://127.0.0.1:3002', 'http://localhost:5173', 'http://127.0.0.1:5173', 'https://vandhana-shopping-mall-backend.vercel.app', 'https://vandhana-shopping-mall-admin.vercel.app', 'https://vandhana-shopping-mall-website.vercel.app', 'https://www.v1garments.com'];
+const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001', 'http://localhost:3002', 'http://127.0.0.1:3002', 'http://localhost:5173', 'http://127.0.0.1:5173', 'https://vandhana-shopping-mall-backend.vercel.app', 'https://vandhana-shopping-mall-admin.vercel.app', 'https://vandhana-shopping-mall-website.vercel.app', 'https://www.v1garments.com', 'https://v1garments.com'];
 const envOrigins = (process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
 const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins;
 const corsOptions = {
@@ -46,6 +46,7 @@ app.use(express.urlencoded({
   extended: true,
   limit: '10mb'
 }));
+app.use('/api/locations', require('./routes/locationRoutes'));
 app.use('/api/storefront', require('./routes/storefrontRoutes'));
 app.use('/api/mobile', require('./routes/mobileRoutes'));
 app.use('/api', shiprocketPublicRoutes);

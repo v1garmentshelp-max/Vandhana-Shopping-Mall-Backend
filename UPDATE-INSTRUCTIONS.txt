@@ -1,42 +1,93 @@
-V1 GARMENTS UPDATE
+V1 GARMENTS — ADDRESS AND DELIVERY UPDATE — 19 OCTOBER 2026
 
-Reward redemption is limited to 10% of the product subtotal after discounts and offers, rounded down to whole points, and capped by the available wallet balance. One point is worth one rupee. A 1000-rupee dress allows up to 100 points; with a 1000-point balance, the customer pays 900 rupees for the dress and keeps 900 points. Delivery and COD charges are paid separately and do not increase the reward limit. A 500-rupee dress allows up to 50 points. Existing points balances, expiry dates and order history are preserved.
+Included in this release
 
-Shiwang offer pricing remains 990 for one set, 1599 for two, 2589 for three and 3198 for four, before rewards and delivery charges. The offer ends after 20 October 2026, India time. The maximum reward redemption for these offer totals is 99, 159, 258 and 319 points respectively, subject to the wallet balance.
+Typing the starting letters of a state opens matching choices. All 28 states and 8 Union territories are included, with keyboard and touch selection. State names must be complete before an address can be saved.
 
-No database migration or SQL update is required for the 10% redemption limit or the password-reset branding fix.
+A six-digit Indian PIN code fills city and state in checkout and in the optional signup delivery-address section. PIN 532001 fills Srikakulam, Andhra Pradesh. PIN 110001 fills New Delhi, Delhi. Customers can correct the city and enter the street address. Changing the PIN clears the previous city and state; late responses cannot overwrite the new PIN. A missing PIN is shown as invalid. If the postal provider is unavailable, the full state list and manual city entry still work.
 
-Deploy the backend first, then rebuild and deploy the website and admin using your existing projects and environment variables. Node.js 24 is the backend runtime.
+Signup addresses are saved in mobile_addresses in the same database transaction as the new account. Checkout loads the default saved address and offers other saved addresses. My Addresses includes saved signup addresses alongside addresses from previous orders.
 
-Backend commands, from the vandhana-backend directory:
+Checkout checks Shiprocket courier availability using the configured branch pickup location, the actual server cart quantities and the selected payment method. COD and prepaid are checked separately. Available carrier transit durations are displayed as an estimated range after dispatch. Packing time is additional. The saved estimate appears on the order page, and admin courier choices show estimated transit days when supplied by Shiprocket. Carrier estimates are not guaranteed arrival dates.
+
+If Shiprocket explicitly reports no available couriers, checkout is blocked for that PIN and payment method, including server-side order creation. A temporary provider failure or missing configuration displays that availability and timing cannot be confirmed; it does not invent a delivery date. Orders can still be placed for store review in that case. Existing delivery and COD charges are preserved and are not replaced with carrier freight quotes. Final parcel weight and courier selection remain part of the admin shipping workflow.
+
+Backend configuration
+
+Use Node.js 24 and retain the existing production DATABASE_URL, DB_SCHEMA, JWT_SECRET, payment, SMTP and offer settings. Set these backend environment variables:
+
+SHIPROCKET_API_USER_EMAIL=your Shiprocket API-user email
+SHIPROCKET_API_USER_PASSWORD=the matching API-user password
+MOBILE_BRANCH_ID=your existing storefront branch ID
+STORE_ITEM_WEIGHT_KG=0.5
+STORE_PACKAGING_WEIGHT_KG=0
+
+The weight values are kilograms and estimate the checkout parcel from item quantity. Set them to match your products and packaging. Courier duration and availability can change when the final packed parcel is measured. Do not place API credentials in the website or admin frontend variables.
+
+Map an existing Shiprocket pickup location to MOBILE_BRANCH_ID using the admin order shipping panel: Load Shiprocket pickup locations, select the correct warehouse, then Save pickup location. The lookup uses this same shiprocket_warehouses mapping. A warehouse name and its real six-digit pickup PIN are required. No warehouse or customer data is guessed or overwritten by the migration.
+
+Include both https://www.v1garments.com and https://v1garments.com in CORS_ORIGINS, together with the existing admin origin and any required preview origins. The browser calls the store backend; the backend calls the external postal and courier APIs.
+
+Database and backend commands
+
+Run from the extracted vandhana-backend project directory with the production environment configured. The new migration creates the saved-address table and indexes if absent. It can be rerun; it does not change customer balances, products or existing orders. No migration is run automatically during deployment.
+
 npm ci
+npm run migrate:addresses
+npm run preflight:addresses
+npm run preflight:mobile
+npm run preflight:commerce
+npm run preflight:delivery
+
+Alternatively, apply migrations/20261019_address_delivery.sql in your PostgreSQL client connected to the same database used by the backend. The script includes BEGIN and COMMIT. Run the preflight commands afterward. The backend build checks the saved-address schema and will stop with instructions if the table is missing.
+
+The delivery preflight checks PIN 532001 and Shiprocket serviceability for prepaid and COD. It is read-only except for API authentication: it does not create shipments, AWBs, pickups, payments or customer orders. A configured courier response with no available service is reported separately from an API failure.
+
+The supplied project already includes earlier commerce and mobile migrations. For an older installation missing their tables, follow its existing migration instructions before the preflight checks. Do not recreate the database or replace existing data with test fixtures.
+
+Backend test commands
+
+npm run test:addresses
 npm run test:rewards-email
 npm run test:mobile
 npm run test:commerce
 npm run test:offers
-npm run preflight:mobile
-npm run preflight:commerce
+node --test tests/orderShipping.test.js tests/returnShipping.test.js
 
-The preflight commands use the existing DATABASE_URL and JWT_SECRET and perform read-only checks. Keep the current production database configuration.
+Website deployment
 
-Website commands, from the vandhana-website directory:
+Set VITE_API_BASE to the deployed V1 Garments backend origin, without /api at the end. Keep existing public frontend settings. Rebuild after changing environment variables. From vandhana-website:
+
 npm ci
 npm run build
 
-Admin commands, from the vandhana-admin directory:
+Admin deployment
+
+Set REACT_APP_API_BASE to the same backend origin. From vandhana-admin:
+
 npm ci
 npm run build
 
-Set VITE_API_BASE for the website and REACT_APP_API_BASE for the admin to the same deployed V1 Garments backend origin. The website login and password-reset pages now use VITE_API_BASE, just like checkout. The default origin remains https://vandhana-shopping-mall-backend.vercel.app. Rebuild the frontend after changing its environment variables.
+Deploy the database migration and backend first, then the website and admin. The archives contain complete source projects and required assets, without node_modules, build outputs or private environment files. Keep your existing environment configuration in your deployment platform.
 
-Email configuration on the backend:
-SMTP_HOST: your SMTP provider host
-SMTP_PORT: 465 for implicit TLS or 587 for STARTTLS
-SMTP_USER: the SMTP username for your store
-SMTP_PASS: the matching SMTP password or provider credential
-FROM_EMAIL: one verified sender email address for V1 Garments
-PASSWORD_RESET_SECRET: retain the existing secret
+Checks completed
 
-The application sets the outgoing display name to V1 Garments even if FROM_EMAIL contains an old display name. The reset subject and body also use V1 Garments. No production SMTP account or API key was inspected or changed. If the delivered email still shows the old brand, check the provider's verified sender identity and any saved sender contact name in the receiving mailbox. Confirm delivery with a test account after deployment.
+110 backend tests passed: 77 commerce, checkout, reward, offer and email regression tests; 13 new address/delivery unit and database integration tests; 20 shipping and return regression tests. Website and admin production builds passed. Form interaction checks passed for starting-letter state search, keyboard/tap selection, PIN changes, stale responses, invalid PIN handling, API failure and retry, saved checkout addresses, COD versus prepaid delivery estimates, and signup address submission. Password-reset tests do not send real emails.
 
-Validation completed: backend reward, checkout, offer, refund and password-reset tests; website and admin production builds; checkout input validation and wallet balance handling. Email tests use a local transport and do not send messages.
+The public postal API was checked for 532001 and 110001. Production Shiprocket credentials and the production database were not available in the supplied files, so run preflight:delivery with your deployment environment to verify your account and pickup mapping. No live order, payment or production shipment was created.
+
+API documentation checked
+
+https://www.postalpincode.in/Api-Details
+https://apidocs.shiprocket.in/
+https://support.shiprocket.in/support/solutions/articles/43000337456-shiprocket-api-document-helpsheet
+
+PostalPincode.in is a third-party postal-data API. No key is required for its PIN lookup. Shiprocket requires an API-user account and bearer authentication. Postal results are cached for up to 24 hours and courier availability for up to 5 minutes, with bounded requests and timeouts.
+
+Earlier fixes retained
+
+Reward redemption remains limited to 10% of the discounted product subtotal, rounded down to whole points and capped by the wallet balance. A 1000-rupee dress allows at most 100 points. Delivery and COD charges do not increase this limit. Existing wallet balances and order history are preserved.
+
+Shiwang offer totals remain 990 for one set, 1599 for two, 2589 for three and 3198 for four, before rewards and delivery charges, through 20 October 2026 India time.
+
+Password-reset email display name, subject and body remain V1 Garments. FROM_EMAIL must be a sender address verified in your existing SMTP account; retain SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and PASSWORD_RESET_SECRET. The email provider account was not changed.

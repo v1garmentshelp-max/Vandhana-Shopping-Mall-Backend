@@ -24,6 +24,7 @@ function priceOf(row) {
 function addressOf(value) {
   const clean = key => String(value?.[key] || '').trim().slice(0, 250);
   const a = Object.fromEntries(['fullName', 'mobile', 'line1', 'line2', 'city', 'state', 'pincode'].map(k => [k, clean(k)]));
+  a.state = require('./indiaLocations').canonicalState(a.state);
   if (a.fullName.length < 2 || a.line1.length < 5 || !a.city || !a.state || !/^[1-9]\d{5}$/.test(a.pincode) || !/^[6-9]\d{9}$/.test(a.mobile)) throw fail('Enter a complete delivery address and valid Indian mobile number.');
   return a;
 }

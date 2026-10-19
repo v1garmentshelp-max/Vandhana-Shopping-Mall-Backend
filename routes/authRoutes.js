@@ -235,6 +235,12 @@ async function createUser(
       })
   }
 
+  let deliveryAddress = null
+  if (req.body.address != null) {
+    try { deliveryAddress = require('../services/mobileRules').addressOf({ ...req.body.address, fullName: cleanName, mobile: cleanMobile }) }
+    catch (error) { return res.status(400).json({ message: error.message }) }
+  }
+
   const client =
     await pool.connect()
 
@@ -313,6 +319,10 @@ async function createUser(
 
     const user =
       insert.rows[0]
+
+    if (deliveryAddress) {
+      await client.query("INSERT INTO mobile_addresses(id,user_id,label,address,is_default) VALUES($1,$2,'Home',$3::jsonb,true)", [crypto.randomUUID(), user.id, JSON.stringify(deliveryAddress)])
+    }
 
     if (
       String(
