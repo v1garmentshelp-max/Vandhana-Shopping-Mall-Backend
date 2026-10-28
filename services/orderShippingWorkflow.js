@@ -4,8 +4,10 @@ const fail = (message, status = 409) => Object.assign(new Error(message), {
   status
 });
 const {positiveId,awbText,addressOf,parcelOf}=require('./shippingValidation');
+const { assertAdvancePaid, carrierAmounts } = require('./codAdvancePolicy');
 const eligible = sale => {
   if (String(sale.source).toUpperCase() !== 'WEB') throw fail('This shipping workflow supports website orders only.');
+  assertAdvancePaid(sale);
   if (sale.cancellation_pending) throw fail('A cancellation request is being processed. Dispatch is paused.');
   if (/CANCEL|DELIVERED|RETURN|RTO/.test(String(sale.status).toUpperCase())) throw fail('This order is closed or cancelled. Shipping actions are disabled.');
   if (String(sale.payment_method).toUpperCase() !== 'COD' && String(sale.payment_status).toUpperCase() !== 'PAID') throw fail('Payment must be confirmed before shipping a prepaid order.');
@@ -91,6 +93,10 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
     } = await sr.api('get', `/orders/show/${id}`);
     const remote = data?.data;
     if (!remote || ![String(sale.id), `${sale.id}-${sale.branch_id}`].includes(String(remote.channel_order_id))) throw fail('The Shiprocket order does not match this website order.');
+    if (Number(sale.totals?.cod_advance || 0) > 0) {
+      const expected = Math.round((Number(sale.total) - Number(sale.totals.cod_advance_paid || 0)) * 100);
+      if (String(remote.payment_method).toUpperCase() !== 'COD' || remote.total == null || Math.round(Number(remote.total) * 100) !== expected) throw fail('The Shiprocket COD amount does not match the unpaid balance. Correct and verify the carrier amount before dispatch; do not collect the advance twice.');
+    }
     const shipments = Array.isArray(remote.shipments) ? remote.shipments : remote.shipments ? [remote.shipments] : [];
     if (shipments.length !== 1) throw fail('This remote order needs manual reconciliation: expected one shipment.');
     return {
@@ -129,6 +135,7 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
       const total = Number(s.sale.total);
       if (!Number.isFinite(total) || total < 0) throw fail('The saved order total is invalid.', 422);
       const measured=parcelOf(parcel);
+      const paymentAmounts = carrierAmounts(s.sale, subtotal);
       await sr.init();
       await db.query("UPDATE order_shipping_workflow SET create_attempted=true,phase='CREATING',last_error=NULL,updated_at=now() WHERE sale_id=$1", [id]);
       let data;
@@ -139,8 +146,9 @@ function createWorkflow(pool, makeClient = () => new Shiprocket({
           order: {
             items,
             payment_method: String(s.sale.payment_method).toUpperCase() === 'COD' ? 'COD' : 'Prepaid',
-            shipping_charges: Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)),
-            total_discount: Math.max(0, Math.round((subtotal + Number(s.sale.totals?.shipping ?? s.sale.totals?.convenience ?? Math.max(0, total - subtotal)) - total) * 100) / 100),
+            sub_total: paymentAmounts.collection_amount,
+            shipping_charges: paymentAmounts.shipping_charges,
+            total_discount: paymentAmounts.total_discount,
             weight: measured.weight,
             dimensions: {
               length: measured.length,

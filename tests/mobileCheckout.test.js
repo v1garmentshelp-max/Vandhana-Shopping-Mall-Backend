@@ -118,14 +118,19 @@ beforeEach(async () => {
 });
 after(async () => db.close());
 async function body(method = 'COD', points = 0) {
-  const q = await service.quote(pool, 1, points);
+  const q = await service.quote(pool, 1, points, false, method === 'COD' ? method : null);
   return {
     request_key: crypto.randomUUID(),
     address,
     fingerprint: q.fingerprint,
     reward_points: points,
-    payment_method: method
+    payment_method: method,
+    ...(method === 'COD' ? { quote_version: 2 } : {})
   };
+}
+async function confirmAdvance(key) {
+  const gateway = await service.paymentOrder(user, key);
+  return service.complete(1, key, { id: `pay_${key}`, order_id: gateway.order_id, amount: gateway.amount, currency: 'INR', status: 'captured' });
 }
 test('COD creation is atomic and duplicate requests reuse one sale and one stock deduction', async () => {
   const payload = await body();
@@ -136,7 +141,11 @@ test('COD creation is atomic and duplicate requests reuse one sale and one stock
   const a = await service.create(user, payload);
   const b = await service.create(user, payload);
   assert.equal(a.sale_id, b.sale_id);
-  assert.equal(a.amount, 61500);
+  assert.equal(a.amount, 15000);
+  assert.equal(a.payment_status, 'PENDING');
+  assert.equal(shippingCalls, 0);
+  assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 1);
+  await confirmAdvance(a.key);
   assert.equal((await query('SELECT count(*)::int AS n FROM sales')).rows[0].n, 1);
   assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 9);
   assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 0);
@@ -169,7 +178,8 @@ test('rewards deduct once and a depleted wallet rolls back sale and stock', asyn
   const payload = await body('COD', 10);
   const a = await service.create(user, payload);
   await service.create(user, payload);
-  assert.equal(a.amount, 60500);
+  assert.equal(a.amount, 15000);
+  await confirmAdvance(a.key);
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 0);
   await query("INSERT INTO vandana_cart(user_id,product_id,selected_size,selected_color,quantity,is_custom) VALUES(1,11,'M','BLACK',1,false)");
   const q = await service.quote(pool, 1, 10, true);
@@ -254,6 +264,7 @@ test('checkout rejection releases only a definitely uncreated attempt and reward
   assert.equal((await query('SELECT count(*)::int AS n FROM sales')).rows[0].n, 0);
   await query('UPDATE branch_variant_stock SET on_hand=10');
   await service.create(user, payload);
+  await confirmAdvance(payload.request_key);
   const collision = await http.post('/api/mobile/checkouts').set('Authorization', `Bearer ${token}`).send({
     ...payload,
     address: {
@@ -324,19 +335,21 @@ test('wishlist, profile, cart and COD order work through the actual authenticate
     quantity: 1
   }).expect(200);
   const quote = await auth(http.post('/api/mobile/checkout/quote')).send({
+    payment_method: 'COD', quote_version: 2,
     reward_points: 10
   }).expect(200);
   const placed = await auth(http.post('/api/mobile/checkouts')).send({
     request_key: crypto.randomUUID(),
     address,
-    payment_method: 'COD',
+    payment_method: 'COD', quote_version: 2,
     reward_points: 10,
     fingerprint: quote.body.fingerprint
   }).expect(200);
-  assert.equal(placed.body.payment_status, 'COD');
+  assert.equal(placed.body.payment_status, 'PENDING');
+  await confirmAdvance(placed.body.key);
   const order = await auth(http.get(`/api/mobile/orders/${placed.body.sale_id}`)).expect(200);
   assert.equal(order.body.items.length, 1);
-  assert.equal(Number(order.body.totals.payable), 605);
+  assert.equal(Number(order.body.totals.payable), 710);
   assert.equal((await auth(http.get('/api/mobile/cart')).expect(200)).body.length, 0);
   assert.equal((await auth(http.get('/api/mobile/orders')).expect(200)).body.length, 1);
   await auth(http.delete('/api/mobile/wishlist')).send({
@@ -381,7 +394,8 @@ test('a mixed custom and stock checkout preserves design data and reprices custo
   await query("INSERT INTO vandana_cart(user_id,quantity,is_custom,custom_title,custom_price,custom_payload,custom_image_url) VALUES(1,1,true,'Custom crew',1,$1::jsonb,$2)", [JSON.stringify(design), design.design.front]);
   const payload = await body();
   const result = await service.create(user, payload);
-  assert.equal(result.amount, 133900);
+  assert.equal(result.amount, 15000);
+  assert.equal(result.quote.payable, 1489);
   const custom = (await query('SELECT * FROM sale_items WHERE sale_id=$1 AND is_custom=true', [result.sale_id])).rows[0];
   assert.equal(Number(custom.price), 799);
   assert.equal(custom.custom_payload.garmentType, 'crew');
@@ -435,6 +449,7 @@ test('legacy refund-labelled physical returns still enforce policy and staff end
       email: 'other@example.test'
     }, process.env.JWT_SECRET);
   const saved = await service.create(user, await body());
+  await confirmAdvance(saved.key);
   await query("INSERT INTO product_categories(id,name) VALUES(90,'Inner Wear') ON CONFLICT DO NOTHING");
   await query('UPDATE products SET category_id=90 WHERE id=1');
   await query("UPDATE sales SET status='DELIVERED',payment_status='PAID' WHERE id=$1", [saved.sale_id]);

@@ -271,7 +271,15 @@ router.post('/razorpay/webhook', express.raw({
         message: 'invalid signature'
       });
     }
-    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    const payload = JSON.parse(bodyRaw);
+    const managedPayment = payload?.payload?.payment?.entity;
+    if (managedPayment?.order_id) {
+      const managed = (await pool.query('SELECT request_key,user_id FROM mobile_checkouts WHERE gateway_order_id=$1', [managedPayment.order_id])).rows[0];
+      if (managed) {
+        if (payload.event === 'payment.captured') await require('../services/mobileCheckout').complete(Number(managed.user_id), managed.request_key, managedPayment);
+        return res.json({ ok: true });
+      }
+    }
     const eventId = payload?.payload?.payment?.entity?.id || payload?.id || null;
     const eventType = payload?.event || null;
     if (eventId) {
@@ -323,9 +331,7 @@ router.post('/razorpay/webhook', express.raw({
       ok: true
     });
   } catch {
-    return res.status(200).json({
-      ok: true
-    });
+    return res.status(500).json({ ok: false });
   }
 });
 module.exports = router;

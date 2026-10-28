@@ -235,6 +235,10 @@ async function paid(points = 0) {
   return saved;
 }
 async function delivered(saved) {
+  if (saved.quote?.cod_advance && !(await checkout.owned(pool, 1, saved.key)).gateway_payment_id) {
+    const gateway = await checkout.paymentOrder(user, saved.key);
+    await checkout.complete(1, saved.key, { id: `pay_${saved.key}`, order_id: gateway.order_id, amount: gateway.amount, currency: 'INR', status: 'captured' });
+  }
   await query("UPDATE sales SET status='DELIVERED' WHERE id=$1", [saved.sale_id]);
   await query("INSERT INTO shipments(id,sale_id,status,delivered_at,created_at) VALUES($1,$2,'DELIVERED',now()-interval '1 day',now())", [crypto.randomUUID(), saved.sale_id]);
 }
@@ -247,8 +251,8 @@ test('website quote and placement use authoritative method-aware totals and igno
     payment_method: 'COD',
     reward_points: 10
   }).expect(200);
-  assert.equal(q.body.shipping, 40);
-  assert.equal(q.body.payable, 570);
+  assert.equal(q.body.shipping, 180);
+  assert.equal(q.body.payable, 710);
   const body = {
     request_key: crypto.randomUUID(),
     address,
@@ -259,7 +263,7 @@ test('website quote and placement use authoritative method-aware totals and igno
     shipping: 0
   };
   const saved = await auth(http.post('/api/storefront/checkouts')).send(body).expect(200);
-  assert.equal(saved.body.amount, 57000);
+  assert.equal(saved.body.amount, 15000);
   const replay = await auth(http.post('/api/storefront/checkouts')).send(body).expect(200);
   assert.equal(replay.body.sale_id, saved.body.sale_id);
   assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 9);
@@ -312,7 +316,7 @@ test('unpaid COD cancellation restores stock and redeemed rewards once, with no 
     reason: 'Ordered wrong size'
   });
   assert.equal(request.refund_amount, 0);
-  assert.equal(request.excluded_fees, 40);
+  assert.equal(request.excluded_fees, 180);
   await cancellations.requestCancellation(user, saved.sale_id, {
     reason: 'A duplicate click'
   });
@@ -424,7 +428,7 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
   });
   assert.equal(requested.request.refund.amount, 530);
   assert.equal(requested.request.refund.reward_points, 10);
-  assert.equal(requested.request.refund.excluded_delivery_and_cod, 30);
+  assert.equal(requested.request.refund.excluded_delivery_and_cod, 150);
   await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1", [requested.request.id]);
   const body = {
     amount_paise: 53000,
@@ -463,7 +467,7 @@ test('COD partial returns exclude all fees, require receipt and transfer proof, 
 test('commerce migration can be reapplied without changing saved orders or balances', async () => {
   const saved = await place('COD', 10);
   await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations/20260929_store_commerce.sql'), 'utf8'));
-  assert.equal(Number((await query('SELECT total FROM sales WHERE id=$1', [saved.sale_id])).rows[0].total), 570);
+  assert.equal(Number((await query('SELECT total FROM sales WHERE id=$1', [saved.sale_id])).rows[0].total), 710);
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 90);
 });
 
@@ -630,4 +634,115 @@ test('legacy sales admin displays requested cancellations and blocks customer or
   await http.get(`/api/sales/web/${saved.sale_id}`).set('Authorization',`Bearer ${other}`).expect(404);
   await http.post('/api/sales/web/b2b-update-status').set('Authorization',`Bearer ${token}`).send({sale_id:saved.sale_id,new_status:'DELIVERED'}).expect(403);
   await http.post('/api/sales/web/b2b-update-status').set('Authorization',`Bearer ${branch}`).send({sale_id:saved.sale_id,new_status:'DELIVERED'}).expect(403);
+});
+
+test('COD advance collects only 150 and confirms only an exact signed captured payment', async () => {
+  await query('UPDATE product_variants SET mrp=1000,sale_price=1000,b2c_discount_pct=0');
+  const saved = await place('COD');
+  assert.equal(saved.quote.payable, 1150);
+  assert.equal(saved.quote.balance_on_delivery, 1000);
+  assert.equal(saved.amount, 15000);
+  assert.equal(saved.requires_payment, true);
+  assert.equal(saved.payment_status, 'PENDING');
+  assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 1);
+  const gateway = await checkout.paymentOrder(user, saved.key);
+  assert.equal(gateway.amount, 15000);
+  assert.equal((await checkout.paymentOrder(user, saved.key)).order_id, gateway.order_id);
+  assert.equal(gatewayCalls, 1);
+  const payment = { id: 'pay_cod_advance', order_id: gateway.order_id, amount: 15000, currency: 'INR', status: 'captured' };
+  for (const change of [{ amount: 115000 }, { amount: 14999 }, { currency: 'USD' }, { order_id: 'order_another' }, { status: 'authorized' }]) {
+    await assert.rejects(checkout.complete(1, saved.key, { ...payment, ...change }), /not been captured/);
+  }
+  captures = [payment];
+  const fields = { razorpay_order_id: payment.order_id, razorpay_payment_id: payment.id, razorpay_signature: '0'.repeat(64) };
+  await assert.rejects(checkout.verify(user, saved.key, fields), /verification failed/);
+  fields.razorpay_signature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${payment.order_id}|${payment.id}`).digest('hex');
+  const confirmed = await checkout.verify(user, saved.key, fields);
+  assert.equal(confirmed.payment_ready, true);
+  assert.equal(confirmed.fully_paid, false);
+  assert.equal(confirmed.payment_status, 'COD');
+  assert.equal(confirmed.advance_paid, 150);
+  const sale = (await query('SELECT * FROM sales WHERE id=$1', [saved.sale_id])).rows[0];
+  assert.equal(sale.totals.cod_advance_paid, 150);
+  assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 0);
+  await checkout.verify(user, saved.key, fields);
+  assert.equal((await checkout.paymentOrder(user, saved.key)).payment_ready, true);
+  assert.equal(gatewayCalls, 1);
+  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 9);
+});
+
+test('COD capture replay cannot change refunded status or charge the advance again', async () => {
+  const saved = await place('COD');
+  const gateway = await checkout.paymentOrder(user, saved.key);
+  const payment = { id: 'pay_cod_replay', order_id: gateway.order_id, amount: 15000, currency: 'INR', status: 'captured' };
+  await checkout.complete(1, saved.key, payment);
+  await query("UPDATE sales SET payment_status='PARTIALLY_REFUNDED',status='DELIVERED' WHERE id=$1", [saved.sale_id]);
+  await checkout.complete(1, saved.key, payment);
+  assert.equal((await query('SELECT payment_status FROM sales WHERE id=$1', [saved.sale_id])).rows[0].payment_status, 'PARTIALLY_REFUNDED');
+  await assert.rejects(checkout.complete(1, saved.key, { ...payment, id: 'pay_different' }), /different captured payment/);
+});
+
+test('cancelled COD with a late advance capture stays cancelled and cannot refund uncollected products', async () => {
+  const saved = await place('COD', 10);
+  const gateway = await checkout.paymentOrder(user, saved.key);
+  await cancellations.requestCancellation(user, saved.sale_id, { reason: 'Customer cancelled before payment' });
+  await cancellations.processCancellation(staff, saved.sale_id);
+  await checkout.complete(1, saved.key, { id: 'pay_late_advance', order_id: gateway.order_id, amount: 15000, currency: 'INR', status: 'captured' });
+  const sale = (await query('SELECT * FROM sales WHERE id=$1', [saved.sale_id])).rows[0];
+  assert.equal(sale.status, 'CANCELLED');
+  assert.equal(sale.totals.cod_advance_paid, 150);
+  const cancellation = (await query('SELECT * FROM storefront_cancellations WHERE sale_id=$1', [saved.sale_id])).rows[0];
+  assert.equal(Number(cancellation.refund_amount_paise), 0);
+  assert.equal(cancellation.refund_status, 'NOT_DUE');
+  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 10);
+  assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 100);
+});
+
+test('COD cancellation reconciles a captured advance without refunding the unpaid delivery balance', async () => {
+  const saved = await place('COD');
+  const gateway = await checkout.paymentOrder(user, saved.key);
+  captures = [{ id: 'pay_cancel_cod', order_id: gateway.order_id, amount: 15000, currency: 'INR', status: 'captured' }];
+  await cancellations.requestCancellation(user, saved.sale_id, { reason: 'Please cancel before dispatch' });
+  const done = await cancellations.processCancellation(staff, saved.sale_id);
+  assert.equal(done.refund_amount, 0);
+  assert.equal(done.refund_status, 'NOT_DUE');
+  assert.equal((await query('SELECT totals FROM sales WHERE id=$1', [saved.sale_id])).rows[0].totals.cod_advance_paid, 150);
+});
+
+test('COD full return refunds 1000 while retaining exactly the 150 fee', async () => {
+  await query('UPDATE product_variants SET mrp=1000,sale_price=1000,b2c_discount_pct=0');
+  const saved = await place('COD');
+  await delivered(saved);
+  const item = (await query('SELECT id FROM sale_items WHERE sale_id=$1', [saved.sale_id])).rows[0];
+  const result = await returnPolicy.createReturn(pool, saved.sale_id, { reason: 'The dress size does not fit', items: [{ sale_item_id: item.id, qty: 1 }] });
+  assert.equal(result.request.refund.amount, 1000);
+  assert.equal(result.request.refund.excluded_delivery_and_cod, 150);
+  await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1", [result.request.id]);
+  await assert.rejects(refundService.completeReturn(staff, result.request.id, { amount_paise: 115000, reference: 'UPI_FULL_001', items_received: true, transfer_confirmed: true }), /exactly/);
+  await refundService.completeReturn(staff, result.request.id, { amount_paise: 100000, reference: 'UPI_FULL_001', items_received: true, transfer_confirmed: true });
+  assert.equal((await query('SELECT totals FROM sales WHERE id=$1', [saved.sale_id])).rows[0].totals.cod_advance_paid, 150);
+});
+
+test('COD old clients cannot bypass the fee and missing gateway settings leave no order or stock changes', async () => {
+  const old = await checkout.quote(pool, 1, 0);
+  await assert.rejects(checkout.create(user, { request_key: crypto.randomUUID(), address, payment_method: 'COD', fingerprint: old.fingerprint }), error => error.code === 'CHECKOUT_UPDATE_REQUIRED' && error.checkout_not_created);
+  const q = await checkout.quote(pool, 1, 0, false, 'COD');
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  delete process.env.RAZORPAY_KEY_SECRET;
+  try {
+    await assert.rejects(checkout.create(user, { request_key: crypto.randomUUID(), address, payment_method: 'COD', quote_version: 2, fingerprint: q.fingerprint }), error => error.code === 'ONLINE_UNAVAILABLE' && error.checkout_not_created);
+  } finally { process.env.RAZORPAY_KEY_SECRET = secret; }
+  assert.equal((await query('SELECT count(*)::int AS n FROM sales')).rows[0].n, 0);
+  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 10);
+});
+
+test('COD below 500 and fully prepaid orders retain their existing payment rules', async () => {
+  await query('UPDATE product_variants SET mrp=499,sale_price=499,b2c_discount_pct=0');
+  const saved = await place('COD');
+  assert.equal(saved.quote.cod_advance, 0);
+  assert.equal(saved.quote.cod_fee, 10);
+  assert.equal(saved.quote.payable, 539);
+  assert.equal(saved.payment_ready, true);
+  assert.equal(saved.payment_status, 'COD');
+  assert.equal(gatewayCalls, 0);
 });

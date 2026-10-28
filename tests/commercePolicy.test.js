@@ -28,21 +28,21 @@ const fixture = {
   name: 'Shirt'
 };
 test('shipping threshold includes exactly 1000, and COD fees are method specific', () => {
-  for (const [amount, online, cod] of [[999.99, 30, 40], [1000, 0, 30], [1000.01, 0, 30], [5000, 0, 30]]) {
+  for (const [amount, online, cod] of [[499.99, 30, 40], [500, 30, 180], [999.99, 30, 180], [1000, 0, 150], [1000.01, 0, 150], [5000, 0, 150]]) {
     assert.equal(deliveryCharges(amount, 'ONLINE').shipping, online);
     assert.equal(deliveryCharges(amount, 'COD').shipping, cod);
   }
   assert.equal(deliveryCharges(1500, 'COD', {
     ...policy(),
     cod_at_or_above_threshold: 50
-  }).shipping, 50);
+  }).shipping, 150);
   assert.throws(() => deliveryCharges(800, 'FAKE'), /Choose/);
 });
 test('reward redemption does not move a qualifying order below the threshold or cover shipping', () => {
   const q = makeQuote([fixture], 10, {}, 'COD');
   assert.equal(q.subtotal, 1000);
-  assert.equal(q.shipping, 30);
-  assert.equal(q.payable, 1020);
+  assert.equal(q.shipping, 150);
+  assert.equal(q.payable, 1140);
   assert.throws(() => makeQuote([fixture], 1001, {}, 'COD'), /10%/);
   assert.notEqual(q.fingerprint, makeQuote([fixture], 10, {}, 'ONLINE').fingerprint);
 });

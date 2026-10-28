@@ -36,17 +36,20 @@ const body = async (method = 'COD') => ({ request_key: crypto.randomUUID(), addr
 test('authenticated checkout ignores forged totals and saves exact split lines, inventory and offer metadata once', async () => {
   const payload = { ...await body(), price: 1, total: 1, offer_discount: 99999 };
   const response = await auth(http.post('/api/storefront/checkouts')).send(payload).expect(200);
-  assert.equal(response.body.amount, 261900); assert.equal(response.body.quote.subtotal, 2589);
+  assert.equal(response.body.amount, 15000); assert.equal(response.body.quote.subtotal, 2589);
   assert.equal((await auth(http.post('/api/storefront/checkouts')).send(payload).expect(200)).body.sale_id, response.body.sale_id);
   const sale = (await query('SELECT * FROM sales')).rows[0], items = (await query('SELECT * FROM sale_items ORDER BY price')).rows;
   assert.deepEqual(items.map(i => [Number(i.qty), Number(i.price)]), [[2,799.5],[1,990]]);
   assert.equal(sale.totals.offers[0].discount, 381);
   assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 17);
+  assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 1);
+  const gateway = await checkout.paymentOrder(user, response.body.key);
+  await checkout.complete(1, response.body.key, { id: 'pay_shiwang_advance', order_id: gateway.order_id, amount: gateway.amount, currency: 'INR', status: 'captured' });
   assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 0);
   const basis = orderRefundBasis(sale, items);
   const refund = selectedRefund(basis, items.map(i => ({ sale_item_id: i.id, qty: Number(i.qty) })));
   assert.equal(refund.amount_paise, 258900);
-  assert.equal(refund.excluded_fees_paise, 3000);
+  assert.equal(refund.excluded_fees_paise, 15000);
 });
 test('Razorpay receives the exact offer amount for seven sets without fractional paise', async () => {
   await query('UPDATE vandana_cart SET quantity=7');
@@ -85,7 +88,7 @@ test('Shiwang split lines use the ten-percent reward cap after pair discounts an
   assert.equal(quote.max_reward_points, 258);
   assert.equal(quote.subtotal, 2589);
   const saved = await checkout.create(user, { request_key: crypto.randomUUID(), address, payment_method: 'COD', reward_points: 258, quote_version: 2, fingerprint: quote.fingerprint });
-  assert.equal(saved.amount, 236100);
+  assert.equal(saved.amount, 15000);
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 742);
   const sale = (await query('SELECT * FROM sales WHERE id=$1', [saved.sale_id])).rows[0];
   const items = (await query('SELECT * FROM sale_items WHERE sale_id=$1', [saved.sale_id])).rows;

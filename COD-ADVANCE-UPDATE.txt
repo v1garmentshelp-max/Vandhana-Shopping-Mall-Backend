@@ -1,0 +1,97 @@
+V1 GARMENTS — COD ADVANCE UPDATE
+28 October 2026
+
+CONFIRMED CUSTOMER FLOW
+For new COD orders with a discounted product subtotal of Rs 500 or more, add a fixed Rs 150 platform, handling and COD charge once per order. This replaces the earlier COD fee for those orders. It is not an additional Rs 150 on top of that earlier fee.
+
+Collect Rs 150 before confirmation using the existing Razorpay checkout with PhonePe / UPI. Only a matching captured payment, verified by the backend, confirms the advance. The rest is payable on delivery. A browser success message or payment screenshot cannot confirm payment.
+
+Example with no product discount or rewards and the default delivery settings:
+Product Rs 1000 + charge Rs 150 = order total Rs 1150.
+Pay now Rs 150. Pay on delivery Rs 1000.
+For an approved full return, refund Rs 1000; retain the Rs 150 charge.
+
+RULES RETAINED
+The Rs 500 threshold uses the product subtotal after product/offer discounts and before reward redemption. Rewards remain capped at 10% of that subtotal and by the wallet balance. They do not reduce the Rs 150 advance.
+Default delivery remains Rs 30 below a Rs 1000 product subtotal and free at Rs 1000 or above; existing STORE delivery settings still apply. Thus a Rs 500 product order has a Rs 680 total at default settings: Rs 150 online and Rs 530 COD. Delivery fees remain non-refundable under the existing policy.
+COD orders below Rs 500 retain the previous COD/delivery fee rules and do not require this advance. Fully prepaid orders do not receive the COD charge.
+Partial returns refund only the selected products' paid cash amount and allocated reward points. The Rs 150 charge is never allocated into the product refund. For example, a Rs 1000 product order using 100 reward points has Rs 150 upfront, Rs 900 COD, and a full approved return refunds Rs 900 cash plus the redeemed points under their original expiry rules.
+The existing cancellation policy already excludes delivery/COD fees. A cancelled order with only the advance paid has no product cash refund due. Late captures do not reopen cancelled orders or trigger dispatch. Existing order totals are not recalculated.
+The Shiwang campaign still expires on 20 October 2026 IST. This update does not extend it.
+
+WHAT WAS UPDATED
+Backend: authoritative fee and payment split, gateway amount of 15000 paise, captured-payment verification, retries, webhook replay handling, cancellation reconciliation, refund checks and dispatch protection.
+Website: total, pay-now and delivery balance; PhonePe/UPI checkout; pending advance message; resume/check-payment buttons; confirmation only after verification.
+Admin: advance paid/pending, delivery balance, non-refundable fee, and COD remittance amount excluding the advance.
+Shiprocket: the shipment amount excludes the prepaid fee and applies rewards once. Before AWB/pickup or linking a carrier order, its COD method and amount must match the saved unpaid balance. An unexpected amount blocks dispatch for staff review.
+
+DATABASE
+No new SQL migration is needed for this COD update when the previous delivered schema is installed. It uses sales.totals JSONB, mobile_checkouts and payments. No existing customer balances, product prices or order totals are rewritten.
+
+BACKEND DEPLOYMENT
+Extract vandhana-backend-cod-advance-updated.zip and open its vandhana-backend folder.
+Use Node.js 24.x. Keep the environment variables from your existing Vercel backend project. Do not replace production settings with the blank .env.example values.
+
+Run these commands from the backend folder, with its existing DATABASE_URL and environment configured:
+npm ci
+npm run preflight:mobile
+npm run preflight:commerce
+npm run preflight:addresses
+npm run preflight:cod
+npm run test:cod
+
+The preflights are read-only. preflight:cod checks the existing schema and presence of payment settings; it does not validate live provider credentials.
+If an earlier migration was never installed and its preflight reports a missing schema, use the matching existing migration after reviewing that preflight output:
+npm run migrate:mobile
+npm run migrate:commerce
+npm run migrate:addresses
+Do not run those migrations just to change the COD fee. Never drop or reset the database for this update.
+
+Deploy the backend first to the existing backend Vercel project. Keep its current domain and DATABASE_URL. The new fee requires no new merchant account or PhonePe API key; it uses the existing Razorpay merchant integration.
+
+PAYMENT SETTINGS
+Backend variables required:
+RAZORPAY_KEY_ID
+RAZORPAY_KEY_SECRET
+MOBILE_RAZORPAY_WEBHOOK_SECRET
+Alternatively RAZORPAY_WEBHOOK_SECRET is used if MOBILE_RAZORPAY_WEBHOOK_SECRET is unset.
+Keep both Razorpay API keys from the same account and mode. Keep secrets only in the backend environment.
+
+In that merchant account, enable UPI/UPI Intent for Standard Checkout. On supported mobile browsers the customer chooses PhonePe or another supported UPI app. Desktop checkout uses the provider's UPI QR flow. This is a real gateway payment, not a manual PhonePe transfer.
+
+Configure a webhook for payment.captured at:
+https://vandhana-shopping-mall-backend.vercel.app/api/storefront/payments/webhook
+Use the same webhook secret as the backend environment. Retain existing refund events and Shiprocket webhooks; this update does not require deleting them. The existing mobile webhook route also remains supported.
+
+WEBSITE DEPLOYMENT
+Extract vandhana-website-cod-advance-updated.zip and open vandhana-website.
+Vercel framework: Vite. Build command: npm run build. Output: dist. Node: 24.x.
+Keep VITE_API_BASE=https://vandhana-shopping-mall-backend.vercel.app
+Run:
+npm ci
+npm run build
+Deploy after the backend. The previous state-list, registration, PIN, rewards and password-reset fixes are retained.
+
+ADMIN DEPLOYMENT
+Extract vandhana-admin-cod-advance-updated.zip and open vandhana-admin.
+Keep REACT_APP_API_BASE=https://vandhana-shopping-mall-backend.vercel.app
+Run:
+npm ci
+npm run build
+Use the existing admin Vercel project and build output directory build.
+
+ACCOUNT CHECK BEFORE ACCEPTING ORDERS
+In your staging/test environment, use Razorpay test-mode keys and a matching webhook. Check a Rs 1000 COD order: total Rs 1150, gateway amount Rs 150, saved advance Rs 150 and COD balance Rs 1000. Close the payment window once and resume the same saved order. Verify that unpaid orders cannot generate a shipment or AWB. Check the actual connected Shiprocket order shows the remaining COD balance before dispatch. Then use your existing live-mode credentials for production.
+If a carrier amount mismatch is shown, correct/reconcile the same carrier booking through the admin workflow; do not create a second shipment to bypass it.
+COD product refunds continue to require the store to send the exact bank/UPI refund and record its reference in admin. The online Rs 150 fee is not the source of the COD product refund.
+
+VALIDATION
+124 backend unit, database and HTTP integration tests passed, including fee thresholds, forged payment amounts, signatures, duplicate callbacks, cancellation, late captures, full/partial refunds, rewards, address/signup, expired offers and shipping protections.
+Website and admin production builds passed on Node 24. Checkout/order interaction checks passed for the amount split, UPI checkout, payment verification, closed-window retry, already-paid reconciliation, below-threshold orders, prepaid orders and cancelled orders.
+Tests use local databases and mocked payment/carrier responses. Production credentials, a real PhonePe payment and a real Shiprocket booking were not available for account testing. No production deployment, real payment, customer order, refund or database change was performed.
+
+OFFICIAL INTEGRATION REFERENCES
+https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/integration-steps/
+https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/configure-payment-methods/sample-code
+https://razorpay.com/docs/payments/payment-methods/upi/upi-intent/
+https://apidocs.shiprocket.in/

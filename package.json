@@ -17,7 +17,9 @@
     "migrate:addresses": "node scripts/migrateAddresses.js",
     "test:addresses": "node --test tests/address*.test.js",
     "preflight:delivery": "node scripts/preflightDelivery.js",
-    "preflight:addresses": "node scripts/preflightAddresses.js"
+    "preflight:addresses": "node scripts/preflightAddresses.js",
+    "test:cod": "node --test tests/codAdvance.test.js tests/commerceIntegration.test.js tests/orderShipping.test.js",
+    "preflight:cod": "node scripts/preflightCodAdvance.js"
   },
   "engines": {
     "node": "24.x"

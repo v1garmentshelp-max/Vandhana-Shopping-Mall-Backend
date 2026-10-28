@@ -71,6 +71,7 @@ async function completeReturn(staff, id, body) {
   return locked(initial.sale_id, async db => transaction(db, async () => {
     const sale = (await db.query('SELECT * FROM sales WHERE id=$1 FOR UPDATE', [initial.sale_id])).rows[0];
     staffAccess(staff, sale);
+    require('./codAdvancePolicy').assertAdvancePaid(sale);
     const request = await prepareReturnRefund(db, id);
     if (request.refund_status === 'REFUNDED') return {
       ok: true,

@@ -1,3 +1,5 @@
+CURRENT UPDATE: Read COD-ADVANCE-UPDATE.txt first. Payment rules, pricing examples and validation results below describe earlier releases and are superseded by that guide where they differ. The Shiwang offer has not been extended beyond 20 October 2026.
+
 # Existing integration limits
 
 The new mobile routes scope private data to the signed-in customer and use server-validated checkout totals. Some inherited website routes need a coordinated update of their callers before the whole store can be considered verified.

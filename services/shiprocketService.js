@@ -110,7 +110,7 @@ class Shiprocket {
       shipping_charges: Number(order.shipping_charges || 0),
       total_discount: Number(order.total_discount || 0),
       payment_method: order.payment_method === 'COD' ? 'COD' : 'Prepaid',
-      sub_total: (order.items || []).reduce(
+      sub_total: order.sub_total ?? (order.items || []).reduce(
         (a, it) => a + Number(it.price || 0) * Number(it.qty || 0),
         0
       ),

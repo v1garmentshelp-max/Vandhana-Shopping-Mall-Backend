@@ -50,11 +50,13 @@ let mode = '';
 let remoteAwb = null;
 let remoteSale;
 let lastOrder;
+let remoteAmount = 0;
 const sr = {
   init: async () => {},
   createOrderShipment: async payload => {
     creates++;
     lastOrder = payload;
+    remoteAmount = payload.order.sub_total;
     if (mode === 'timeout') throw new Error('Timed out waiting for Shiprocket');
     return {
       order_id: 900,
@@ -81,6 +83,8 @@ const sr = {
         data: {
           id: 900,
           channel_order_id: remoteSale,
+          payment_method: 'COD',
+          total: remoteAmount,
           shipments: {
             id: 901,
             awb: remoteAwb,
@@ -355,4 +359,40 @@ test('measured forward parcels reach the carrier and invalid measurements cannot
   await flow.connect(id,{fresh:true,parcel:{weight:1.25,length:20,breadth:15,height:8}});
   assert.equal(lastOrder.order.weight,1.25);
   assert.deepEqual(lastOrder.order.dimensions,{length:20,breadth:15,height:8});
+});
+
+test('COD advance blocks every shipping action until verified and carrier balance must match', async () => {
+  await db.query('DELETE FROM shipments');
+  const id = await sale();
+  const start = creates;
+  await db.query("UPDATE sales SET total=1150,payment_status='PENDING',totals=$2::jsonb WHERE id=$1", [id, JSON.stringify({ subtotal: 1000, shipping: 150, cod_fee: 150, cod_advance: 150, cod_advance_paid: 0, reward_points: 0, balance_on_delivery: 1000 })]);
+  await db.query('UPDATE sale_items SET price=1000 WHERE sale_id=$1', [id]);
+  await assert.rejects(flow.connect(id, { fresh: true }), /advance payment/);
+  await assert.rejects(flow.couriers(id), /advance payment/);
+  await assert.rejects(flow.assignAwb(id, 12), /advance payment/);
+  await assert.rejects(flow.pickup(id), /advance payment/);
+  assert.equal(creates, start);
+  await db.query("UPDATE sales SET payment_status='COD',totals=jsonb_set(totals,'{cod_advance_paid}','150'::jsonb) WHERE id=$1", [id]);
+  await flow.connect(id, { fresh: true });
+  assert.equal(lastOrder.order.sub_total, 1000);
+  assert.equal(lastOrder.order.shipping_charges, 0);
+  assert.equal(lastOrder.order.total_discount, 0);
+  remoteAmount = 1150;
+  await assert.rejects(flow.assignAwb(id, 12), /unpaid balance/);
+  remoteAmount = 1000;
+  await flow.assignAwb(id, 12);
+  assert.equal(creates, start + 1);
+});
+
+test('Shiprocket JSON uses the authoritative remaining COD amount after rewards', async () => {
+  const Shiprocket = require('../services/shiprocketService');
+  const client = new Shiprocket({ pool });
+  let captured;
+  client.api = async (method, url, payload) => { captured = payload; return { data: { order_id: 1, shipment_id: 2 } }; };
+  await client.createOrderShipment({ channel_order_id: 'test-only', pickup_location: 'test', order: { items: [{ id: 'item', variant_id: 1, name: 'Dress', price: 1000, qty: 1 }], payment_method: 'COD', sub_total: 900, total_discount: 100, shipping_charges: 0 }, customer: { name: 'Test', phone: '9999999999', address: { line1: 'Test street', city: 'Test', state: 'Test', pincode: '532001' } } });
+  assert.equal(captured.sub_total, 900);
+  assert.equal(captured.payment_method, 'COD');
+  assert.equal(captured.shipping_charges, 0);
+  assert.equal(captured.total_discount, 100);
+  assert.equal(captured.order_items[0].selling_price, 1000);
 });

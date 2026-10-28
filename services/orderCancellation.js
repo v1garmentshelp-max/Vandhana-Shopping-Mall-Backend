@@ -83,7 +83,7 @@ async function eligibility(id) {
       product_amount: paid ? basis.cash_paise / 100 : 0,
       reward_points: basis.points,
       excluded_fees: basis.excluded_fees_paise / 100,
-      note: paid ? 'Only the product amount paid is refundable. Delivery and COD charges are excluded.' : 'No cash refund is due for an unpaid order. Redeemed points are restored after cancellation is confirmed.'
+      note: paid ? 'Only the product amount paid is refundable. Delivery and COD charges are excluded.' : Number(s.sale.totals?.cod_advance_paid || 0) > 0 ? 'The COD advance covers non-refundable charges. No product payment has been collected. Redeemed points are restored after cancellation is confirmed.' : 'No cash refund is due for an unpaid order. Redeemed points are restored after cancellation is confirmed.'
     };
   } catch (e) {
     refund = {
@@ -161,7 +161,7 @@ async function processCancellation(staff, id) {
     })), s.workflow, null, new Date(s.request.created_at).getTime());
     if (!check.eligible) throw error(check.reason);
     try {
-      if (String(s.sale.payment_method).toUpperCase() !== 'COD' && Number(s.sale.total) > 0) {
+      if ((String(s.sale.payment_method).toUpperCase() !== 'COD' || Number(s.sale.totals?.cod_advance || 0) > 0) && Number(s.sale.total) > 0) {
         const payment = (await db.query('SELECT * FROM payments WHERE sale_id=$1 ORDER BY id DESC LIMIT 1', [id])).rows[0];
         const checkout = (await db.query('SELECT * FROM mobile_checkouts WHERE sale_id=$1', [id])).rows[0];
         if (!payment?.razorpay_order_id && checkout?.gateway_state && checkout.gateway_state !== 'NEW') throw error('The gateway order reference is uncertain. Link the original payment order before confirming cancellation.');

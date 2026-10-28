@@ -76,6 +76,7 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
   const shipping = charges.shipping;
   const maxRewardPoints = redemptionLimit(items, subtotal);
   if (points > maxRewardPoints) throw redemptionLimitError(maxRewardPoints);
+  const payable = money(subtotal + shipping - points);
   const quote = {
     items,
     offers: promotion.offers,
@@ -87,7 +88,11 @@ function makeQuote(rows, requestedPoints, settings = {}, paymentMethod = null) {
     reward_points: points,
     max_reward_points: maxRewardPoints,
     max_redemption_percent: MAX_REDEMPTION_PERCENT,
-    payable: money(subtotal + shipping - points)
+    payable,
+    ...(paymentMethod ? {
+      pay_now: paymentMethod === 'ONLINE' ? payable : charges.cod_advance,
+      balance_on_delivery: paymentMethod === 'COD' ? money(payable - charges.cod_advance) : 0
+    } : {})
   };
   return {
     ...quote,

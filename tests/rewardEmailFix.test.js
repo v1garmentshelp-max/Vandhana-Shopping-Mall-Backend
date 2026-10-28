@@ -131,7 +131,8 @@ test('the saved sale enforces the same cap before deducting wallet points', asyn
   const q = await checkout.quote(pool, 1, 54, false, 'COD');
   const payload = { request_key: crypto.randomUUID(), address, payment_method: 'COD', reward_points: 54, quote_version: 2, fingerprint: q.fingerprint };
   const saved = await checkout.create(user, payload);
-  assert.equal(saved.amount, 52600);
+  assert.equal(saved.amount, 15000);
+  assert.equal(saved.quote.payable, 666);
   await checkout.create(user, payload);
   assert.equal((await query('SELECT points_remaining FROM reward_point_lots')).rows[0].points_remaining, 946);
   assert.equal((await query("SELECT count(*)::int AS n FROM reward_point_transactions WHERE transaction_type='REDEEMED'")).rows[0].n, 1);

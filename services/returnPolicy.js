@@ -8,6 +8,7 @@ const {
 async function eligibility(db, saleId, now = Date.now()) {
   const sale = (await db.query('SELECT * FROM sales WHERE id=$1', [saleId])).rows[0];
   if (!sale) throw fail('Order not found.', 404);
+  if (require('./codAdvancePolicy').salePayment(sale).advance_pending) return { ok: false, reason: 'The COD advance is awaiting payment verification. Contact the store if payment was deducted.', policy, delivered_at: null, deadline: null, items: [] };
   const deliveries = (await db.query("SELECT delivered_at FROM shipments WHERE sale_id=$1 AND upper(status::text)='DELIVERED' ORDER BY delivered_at DESC NULLS LAST", [saleId])).rows;
   const deliveredAt = deliveries[0]?.delivered_at;
   const deliveredTime = deliveredAt ? new Date(deliveredAt).getTime() : NaN;

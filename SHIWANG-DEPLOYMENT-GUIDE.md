@@ -1,3 +1,5 @@
+CURRENT UPDATE: Read COD-ADVANCE-UPDATE.txt first. Payment rules, pricing examples and validation results below describe earlier releases and are superseded by that guide where they differ. The Shiwang offer has not been extended beyond 20 October 2026.
+
 # Shiwang offer — deployment guide
 
 Prepared for V1 Garments on 15 October 2026.

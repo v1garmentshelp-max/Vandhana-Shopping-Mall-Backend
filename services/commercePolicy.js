@@ -14,7 +14,10 @@ function policy() {
     return value;
   };
   return {
-    version: 2,
+    version: 3,
+    cod_advance_threshold: 500,
+    cod_advance_fee: 150,
+    cod_advance_refundable: false,
     free_shipping_threshold: number('STORE_FREE_SHIPPING_THRESHOLD', 1000),
     delivery_below_threshold: number('STORE_DELIVERY_BELOW_THRESHOLD', 30),
     cod_below_threshold: number('STORE_COD_BELOW_THRESHOLD', 10),
@@ -31,9 +34,11 @@ function deliveryCharges(subtotal, method, config = policy()) {
   if (!['COD', 'ONLINE'].includes(method)) throw error('Choose cash on delivery or online payment.', 400, 'PAYMENT_METHOD_REQUIRED');
   const below = paise(subtotal) < paise(config.free_shipping_threshold);
   const delivery = below ? paise(config.delivery_below_threshold) : 0;
-  const cod = method === 'COD' ? paise(below ? config.cod_below_threshold : config.cod_at_or_above_threshold) : 0;
+  const advance = require('./codAdvancePolicy').advanceFor(subtotal, method);
+  const cod = advance ? paise(advance) : method === 'COD' ? paise(below ? config.cod_below_threshold : config.cod_at_or_above_threshold) : 0;
   return {
-    policy_version: 2,
+    policy_version: 3,
+    cod_advance: advance,
     payment_method: method,
     delivery_fee: delivery / 100,
     cod_fee: cod / 100,

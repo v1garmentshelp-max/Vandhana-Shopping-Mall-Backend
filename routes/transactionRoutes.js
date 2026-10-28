@@ -95,7 +95,7 @@ const normalizeRemittanceStatus = (value) => {
 }
 
 const deriveCodStatus = (sale, shipment, remittance) => {
-  const paymentStatus = statusText(sale.payment_status || sale.payment_method)
+  const paymentStatus = statusText(sale.payment_method || sale.payment_status)
   const orderStatus = normalizeOrderStatus(sale.effective_status || sale.status)
   const remittanceStatus = normalizeRemittanceStatus(remittance?.remittance_status)
 
@@ -141,7 +141,7 @@ const mapTransactionRow = (row) => {
     remittance_date: latestCodRemittance?.remittance_date || null,
     remittance_scheduled_from: latestCodRemittance?.remittance_scheduled_from || null,
     remittance_scheduled_to: latestCodRemittance?.remittance_scheduled_to || null,
-    cod_amount: latestCodRemittance?.cod_amount || null,
+    cod_amount: latestCodRemittance?.cod_amount ?? (statusText(row.payment_method) === 'COD' ? require('../services/codAdvancePolicy').salePayment(row).balance_on_delivery : null),
     awb: latestShipment?.awb || latestCodRemittance?.awb || row.awb || null,
     shipment_status: latestShipment?.status || null,
     shiprocket_order_id: latestShipment?.shiprocket_order_id || latestCodRemittance?.shiprocket_order_id || null,
@@ -355,7 +355,7 @@ router.post('/cod-remittance/manual-settle', requireAuth, async (req, res) => {
     }
 
     const sale = saleQ.rows[0]
-    const paymentType = statusText(sale.payment_status || sale.payment_method)
+    const paymentType = statusText(sale.payment_method || sale.payment_status)
 
     if (paymentType !== 'COD') {
       await client.query('ROLLBACK')
@@ -372,7 +372,7 @@ router.post('/cod-remittance/manual-settle', requireAuth, async (req, res) => {
     )
 
     const shipment = shipmentQ.rows[0] || null
-    const amount = requestedAmount != null && Number.isFinite(Number(requestedAmount)) ? Number(requestedAmount) : getPayable(sale)
+    const amount = requestedAmount != null && Number.isFinite(Number(requestedAmount)) ? Number(requestedAmount) : require('../services/codAdvancePolicy').salePayment(sale).balance_on_delivery
 
     const existingQ = await client.query(
       `SELECT id

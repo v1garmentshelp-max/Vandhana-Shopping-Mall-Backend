@@ -13,6 +13,7 @@ const {
   capturedPayment
 } = require('./mobileRules');
 const store = require('./mobileStore');
+const { hasAdvance, paymentReady } = require('./codAdvancePolicy');
 const { CATEGORY_NAMES_SQL } = require('./shiwangOffer');
 const branch = () => Number(process.env.MOBILE_BRANCH_ID || 3);
 const settings = () => ({
@@ -88,6 +89,9 @@ function publicCheckout(row) {
     order_status: row.order_status,
     gateway_state: row.gateway_state,
     quote: row.quote,
+    payment_ready: paymentReady(row),
+    requires_payment: !paymentReady(row),
+    advance_paid: hasAdvance(row) && row.gateway_state === 'PAID' ? Number(row.quote.cod_advance) : 0,
     fully_paid: row.payment_status === 'PAID'
   };
 }
@@ -141,15 +145,17 @@ async function create(user, body) {
       return owned(db, user.id, key);
     }
     newCheckout = true;
-    if (method === 'ONLINE' && (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET)) throw fail('Online payment is temporarily unavailable. Please choose cash on delivery.', 503, 'ONLINE_UNAVAILABLE');
+    if (method === 'COD' && Number(body.quote_version) !== 2) throw fail('Refresh checkout to review the COD advance payment and updated total.', 409, 'CHECKOUT_UPDATE_REQUIRED');
     const q = await quote(db, user.id, body.reward_points, true, Number(body.quote_version) === 2 ? method : null);
     if (q.fingerprint !== body.fingerprint) throw fail('Your bag or prices changed. Review the updated total before placing your order.', 409, 'QUOTE_CHANGED');
+    if ((method === 'ONLINE' || q.cod_advance > 0) && (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET)) throw fail('Secure payment is temporarily unavailable. Please try again later.', 503, 'ONLINE_UNAVAILABLE');
     const delivery = await require('./deliveryEstimate').estimate({ db, branchId: branch(), pincode: address.pincode, paymentMethod: method, items: q.items });
     if (delivery.serviceable === false) throw fail(delivery.message, 409, 'DELIVERY_UNAVAILABLE');
     const saleId = crypto.randomUUID();
-    const status = q.payable === 0 ? 'PAID' : method === 'COD' ? 'COD' : 'PENDING';
+    const status = q.payable === 0 ? 'PAID' : method === 'COD' && !q.cod_advance ? 'COD' : 'PENDING';
     const totals = {
       ...q,
+      ...(q.cod_advance > 0 ? { cod_advance_paid: 0 } : {}),
       delivery_estimate: delivery,
       bagTotal: q.mrp,
       discountTotal: q.discount,
@@ -180,7 +186,7 @@ async function create(user, body) {
     });
     await db.query("INSERT INTO order_shipping_workflow(sale_id,phase) VALUES($1,'NEW') ON CONFLICT DO NOTHING", [saleId]);
     await db.query(`INSERT INTO mobile_checkouts(request_key,user_id,sale_id,fingerprint,request_hash,quote,amount_paise)
-      VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)`, [key, user.id, saleId, q.fingerprint, requestHash, JSON.stringify(q), Math.round(q.payable * 100)]);
+      VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)`, [key, user.id, saleId, q.fingerprint, requestHash, JSON.stringify(q), Math.round((q.cod_advance > 0 ? q.cod_advance : q.payable) * 100)]);
     const result = await owned(db, user.id, key);
     if (status === 'PAID' || status === 'COD') await clearPurchasedCart(db, result);
     readyToCommit = true;
@@ -190,22 +196,22 @@ async function create(user, body) {
     throw error;
   });
   const result = publicCheckout(row);
-  if (row.payment_status === 'PAID' || row.payment_status === 'COD') result.shipping = await ship(row.sale_id);
+  if (paymentReady(row) && !/CANCEL|RETURN|RTO|DELIVER/.test(row.order_status)) result.shipping = await ship(row.sale_id);
   return result;
 }
 async function paymentOrder(user, key) {
   const row = await transaction(async db => {
     const current = await owned(db, user.id, key, true);
-    if (current.payment_status === 'PAID') return current;
+    if (paymentReady(current)) return current;
     const cancellation = await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status<>'REJECTED'", [current.sale_id]);
     if (cancellation.rowCount) throw fail('A cancellation is in progress. Payment is unavailable.', 409);
-    if (current.payment_method !== 'ONLINE' || /CANCEL|DELIVER|RETURN/.test(current.order_status)) throw fail('Payment is not available for this order.', 409);
+    if (current.payment_method !== 'ONLINE' && !hasAdvance(current) || /CANCEL|DELIVER|RETURN|RTO/.test(current.order_status)) throw fail('Payment is not available for this order.', 409);
     if (current.gateway_order_id) return current;
     if (current.gateway_state !== 'NEW') throw fail('The payment request needs reconciliation. Your order is saved. Please contact the store with its order ID.', 409, 'PAYMENT_RECONCILIATION');
     await db.query("UPDATE mobile_checkouts SET gateway_state='CREATING',updated_at=now() WHERE request_key=$1", [key]);
     return current;
   });
-  if (row.payment_status === 'PAID') return publicCheckout(row);
+  if (paymentReady(row)) return publicCheckout(row);
   if (!row.gateway_order_id) {
     try {
       const gateway = await new Razorpay({}).createOrder({
@@ -214,7 +220,8 @@ async function paymentOrder(user, key) {
         receipt: row.sale_id,
         notes: {
           sale_id: row.sale_id,
-          mobile_checkout: row.request_key
+          mobile_checkout: row.request_key,
+          payment_purpose: hasAdvance(row) ? 'COD_ADVANCE' : 'ORDER_PAYMENT'
         }
       });
       await transaction(async db => {
@@ -247,8 +254,9 @@ async function complete(userId, key, payment) {
       const request = await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status='COMPLETED'", [current.sale_id]);
       if (!request.rowCount) throw fail('This older cancelled order needs payment reconciliation by the store.', 409);
     } else if (/RETURN/.test(current.order_status)) throw fail('This order needs payment reconciliation by the store.', 409);
-    if (current.payment_status !== 'PAID') {
-      await db.query("UPDATE sales SET payment_status='PAID',updated_at=now() WHERE id=$1", [current.sale_id]);
+    const status = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(current.payment_status) ? current.payment_status : hasAdvance(current) && current.payment_status !== 'PAID' ? 'COD' : 'PAID';
+    if (current.gateway_state !== 'PAID' || current.gateway_payment_id !== payment.id) {
+      await db.query("UPDATE sales SET payment_status=$2,totals=CASE WHEN $3::numeric>0 THEN jsonb_set(COALESCE(totals,'{}'::jsonb),'{cod_advance_paid}',to_jsonb($3::numeric)) ELSE totals END,updated_at=now() WHERE id=$1", [current.sale_id, status, hasAdvance(current) ? Number(current.quote.cod_advance) : 0]);
       await db.query("UPDATE payments SET razorpay_payment_id=$2,status='PAID' WHERE razorpay_order_id=$1", [current.gateway_order_id, payment.id]);
     }
     await db.query("UPDATE mobile_checkouts SET gateway_payment_id=$2,gateway_state='PAID',updated_at=now() WHERE request_key=$1", [key, payment.id]);
@@ -258,7 +266,8 @@ async function complete(userId, key, payment) {
     } else await clearPurchasedCart(db, current);
     return {
       ...current,
-      payment_status: 'PAID',
+      payment_status: status,
+      gateway_payment_id: payment.id,
       gateway_state: 'PAID'
     };
   });
@@ -267,7 +276,7 @@ async function complete(userId, key, payment) {
     shipping: row.order_status === 'CANCELLED' ? {
       connected: false,
       message: 'Your order remains cancelled. Any captured product amount is queued for refund.'
-    } : await ship(row.sale_id)
+    } : /RETURN|RTO|DELIVER/.test(row.order_status) ? { connected: false } : await ship(row.sale_id)
   };
 }
 async function verify(user, key, body) {
@@ -280,14 +289,14 @@ async function verify(user, key, body) {
 }
 async function reconcile(user, key) {
   const row = await owned(pool, user.id, key);
-  if (row.gateway_order_id && row.payment_status !== 'COD') {
+  if (row.gateway_order_id && (!paymentReady(row) || row.payment_method === 'ONLINE')) {
     const {
       data
     } = await new Razorpay({}).client.get(`/orders/${encodeURIComponent(row.gateway_order_id)}/payments`);
     const payment = (data.items || []).find(p => capturedPayment(p, row));
     if (payment) return complete(user.id, key, payment);
   }
-  if ((row.payment_status === 'PAID' || row.payment_status === 'COD') && row.order_status !== 'CANCELLED') {
+  if (paymentReady(row) && !/CANCEL|RETURN|RTO|DELIVER/.test(row.order_status)) {
     await transaction(async db => clearPurchasedCart(db, await owned(db, user.id, key, true)));
     await ship(row.sale_id);
   }
