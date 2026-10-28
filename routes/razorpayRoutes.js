@@ -75,22 +75,17 @@ router.post('/payments/create-order', async (req, res) => {
     }
     const sale = s.rows[0];
     const amount = payableFromTotals(sale.totals) ?? Number(sale.total || 0);
-    if (!Number.isFinite(amount) || amount < 0) {
+    if (!Number.isFinite(amount) || !Number.isSafeInteger(Math.round(amount * 100)) || Math.round(amount * 100) < 100) {
       return res.status(400).json({
-        message: 'Invalid amount'
+        message: 'Payment amount must be at least 100 paise'
       });
     }
-    if (amount === 0) {
-      await pool.query(`UPDATE sales
-           SET
-             payment_status = 'PAID',
-             updated_at = now()
-           WHERE id = $1::uuid`, [saleId]);
+    if (String(sale.payment_status).toUpperCase() === 'PAID') {
       return res.json({
         ok: true,
         fully_paid: true,
         sale_id: saleId,
-        amount: 0,
+        amount: Math.round(amount * 100),
         currency: 'INR'
       });
     }
@@ -145,8 +140,9 @@ router.post('/payments/create-order', async (req, res) => {
       sale_id: saleId
     });
   } catch (e) {
-    return res.status(500).json({
-      message: e.message || 'create failed'
+    return res.status(e.status || 500).json({
+      message: e.status ? e.message : 'Payment could not be created. Please try again.',
+      ...(e.code ? { code: e.code } : {})
     });
   }
 });
@@ -157,44 +153,46 @@ router.post('/payments/verify', async (req, res) => {
       razorpay_payment_id,
       razorpay_signature
     } = req.body || {};
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if ([razorpay_order_id, razorpay_payment_id, razorpay_signature].some(value => typeof value !== 'string' || !value)) {
       return res.status(400).json({
         message: 'razorpay_order_id, razorpay_payment_id, razorpay_signature required'
       });
     }
+    const existing = await pool.query('SELECT sale_id,razorpay_order_id,amount_paise,currency FROM payments WHERE razorpay_order_id=$1', [razorpay_order_id]);
+    if (!existing.rowCount) return res.status(404).json({ message: 'Payment order not found' });
+    const payment = existing.rows[0];
     const svc = new RazorpayService({});
     const ok = svc.verifyPaymentSignature({
-      orderId: razorpay_order_id,
+      orderId: payment.razorpay_order_id,
       paymentId: razorpay_payment_id,
       signature: razorpay_signature
     });
-    const status = ok ? 'PAID' : 'FAILED';
+    if (!ok) return res.status(400).json({ ok: false, message: 'Payment signature verification failed' });
+    const { data: captured } = await svc.client.get(`/payments/${encodeURIComponent(razorpay_payment_id)}`);
+    if (captured?.id !== razorpay_payment_id || captured.order_id !== payment.razorpay_order_id || captured.status !== 'captured' || Number(captured.amount) !== Number(payment.amount_paise) || captured.currency !== payment.currency) return res.status(409).json({ ok: false, message: 'Payment capture is pending or does not match this order' });
     const p = await pool.query(`UPDATE payments
            SET
              razorpay_payment_id = $2,
              razorpay_signature = $3,
-             status = $4
+             status = CASE WHEN status IN ('REFUNDED','PARTIALLY_REFUNDED') THEN status ELSE 'PAID' END
            WHERE razorpay_order_id = $1
-           RETURNING sale_id`, [razorpay_order_id, razorpay_payment_id, razorpay_signature, status]);
+           RETURNING sale_id`, [razorpay_order_id, razorpay_payment_id, razorpay_signature]);
     if (p.rowCount) {
       const saleId = p.rows[0].sale_id;
-      if (ok) {
         await pool.query(`UPDATE sales
              SET
-               payment_status = 'PAID',
+               payment_status = CASE WHEN payment_status IN ('REFUNDED','PARTIALLY_REFUNDED') THEN payment_status ELSE 'PAID' END,
                updated_at = now()
              WHERE id = $1::uuid`, [saleId]);
-      } else {
-        await markSaleFailedAndReleaseRewards(saleId);
-      }
     }
     return res.json({
       ok,
-      status
+      status: 'PAID'
     });
   } catch (e) {
-    return res.status(500).json({
-      message: e.message || 'verify failed'
+    return res.status(e.status || 500).json({
+      message: e.status ? e.message : 'Payment verification could not be completed. Check your saved order.',
+      ...(e.code ? { code: e.code } : {})
     });
   }
 });
@@ -259,7 +257,9 @@ router.post('/razorpay/webhook', express.raw({
   try {
     const sig = req.headers['x-razorpay-signature'];
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    const bodyRaw = req.body instanceof Buffer ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+    if (!secret) return res.sendStatus(503);
+    const bodyRaw = Buffer.isBuffer(req.rawBody) ? req.rawBody : req.body;
+    if (!Buffer.isBuffer(bodyRaw)) return res.sendStatus(400);
     const svc = new RazorpayService({});
     const ok = svc.verifyWebhookSignature({
       bodyRaw,
@@ -276,62 +276,44 @@ router.post('/razorpay/webhook', express.raw({
     if (managedPayment?.order_id) {
       const managed = (await pool.query('SELECT request_key,user_id FROM mobile_checkouts WHERE gateway_order_id=$1', [managedPayment.order_id])).rows[0];
       if (managed) {
-        if (payload.event === 'payment.captured') await require('../services/mobileCheckout').complete(Number(managed.user_id), managed.request_key, managedPayment);
+        if (['payment.captured', 'order.paid'].includes(payload.event)) await require('../services/mobileCheckout').complete(Number(managed.user_id), managed.request_key, managedPayment, { connectShipping: false });
         return res.json({ ok: true });
       }
     }
-    const eventId = payload?.payload?.payment?.entity?.id || payload?.id || null;
-    const eventType = payload?.event || null;
-    if (eventId) {
-      await pool.query(`INSERT INTO razorpay_webhook_events
-           (
-             event_id,
-             event_type,
-             payload
-           )
-           VALUES
-           (
-             $1,
-             $2,
-             $3
-           )
-           ON CONFLICT
-             (event_id)
-           DO NOTHING`, [eventId, eventType, JSON.stringify(payload)]);
+    if (['refund.created', 'refund.processed', 'refund.failed'].includes(payload.event)) {
+      await require('../services/refundOperations').processWebhook(payload.payload?.refund?.entity);
+      return res.json({ ok: true });
     }
-    const paymentEntity = payload?.payload?.payment?.entity || null;
-    if (paymentEntity?.order_id) {
-      const status = String(paymentEntity.status || '').toUpperCase() === 'CAPTURED' ? 'PAID' : String(paymentEntity.status || '').toUpperCase();
-      await pool.query(`UPDATE payments
-           SET
-             razorpay_payment_id = $2,
-             status = COALESCE($3, status),
-             method = $4,
-             email = COALESCE($5, email),
-             phone = COALESCE($6, phone)
-           WHERE razorpay_order_id = $1`, [paymentEntity.order_id, paymentEntity.id || null, status, paymentEntity.method || null, paymentEntity.email || null, paymentEntity.contact || null]);
-      const saleQ = await pool.query(`SELECT sale_id
-             FROM payments
-             WHERE razorpay_order_id = $1
-             LIMIT 1`, [paymentEntity.order_id]);
-      if (saleQ.rowCount) {
-        const saleId = saleQ.rows[0].sale_id;
-        if (status === 'PAID') {
-          await pool.query(`UPDATE sales
-               SET
-                 payment_status = 'PAID',
-                 updated_at = now()
-               WHERE id = $1::uuid`, [saleId]);
-        } else if (status === 'FAILED') {
-          await markSaleFailedAndReleaseRewards(saleId);
-        }
-      }
+    if (!['payment.captured', 'order.paid'].includes(payload.event)) return res.json({ ok: true });
+    const paymentEntity = payload?.payload?.payment?.entity;
+    if (!paymentEntity?.id || !paymentEntity.order_id) return res.sendStatus(400);
+    const saved = (await pool.query('SELECT sale_id,amount_paise,currency FROM payments WHERE razorpay_order_id=$1', [paymentEntity.order_id])).rows[0];
+    if (!saved) return res.json({ ok: true });
+    if (paymentEntity.status !== 'captured' || Number(paymentEntity.amount) !== Number(saved.amount_paise) || paymentEntity.currency !== saved.currency) return res.sendStatus(400);
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      await db.query(`UPDATE payments SET razorpay_payment_id=$2,
+        status=CASE WHEN status IN ('REFUNDED','PARTIALLY_REFUNDED') THEN status ELSE 'PAID' END,
+        method=$3,email=COALESCE($4,email),phone=COALESCE($5,phone)
+        WHERE razorpay_order_id=$1`, [paymentEntity.order_id, paymentEntity.id, paymentEntity.method || null, paymentEntity.email || null, paymentEntity.contact || null]);
+      await db.query(`UPDATE sales SET payment_status=CASE WHEN payment_status IN ('REFUNDED','PARTIALLY_REFUNDED')
+        THEN payment_status ELSE 'PAID' END,updated_at=now() WHERE id=$1`, [saved.sale_id]);
+      const eventId = req.headers['x-razorpay-event-id'];
+      if (eventId) await db.query(`INSERT INTO razorpay_webhook_events(event_id,event_type,payload)
+        VALUES($1,$2,$3) ON CONFLICT(event_id) DO NOTHING`, [eventId, payload.event, JSON.stringify(payload)]);
+      await db.query('COMMIT');
+    } catch (error) {
+      await db.query('ROLLBACK');
+      throw error;
+    } finally {
+      db.release();
     }
     return res.json({
       ok: true
     });
-  } catch {
-    return res.status(500).json({ ok: false });
+  } catch (error) {
+    return res.status(error instanceof SyntaxError || error.status === 400 ? 400 : 500).json({ ok: false });
   }
 });
 module.exports = router;

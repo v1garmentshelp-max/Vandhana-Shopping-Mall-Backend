@@ -67,6 +67,7 @@ class Gateway {
   async createOrder() {
     paymentCalls++;
     if (gatewayMode === 'timeout') throw new Error('timeout');
+    if (gatewayMode === 'auth') throw Object.assign(new Error('The store payment credentials were rejected.'), { status: 401, code: 'RAZORPAY_AUTH_FAILED', orderCreationRejected: true });
     return {
       id: `order_test_${paymentCalls}`
     };
@@ -101,8 +102,10 @@ before(async () => {
   app.post('/api/mobile/payments/webhook', express.raw({
     type: 'application/json'
   }), require('../routes/mobileWebhook'));
+  app.post('/api/storefront/payments/webhook', express.raw({ type: 'application/json' }), require('../routes/mobileWebhook'));
   app.use(express.json());
   app.use('/api/mobile', require('../routes/mobileRoutes'));
+  app.use('/api/storefront', require('../routes/mobileRoutes'));
   app.use('/api', require('../routes/returnsRoutes'));
   http = supertest(app);
 });
@@ -470,4 +473,70 @@ test('legacy refund-labelled physical returns still enforce policy and staff end
   assert.match(result.body.message, /Innerwear/);
   await http.get('/api/returns/admin').set('Authorization', `Bearer ${token}`).expect(403);
   await query('UPDATE products SET category_id=NULL WHERE id=1');
+});
+
+test('storefront verification rejects missing fields and invalid signatures without marking an order paid', async () => {
+  const payload = await body('ONLINE');
+  await service.create(user, payload);
+  const token = jwt.sign(user, process.env.JWT_SECRET);
+  const auth = request => request.set('Authorization', `Bearer ${token}`);
+  const gateway = (await auth(http.post(`/api/storefront/checkouts/${payload.request_key}/pay`)).send({ amount: 100 }).expect(200)).body;
+  assert.notEqual(gateway.amount, 100);
+  await auth(http.post(`/api/storefront/checkouts/${payload.request_key}/verify`)).send({}).expect(400);
+  await auth(http.post(`/api/storefront/checkouts/${payload.request_key}/verify`)).send({ razorpay_order_id: gateway.order_id, razorpay_payment_id: 'pay_bad', razorpay_signature: '0'.repeat(64) }).expect(400);
+  assert.equal((await query('SELECT payment_status FROM sales')).rows[0].payment_status, 'PENDING');
+  assert.equal(shippingCalls, 0);
+});
+
+test('gateway auth failures return 401 and the same checkout can retry after credentials are fixed', async () => {
+  const payload = await body('ONLINE');
+  await service.create(user, payload);
+  const token = jwt.sign(user, process.env.JWT_SECRET);
+  const pay = () => http.post(`/api/storefront/checkouts/${payload.request_key}/pay`).set('Authorization', `Bearer ${token}`).send({});
+  gatewayMode = 'auth';
+  const response = await pay().expect(401);
+  assert.equal(response.body.code, 'RAZORPAY_AUTH_FAILED');
+  assert.equal((await query('SELECT gateway_state FROM mobile_checkouts')).rows[0].gateway_state, 'NEW');
+  gatewayMode = '';
+  await pay().expect(200);
+  assert.equal((await query('SELECT count(*)::int AS n FROM sales')).rows[0].n, 1);
+  assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand, 9);
+});
+
+test('the stored payment minimum is enforced before contacting Razorpay', async () => {
+  const payload = await body('ONLINE');
+  await service.create(user, payload);
+  await query('UPDATE mobile_checkouts SET amount_paise=99');
+  await assert.rejects(service.paymentOrder(user, payload.request_key), error => error.status === 400);
+  assert.equal(paymentCalls, 0);
+});
+
+test('storefront webhook handles raw whitespace, order.paid, duplicate capture and reordered failures without carrier calls', async () => {
+  const payload = await body();
+  await service.create(user, payload);
+  const gateway = await service.paymentOrder(user, payload.request_key);
+  const payment = { id: 'pay_webhook_cod', order_id: gateway.order_id, amount: gateway.amount, currency: 'INR', status: 'captured' };
+  const send = async event => {
+    const raw = JSON.stringify({ event, payload: { payment: { entity: payment } } }, null, 2) + '\n';
+    const signature = crypto.createHmac('sha256', process.env.MOBILE_RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex');
+    return http.post('/api/storefront/payments/webhook').set('Content-Type', 'application/json').set('x-razorpay-signature', signature).send(raw).expect(200);
+  };
+  await send('order.paid');
+  await send('payment.captured');
+  payment.status = 'failed';
+  await send('payment.failed');
+  const sale = (await query('SELECT payment_status,totals FROM sales')).rows[0];
+  assert.equal(sale.payment_status, 'COD');
+  assert.equal(Number(sale.totals.cod_advance_paid), 150);
+  assert.equal(shippingCalls, 0);
+  assert.equal((await query('SELECT count(*)::int AS n FROM vandana_cart')).rows[0].n, 0);
+  await service.reconcile(user, payload.request_key);
+  assert.equal(shippingCalls, 1);
+});
+
+test('malformed signed webhook JSON returns 400 without changing payment state', async () => {
+  const raw = '{invalid-json';
+  const signature = crypto.createHmac('sha256', process.env.MOBILE_RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex');
+  await http.post('/api/storefront/payments/webhook').set('Content-Type', 'application/json').set('x-razorpay-signature', signature).send(raw).expect(400);
+  assert.equal(shippingCalls, 0);
 });

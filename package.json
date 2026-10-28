@@ -19,7 +19,9 @@
     "preflight:delivery": "node scripts/preflightDelivery.js",
     "preflight:addresses": "node scripts/preflightAddresses.js",
     "test:cod": "node --test tests/codAdvance.test.js tests/commerceIntegration.test.js tests/orderShipping.test.js",
-    "preflight:cod": "node scripts/preflightCodAdvance.js"
+    "preflight:cod": "node scripts/preflightCodAdvance.js",
+    "preflight:razorpay": "node scripts/preflightRazorpay.js",
+    "test:razorpay": "node --test tests/razorpay*.test.js tests/mobileCheckout.test.js tests/commerceIntegration.test.js"
   },
   "engines": {
     "node": "24.x"

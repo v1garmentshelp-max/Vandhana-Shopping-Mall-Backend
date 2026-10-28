@@ -1,3 +1,5 @@
+CURRENT PAYMENT SETUP: Read RAZORPAY-SETUP.txt for the latest Razorpay configuration, webhook events and validation results.
+
 V1 GARMENTS — COD ADVANCE UPDATE
 28 October 2026
 

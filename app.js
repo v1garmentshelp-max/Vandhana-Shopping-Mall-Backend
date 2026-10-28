@@ -40,7 +40,10 @@ app.post('/api/mobile/payments/webhook', express.raw({
 }), require('./routes/mobileWebhook'));
 app.post('/api/storefront/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), require('./routes/mobileWebhook'));
 app.use(express.json({
-  limit: '10mb'
+  limit: '10mb',
+  verify(req, _res, buffer) {
+    if (req.path === '/api/razorpay/razorpay/webhook') req.rawBody = buffer;
+  }
 }));
 app.use(express.urlencoded({
   extended: true,

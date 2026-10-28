@@ -1,0 +1,132 @@
+V1 GARMENTS — RAZORPAY STANDARD WEB CHECKOUT
+28 October 2026
+
+STATUS
+The existing integration has been completed, without adding a second checkout flow. Stack: React 19 / TypeScript / Vite website, Express / Node.js 24 backend, PostgreSQL, React admin. Existing Axios REST calls and Node crypto already provide the required Razorpay integration; no additional SDK is necessary. Dependencies were installed before environment and code changes.
+
+The supplied test key pair was put in the local backend .env for the requested setup check. Private .env files, credentials, node_modules and compiled build folders are excluded from all release ZIPs. Add your keys to your own backend environment after extracting. The browser receives only the public key ID from the backend payment-order response. No frontend VITE_RAZORPAY_KEY_SECRET or other secret variable is needed or supported.
+
+SERVER ENDPOINTS USED BY THE WEBSITE
+POST /api/storefront/checkouts/:key/pay
+Creates or reuses the Razorpay order for an authenticated customer's saved checkout. Returns order_id, amount in paise, currency and public key_id. The amount comes from the saved server quote; a customer cannot override it by sending amount in the request. The minimum gateway payment is 100 whole paise. The normal POST /api/storefront/checkouts step creates the saved shop order before this endpoint runs.
+
+POST /api/storefront/checkouts/:key/verify
+Accepts razorpay_order_id, razorpay_payment_id and razorpay_signature. Checks ownership, the stored gateway order ID and HMAC-SHA256 with a timing-safe comparison. It also fetches the payment to check captured status, payment ID, order ID, currency and amount. Missing fields or a mismatched signature return 400 without marking the order paid. An authorized but uncaptured payment remains pending.
+
+POST /api/storefront/checkouts/:key/reconcile
+Checks a saved order before reopening checkout. A captured payment is reused instead of requesting payment again. This also powers the Already paid? button.
+
+POST /api/storefront/payments/webhook
+Public server-to-server endpoint. It validates the exact raw body and webhook signature before updating payments or refunds. It does not use a customer JWT. Existing mobile routes remain supported. Legacy Razorpay routes are retained and corrected for older orders.
+
+COD RULE RETAINED
+New COD orders with discounted merchandise subtotal of Rs 500 or more add Rs 150 once per order. Rs 150 is collected online using the existing UPI-only Standard Checkout configuration; the remaining amount is payable on delivery. Rs 1000 product + Rs 150 charge = Rs 1150 total, with Rs 150 online and Rs 1000 COD at the existing free-delivery threshold. The charge remains excluded from product refunds. Rewards stay capped at 10% of discounted merchandise. Other existing delivery rules still apply. The Shiwang offer was not extended beyond 20 October 2026.
+
+REQUIRED MANUAL SETUP
+1. In the BACKEND Vercel project, open Settings > Environment Variables. Keep DATABASE_URL, JWT_SECRET and the existing store settings. Set:
+RAZORPAY_KEY_ID
+RAZORPAY_KEY_SECRET
+MOBILE_RAZORPAY_WEBHOOK_SECRET
+
+Use matching key ID and key secret from the same account and mode. The supplied rzp_test key is only for simulated payments. Use a staging backend and staging database for testing. Live customers require live keys and an activated Razorpay account; a dashboard screenshot or a successful test payment does not confirm live activation.
+
+2. Choose a separate random webhook secret. Generate it locally if needed:
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+Paste exactly the same value into MOBILE_RAZORPAY_WEBHOOK_SECRET in the backend and the Secret field of the Razorpay webhook. This is separate from RAZORPAY_KEY_SECRET. RAZORPAY_WEBHOOK_SECRET remains the fallback when the MOBILE variable is unset; an older legacy webhook uses the RAZORPAY variable directly. Prefer the canonical storefront webhook below for this website.
+
+3. In Razorpay Dashboard, choose the matching Test mode for the supplied keys. Open Accounts & Settings > Website and app settings > Webhooks > Add New Webhook.
+Webhook URL for the existing backend domain:
+https://vandhana-shopping-mall-backend.vercel.app/api/storefront/payments/webhook
+
+If the backend domain changes, use that backend's HTTPS origin plus /api/storefront/payments/webhook. Do not use the storefront domain unless it actually proxies this API.
+
+Enable these events:
+payment.captured
+order.paid
+refund.created
+refund.processed
+refund.failed
+
+payment.captured is required for payment confirmation when the customer closes the page. order.paid is an additional supported confirmation event; duplicate notifications are safe. The refund events reconcile refunds initiated through the store's existing refund workflow. An unrelated dashboard refund is not automatically assigned to a return request. payment.failed is optional; it is acknowledged without failing an entire saved order, since another attempt can later succeed. The modal separately handles payment.failed and shows the failure to the customer. Add an alert email for webhook failures and leave the webhook enabled.
+
+4. In Account & Settings > Payments Capture, verify automatic capture is enabled. The backend confirms payment only after capture. Ensure UPI/UPI Intent is enabled for this merchant account for the COD advance flow. PhonePe and other supported UPI apps are offered through Razorpay; no separate PhonePe API key is required. Test mode simulates payment; it is not evidence of a real PhonePe debit.
+
+5. Redeploy the backend after changing environment variables, then deploy the website. Configure live keys, live webhook and live webhook secret separately when going live. Rotate the shared test key secret after setup and update the backend values; never commit it.
+
+WINDOWS LOCAL SETUP AND COMMANDS
+Extract each project folder into its matching existing repository, preserving its Git history, environment settings and existing documentation.
+Backend folder:
+npm ci
+if not exist .env copy .env.example .env
+notepad .env
+
+Fill your existing database and JWT settings, the Razorpay key pair and your webhook secret. Then run:
+npm run preflight:razorpay
+npm run preflight:razorpay -- --check-api
+npm run preflight:cod
+npm run test:razorpay
+npm start
+
+preflight:razorpay checks configuration without revealing secrets. --check-api makes a read-only authenticated request to Razorpay; it does not create an order or charge a customer. preflight:cod checks the existing database schema. No new production database tables or migration are needed for this update.
+
+Website folder:
+npm ci
+if not exist .env.local echo VITE_API_BASE=http://localhost:4000>.env.local
+npm run dev
+
+For a production website build, keep VITE_API_BASE set to the deployed backend origin in Vercel. Vite reads .env.local for local development. Build command: npm run build. Output: dist. Node.js: 24.x.
+For the admin, npm ci and npm run build remain the build commands; output: build. This release adds its missing .gitignore. node_modules, build, dist and private .env files are ignored.
+
+TEST THE FLOW
+Sign in with a test customer and add an in-stock product. Choose a saved or valid delivery address.
+Choose COD for a Rs 1000 product and verify total Rs 1150, Pay now Rs 150 and Pay on delivery Rs 1000, assuming the default free-delivery threshold and no rewards.
+Click the existing Pay Rs 150 and confirm COD button. Standard Checkout should open with an order ID and the Rs 150 amount. Use Razorpay's test-mode success/failure simulation for the available method. Test keys never debit real money.
+For a full online payment, choose Pay online and verify the full saved payable amount is shown without a COD charge.
+Test success, failure and closing the modal. Failure or dismissal must show a message and leave the saved order available to resume. Retrying must not create a second shop order or deduct stock again.
+After success, verify Captured in Razorpay Dashboard, the saved advance and remaining COD balance in admin, and a successful 2xx webhook delivery. Test a payment with the customer page closed; the webhook must still update the saved order.
+Payment webhooks commit the verified payment without waiting for an external courier request. Normal browser verification/reconciliation or the admin dispatch action connects the shipment. Check the remaining COD amount before dispatch.
+Use staging to test the existing cancellation/return/refund flow. Product refunds exclude the Rs 150 fee. COD product refunds remain a recorded bank/UPI transfer by staff, not a refund of the online Rs 150 charge.
+
+COMMON RESULTS
+401 with RAZORPAY_AUTH_FAILED: the provider rejected backend credentials; fix the same-mode pair and resume the saved checkout. The website will not mislabel this as a customer login expiry.
+400 on verification: missing fields or mismatched signature; no payment is confirmed.
+Opening a webhook URL in a browser: only a signed POST webhook is valid. A normal browser GET can return 404/405 and does not test the integration.
+503 on webhook POST: configure the webhook secret.
+500 on payment creation with PAYMENT_RECONCILIATION: provider/network outcome is uncertain. Do not create a replacement blindly. Check/reconcile the saved order in the provider account.
+A successful payment with pending order status: check payment capture, the webhook URL, the selected events and matching webhook secret, then use Already paid? Check payment.
+
+FILES CHANGED FROM THE PREVIOUS COD RELEASE
+Backend:
+app.js
+package.json
+services/razorpayService.js
+services/mobileCheckout.js
+routes/razorpayRoutes.js
+routes/mobileWebhook.js
+scripts/preflightRazorpay.js (new)
+tests/razorpayService.test.js (new)
+tests/razorpayRoutes.test.js (new)
+tests/mobileCheckout.test.js
+.env (local only, excluded from ZIP)
+RAZORPAY-SETUP.txt (new)
+
+Website:
+src/services/storefrontApi.ts
+RAZORPAY-SETUP.txt (new)
+
+Admin:
+.gitignore (new)
+RAZORPAY-SETUP.txt (new)
+The COD deployment guide in each project now points to this setup guide.
+
+VALIDATION AND LIMITS
+141 backend tests passed. Website production build passed. Existing checkout/order interaction checks passed. Additional browser-DOM checks passed for failed payment, modal dismissal, signature callback submission, duplicate callback, saved-payment reconciliation, gateway-auth error messaging and checkout-script retry.
+The supplied test credentials were used for an attempted read-only provider authentication check, but that remote request did not complete successfully in this environment. Key validity, merchant UPI activation and actual Razorpay webhook delivery are not confirmed. Finish the account checks above in your own environment. No real payment, production order, production database change or deployment was performed.
+Updated JavaScript/TypeScript contains no code comments; private credentials are excluded from deliverables.
+
+OFFICIAL REFERENCES
+https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/integration-steps/
+https://razorpay.com/docs/webhooks/setup-edit-payments/
+https://razorpay.com/docs/webhooks/validate-test/
+https://razorpay.com/docs/payments/payments/capture-settings/

@@ -206,6 +206,7 @@ async function paymentOrder(user, key) {
     const cancellation = await db.query("SELECT sale_id FROM storefront_cancellations WHERE sale_id=$1 AND status<>'REJECTED'", [current.sale_id]);
     if (cancellation.rowCount) throw fail('A cancellation is in progress. Payment is unavailable.', 409);
     if (current.payment_method !== 'ONLINE' && !hasAdvance(current) || /CANCEL|DELIVER|RETURN|RTO/.test(current.order_status)) throw fail('Payment is not available for this order.', 409);
+    if (!Number.isSafeInteger(Number(current.amount_paise)) || Number(current.amount_paise) < 100) throw fail('Payment amount must be at least 100 paise.', 400, 'INVALID_PAYMENT_AMOUNT');
     if (current.gateway_order_id) return current;
     if (current.gateway_state !== 'NEW') throw fail('The payment request needs reconciliation. Your order is saved. Please contact the store with its order ID.', 409, 'PAYMENT_RECONCILIATION');
     await db.query("UPDATE mobile_checkouts SET gateway_state='CREATING',updated_at=now() WHERE request_key=$1", [key]);
@@ -233,8 +234,9 @@ async function paymentOrder(user, key) {
       });
       row.gateway_order_id = gateway.id;
     } catch (e) {
-      await pool.query("UPDATE mobile_checkouts SET gateway_state='UNKNOWN',updated_at=now() WHERE request_key=$1 AND gateway_order_id IS NULL", [key]);
-      throw fail('Payment could not be started safely. Your order is saved for the store to check.', 503, 'PAYMENT_RECONCILIATION');
+      await pool.query("UPDATE mobile_checkouts SET gateway_state=$2,updated_at=now() WHERE request_key=$1 AND gateway_order_id IS NULL", [key, e.orderCreationRejected ? 'NEW' : 'UNKNOWN']);
+      if (e.orderCreationRejected) throw e;
+      throw fail('Payment could not be started safely. Your order is saved for the store to check.', 500, 'PAYMENT_RECONCILIATION');
     }
   }
   return {
@@ -244,7 +246,7 @@ async function paymentOrder(user, key) {
     currency: 'INR'
   };
 }
-async function complete(userId, key, payment) {
+async function complete(userId, key, payment, { connectShipping = true } = {}) {
   const row = await transaction(async db => {
     const current = await owned(db, userId, key, true);
     if (current.gateway_payment_id && current.gateway_payment_id !== payment.id) throw fail('A different captured payment is already recorded. The store must reconcile this payment.', 409);
@@ -276,15 +278,17 @@ async function complete(userId, key, payment) {
     shipping: row.order_status === 'CANCELLED' ? {
       connected: false,
       message: 'Your order remains cancelled. Any captured product amount is queued for refund.'
-    } : /RETURN|RTO|DELIVER/.test(row.order_status) ? { connected: false } : await ship(row.sale_id)
+    } : /RETURN|RTO|DELIVER/.test(row.order_status) || !connectShipping ? { connected: false } : await ship(row.sale_id)
   };
 }
 async function verify(user, key, body) {
+  if (!body || ['razorpay_order_id', 'razorpay_payment_id', 'razorpay_signature'].some(field => typeof body[field] !== 'string' || !body[field])) throw fail('Payment order, payment ID and signature are required.', 400, 'PAYMENT_FIELDS_REQUIRED');
   const row = await owned(pool, user.id, key);
-  if (body.razorpay_order_id !== row.gateway_order_id || !validSignature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature, process.env.RAZORPAY_KEY_SECRET)) throw fail('Payment verification failed.', 400);
+  if (body.razorpay_order_id !== row.gateway_order_id || !validSignature(row.gateway_order_id, body.razorpay_payment_id, body.razorpay_signature, process.env.RAZORPAY_KEY_SECRET)) throw fail('Payment verification failed.', 400, 'INVALID_PAYMENT_SIGNATURE');
   const {
     data
   } = await new Razorpay({}).client.get(`/payments/${encodeURIComponent(body.razorpay_payment_id)}`);
+  if (data?.id !== body.razorpay_payment_id) throw fail('The payment response did not match this payment.', 409, 'PAYMENT_PENDING');
   return complete(user.id, key, data);
 }
 async function reconcile(user, key) {
