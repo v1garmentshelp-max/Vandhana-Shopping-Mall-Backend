@@ -8,7 +8,7 @@ async function main() {
     await db.query('BEGIN');
     await db.query("SET LOCAL lock_timeout='5s'");
     await db.query("SELECT pg_advisory_xact_lock(hashtext('v1-commerce-schema-20260929'))");
-    for (const file of ['20260929_store_commerce.sql','20261003_order_operations.sql']) {
+    for (const file of ['20260929_store_commerce.sql','20261003_order_operations.sql','20261030_return_couriers.sql']) {
       const sql = fs.readFileSync(path.join(__dirname, '../migrations',file), 'utf8').replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '');
       await db.query(sql);
     }

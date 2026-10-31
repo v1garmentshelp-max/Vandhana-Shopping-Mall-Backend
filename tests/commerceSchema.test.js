@@ -17,6 +17,8 @@ test('operations migration supports legacy enum and single-column status constra
       INSERT INTO sales(id,status,payment_status,total)VALUES('00000000-0000-4000-8000-000000000001','PLACED','PAID',540);`);
     const migration=fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8');
     await db.exec(migration);await db.exec(migration);
+    const returnsMigration=fs.readFileSync(path.join(__dirname,'../migrations/20261030_return_couriers.sql'),'utf8');
+    await db.exec(returnsMigration);await db.exec(returnsMigration);
     assert.equal((await db.query('SELECT status,payment_status,total FROM sales')).rows[0].status,'PLACED');
     await db.exec(`UPDATE sales SET status='RTO',payment_status='PARTIALLY_REFUNDED';
       INSERT INTO return_requests(sale_id,status)VALUES('00000000-0000-4000-8000-000000000001','RECEIVED');`);

@@ -54,6 +54,10 @@ async function verifyRefund(db, sale, amount, body, kind, id) {
     UNION ALL SELECT refund_reference FROM storefront_cancellations WHERE refund_reference=$1`, [reference]);
   if (duplicate.rowCount) throw error('This refund reference is already recorded against another request.');
   if (String(sale.payment_method).toUpperCase() === 'COD') {
+    if (kind === 'RETURN') {
+      const delivered = (await db.query("SELECT id FROM shipments WHERE sale_id=$1 AND upper(status::text)='DELIVERED' AND delivered_at IS NOT NULL LIMIT 1",[sale.id])).rows[0];
+      if (!delivered || ['CANCELLED','RTO'].includes(String(sale.status).toUpperCase())) throw error('COD delivery and collection must be confirmed before refunding the product amount.');
+    }
     if (body.transfer_confirmed !== true) throw error('Confirm that the product-only bank or UPI refund has been sent.');
   } else {
     const payment = (await db.query('SELECT * FROM payments WHERE sale_id=$1 AND razorpay_payment_id IS NOT NULL ORDER BY id DESC LIMIT 1', [sale.id])).rows[0];

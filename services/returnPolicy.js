@@ -56,7 +56,7 @@ function selectedItems(el, input) {
   }));
   const seen = new Set();
   return items.map(i => {
-    const item = el.items.find(x => i.sale_item_id ? x.sale_item_id === i.sale_item_id : i.variant_id != null && Number(x.variant_id) === Number(i.variant_id));
+    const item = el.items.find(x => i.sale_item_id ? String(x.sale_item_id) === String(i.sale_item_id) : i.variant_id != null && Number(x.variant_id) === Number(i.variant_id));
     if (!item || !item.eligible || seen.has(item.sale_item_id)) throw fail(item?.reason || 'Select eligible items from this order.', 409);
     seen.add(item.sale_item_id);
     const qty = integer(i.qty, 1, item.remaining_qty);

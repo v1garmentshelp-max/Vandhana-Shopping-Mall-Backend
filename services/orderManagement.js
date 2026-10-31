@@ -79,14 +79,15 @@ async function detail(staff,id) {
     pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC',[id]),
     pool.query('SELECT * FROM storefront_cancellations WHERE sale_id=$1',[id]),
     pool.query(`SELECT r.*,(SELECT json_agg(json_build_object('sale_item_id',i.sale_item_id,'variant_id',i.variant_id,'qty',i.qty)) FROM return_items i WHERE i.request_id=r.id) AS items,
-      (SELECT row_to_json(rs) FROM reverse_shipments rs WHERE rs.request_id=r.id ORDER BY id DESC LIMIT 1) AS reverse_shipment
+      (SELECT row_to_json(rs) FROM reverse_shipments rs WHERE rs.request_id=r.id ORDER BY id DESC LIMIT 1) AS reverse_shipment,
+      (SELECT json_agg(h) FROM (SELECT id,booking_reference,awb,courier_name,status,cancellation_reason FROM reverse_shipments WHERE request_id=r.id ORDER BY id DESC OFFSET 1) h) AS reverse_history
       FROM return_requests r WHERE r.sale_id=$1 ORDER BY created_at DESC`,[id]),
     pool.query('SELECT * FROM order_refund_operations WHERE sale_id=$1 ORDER BY created_at DESC',[id]),
     timeline(pool,id),pool.query('SELECT transaction_type,points,note,created_at,lot_id FROM reward_point_transactions WHERE sale_id=$1 ORDER BY created_at,id',[id]),
     pool.query('SELECT * FROM order_shipping_workflow WHERE sale_id=$1',[id])
   ]);
   return { ...sale,items:items.rows,shipments:shipments.rows,cancellation:cancellation.rows[0] || null,
-    returns:returns.rows,refund_operations:operations.rows.map(op=>({...publicOperation(op),last_error:op.last_error})),
+    returns:returns.rows.map(r=>({...r,reverse_shipment:r.reverse_shipment?{...r.reverse_shipment,actions:require('./returnShippingPolicy').actions(r.reverse_shipment)}:null})),refund_operations:operations.rows.map(op=>({...publicOperation(op),last_error:op.last_error})),
     timeline:events,reward_history:rewards.rows,shipping_workflow:workflow.rows[0] || null };
 }
 module.exports = { list, summary, detail, timeline, branchScope };

@@ -130,6 +130,8 @@ async function verifyCarrier(db, s) {
     const result = await sr.api('get', `/orders/show/${encodeURIComponent(id)}`);
     const order = result.data?.data;
     if (!order || ![s.sale.id, `${s.sale.id}-${s.sale.branch_id}`].includes(String(order.channel_order_id))) throw error('The carrier booking does not match this order. Store review is required.');
+    const shipments=Array.isArray(order.shipments)?order.shipments:order.shipments?[order.shipments]:[];
+    if(shipments.some(item=>require('./returnShippingPolicy').movement(item.status)>0 && !require('./returnShippingPolicy').cancelled(item.status))) throw error('The courier has started pickup or delivery. Cancellation has not been confirmed.');
     return String(order.status || '').trim().toUpperCase();
   };
   const cancelled = value => ['CANCELED', 'CANCELLED'].includes(value);

@@ -21,7 +21,9 @@
     "test:cod": "node --test tests/codAdvance.test.js tests/commerceIntegration.test.js tests/orderShipping.test.js",
     "preflight:cod": "node scripts/preflightCodAdvance.js",
     "preflight:razorpay": "node scripts/preflightRazorpay.js",
-    "test:razorpay": "node --test tests/razorpay*.test.js tests/mobileCheckout.test.js tests/commerceIntegration.test.js"
+    "test:razorpay": "node --test tests/razorpay*.test.js tests/mobileCheckout.test.js tests/commerceIntegration.test.js",
+    "test:operations": "node --test tests/*.test.js",
+    "migrate:returns": "node scripts/migrateReturnCouriers.js"
   },
   "engines": {
     "node": "24.x"
@@ -38,7 +40,6 @@
     "multer": "^2.0.0",
     "nodemailer": "^6.9.13",
     "pg": "^8.16.3",
-    "razorpay": "^2.9.8",
     "streamifier": "^0.1.1",
     "unzipper": "^0.10.14",
     "uuid": "^13.0.0",

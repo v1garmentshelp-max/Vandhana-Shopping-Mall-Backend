@@ -23,7 +23,7 @@ const auth = req => req.set('Authorization', `Bearer ${token}`);
 before(async () => {
   mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-16T12:00:00+05:30') });
   pg = new PGlite(); await pg.exec(fs.readFileSync(path.join(__dirname, 'support/mobile-schema.sql'), 'utf8'));
-  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql']) await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
+  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql','20261030_return_couriers.sql']) await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
   await pg.exec("INSERT INTO product_categories VALUES(1,'Women',NULL),(15,'Kurthi Pant Set',1),(16,'Printed',15); UPDATE products SET brand_name='SHIWANG',gender='WOMEN',category_id=16; UPDATE product_variants SET mrp=1190,sale_price=990,b2c_discount_pct=0;");
   const app = express(); app.use(express.json()); app.use('/api/storefront', require('../routes/storefrontRoutes')); http = request(app);
 });

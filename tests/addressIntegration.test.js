@@ -33,7 +33,7 @@ const address = { fullName: user.name, mobile: user.mobile, line1: '12 Test Road
 before(async () => {
   pg = new PGlite();
   await pg.exec(fs.readFileSync(path.join(__dirname, 'support/mobile-schema.sql'), 'utf8'));
-  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql', '20261019_address_delivery.sql']) await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
+  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql', '20261019_address_delivery.sql','20261030_return_couriers.sql']) await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
   await pg.exec("CREATE SEQUENCE address_test_user_ids START 100; ALTER TABLE vandana_users ALTER COLUMN id SET DEFAULT nextval('address_test_user_ids');");
   const app = express(); app.use(express.json());
   app.use('/api/auth', authRoutes); app.use('/api/locations', require('../routes/locationRoutes')); app.use('/api/storefront', require('../routes/storefrontRoutes'));

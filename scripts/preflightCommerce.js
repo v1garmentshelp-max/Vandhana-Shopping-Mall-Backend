@@ -4,7 +4,7 @@ const { policy } = require('../services/commercePolicy');
 const fields = {
   order_events: 'id sale_id event_type source reference status details occurred_at',
   order_shipping_workflow: 'sale_id phase create_attempted awb_attempted pickup_attempted pickup_requested_at last_error created_at updated_at',
-  reverse_shipments: 'id request_id shiprocket_order_id shiprocket_shipment_id awb label_url tracking_url status created_at awb_attempted pickup_attempted pickup_requested_at status_synced_at carrier_event_at last_tracking_payload last_error',
+  reverse_shipments: 'id request_id shiprocket_order_id shiprocket_shipment_id awb label_url tracking_url status created_at awb_attempted pickup_attempted pickup_requested_at status_synced_at carrier_event_at last_tracking_payload last_error booking_reference courier_id courier_name parcel operation awb_history cancelled_at reassigned_at cancellation_reason',
   order_refund_operations: 'id sale_id kind request_id amount_paise payment_id idempotency_key provider status provider_refund_id last_error initiated_by created_at updated_at processed_at',
   storefront_cancellations: 'sale_id user_id reason source requested_by status carrier_attempted refund_amount_paise refund_points excluded_fees_paise refund_status refund_reference refund_received_at refund_processed_by processed_by last_error created_at updated_at',
   return_requests: 'id sale_id status refund_status refund_amount_paise refund_points excluded_fees_paise refund_reference refund_received_at refund_processed_by bank_upi updated_at reverse_pickup_attempted reverse_pickup_error items_received_at received_by inspection_notes inventory_restocked_at',

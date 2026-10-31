@@ -1,0 +1,12 @@
+BEGIN;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS booking_reference text;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS courier_id text;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS courier_name text;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS parcel jsonb;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS operation jsonb;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS awb_history jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS cancellation_reason text;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;
+ALTER TABLE reverse_shipments ADD COLUMN IF NOT EXISTS reassigned_at timestamptz;
+CREATE INDEX IF NOT EXISTS reverse_shipments_request_latest ON reverse_shipments(request_id,id DESC);
+COMMIT;

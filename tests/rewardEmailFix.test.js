@@ -50,7 +50,7 @@ const address = { fullName: user.name, mobile: user.mobile, line1: '12 Test Stre
 before(async () => {
   pg = new PGlite();
   await pg.exec(fs.readFileSync(path.join(__dirname, 'support/mobile-schema.sql'), 'utf8'));
-  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql']) {
+  for (const file of ['20260923_order_shipping.sql', '20260923_mobile.sql', '20260925_mobile_store.sql', '20260929_store_commerce.sql', '20261003_order_operations.sql','20261030_return_couriers.sql']) {
     await pg.exec(fs.readFileSync(path.join(__dirname, '../migrations', file), 'utf8'));
   }
   await pg.exec('ALTER TABLE vandana_users ADD COLUMN otp_attempts integer DEFAULT 0, ADD COLUMN otp_last_sent_at timestamptz;');

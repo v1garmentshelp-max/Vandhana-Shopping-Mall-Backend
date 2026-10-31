@@ -23,6 +23,7 @@ let pg,
   refunds = {},
   carrierStatus = 'NEW',
   carrierMode = '',
+  carrierShipmentStatus = '',
   carrierCalls = 0,
   carrierSale = '',
   gatewayCalls = 0;
@@ -103,7 +104,8 @@ class Carrier {
       data: {
         data: {
           channel_order_id: carrierSale,
-          status: carrierStatus
+          status: carrierStatus,
+          shipments:carrierShipmentStatus?[{status:carrierShipmentStatus}]:[]
         }
       }
     };
@@ -129,7 +131,7 @@ require.cache[require.resolve('../services/returnsService')]={exports:class {
   async createReversePickup({request}){
     reverseCalls++;
     if(reverseMode==='timeout')throw new Error('Return pickup timed out');
-    return (await query('INSERT INTO reverse_shipments(request_id) VALUES($1) RETURNING *',[request.id])).rows[0];
+    return (await query("INSERT INTO reverse_shipments(request_id,shiprocket_order_id,shiprocket_shipment_id) VALUES($1,'101','102') RETURNING *",[request.id])).rows[0];
   }
 }};
 const checkout = require('../services/mobileCheckout'),
@@ -172,6 +174,7 @@ before(async () => {
   await pg.exec("CREATE TABLE branches(id bigint PRIMARY KEY,name text);INSERT INTO branches VALUES(3,'Test branch');CREATE TABLE reverse_shipments(id bigserial PRIMARY KEY,request_id bigint);");
   await pg.exec('ALTER TABLE shipments ADD COLUMN current_location text,ADD COLUMN status_synced_at timestamptz,ADD COLUMN last_tracking_payload jsonb,ADD COLUMN tracking_url text,ADD COLUMN label_url text,ADD COLUMN awb_assigned_at timestamptz;');
   await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
+  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261030_return_couriers.sql'),'utf8'));
   const app = express();
   app.post('/api/mobile/payments/webhook',express.raw({type:'application/json'}),require('../routes/mobileWebhook'));
   app.use(express.json());
@@ -196,6 +199,7 @@ beforeEach(async () => {
   refunds = {};
   carrierStatus = 'NEW';
   carrierMode = '';
+  carrierShipmentStatus = '';
   carrierCalls = 0;
   gatewayCalls = 0;
   locks.clear();
@@ -576,7 +580,9 @@ test('signed refund webhooks reconcile authoritative status and repeated or reor
 test('operation migration is repeatable and pending orders support filters and legacy branch roles',async()=>{
  const saved=await place();
  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
+  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261030_return_couriers.sql'),'utf8'));
  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261003_order_operations.sql'),'utf8'));
+  await pg.exec(fs.readFileSync(path.join(__dirname,'../migrations/20261030_return_couriers.sql'),'utf8'));
  const management=require('../services/orderManagement');
  assert.equal((await management.list({id:9,role:'BRANCH3',branch_id:3},{q:'Test Customer'})).total,1);
  assert.equal((await management.list(staff,{q:'%'})).total,0);
@@ -745,4 +751,62 @@ test('COD below 500 and fully prepaid orders retain their existing payment rules
   assert.equal(saved.payment_ready, true);
   assert.equal(saved.payment_status, 'COD');
   assert.equal(gatewayCalls, 0);
+});
+test('return pickup mutations reject customers, another branch and a competing order action',async()=>{
+  const saved=await place();await delivered(saved);
+  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+  const returned=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size delivered',items:[{sale_item_id:String(item.id),qty:1}]});
+  const admin=jwt.sign(staff,process.env.JWT_SECRET),branch=jwt.sign({id:88,role:'BRANCH_ADMIN',branch_id:8},process.env.JWT_SECRET);
+  for(const action of ['reassign','cancel','rebook','pickup','awb']){
+    const path=`/api/returns/${returned.request.id}/shipping/${action}`;
+    await http.post(path).send({courier_id:62,reason:'Missed pickup'}).expect(401);
+    await auth(http.post(path)).send({courier_id:62,reason:'Missed pickup'}).expect(403);
+    await http.post(path).set('Authorization',`Bearer ${branch}`).send({courier_id:62,reason:'Missed pickup'}).expect(403);
+    await http.post(path).set('Authorization',`Bearer ${admin}`).send({courier_id:62,reason:'Missed pickup'}).expect(409);
+  }
+  await query("UPDATE return_requests SET status='APPROVED' WHERE id=$1",[returned.request.id]);
+  locks.add(`order-shipping:${saved.sale_id}`);
+  const locked=await http.post(`/api/returns/${returned.request.id}/shipping/reassign`).set('Authorization',`Bearer ${admin}`).send({courier_id:62,reason:'Missed pickup'}).expect(409);
+  assert.match(locked.body.message,/being updated/);assert.equal(reverseCalls,0);
+});
+test('website and native API expose the same safe current return courier fields',async()=>{
+  const saved=await place();await delivered(saved);
+  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+  const returned=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size delivered',items:[{sale_item_id:item.id,qty:1}]});
+  await query("INSERT INTO reverse_shipments(request_id,awb,courier_name,status,operation,last_error,last_tracking_payload) VALUES($1,'CURRENT-AWB','Selected courier','AWB_ASSIGNED',$2::jsonb,'private diagnostic',$3::jsonb)",[returned.request.id,JSON.stringify({type:'REASSIGN',reason:'Internal staff note'}),JSON.stringify({customer_phone:'private'})]);
+  const web=await auth(http.get(`/api/storefront/orders/${saved.sale_id}/returns`)).expect(200);
+  const native=await auth(http.get(`/api/mobile/orders/${saved.sale_id}/returns`)).expect(200);
+  assert.deepEqual(native.body,web.body);assert.equal(web.body[0].reverse_shipment.courier_name,'Selected courier');
+  assert.equal(web.body[0].reverse_shipment.pending_action,'REASSIGN');
+  assert.equal(web.body[0].reverse_shipment.operation,undefined);assert.equal(web.body[0].reverse_shipment.last_tracking_payload,undefined);
+  const admin=jwt.sign(staff,process.env.JWT_SECRET);
+  const detail=await http.get(`/api/returns/${returned.request.id}`).set('Authorization',`Bearer ${admin}`).expect(200);
+  assert.equal(detail.body.request.reverse_shipment.actions.can_reassign,false);
+  await http.get(`/api/mobile/orders/${saved.sale_id}/returns`).set('Authorization',`Bearer ${other}`).expect(404);
+});
+test('COD refund cannot pay an undelivered or RTO product even if an older return was approved',async()=>{
+  const saved=await place();await delivered(saved);
+  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+  const returned=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size delivered',items:[{sale_item_id:item.id,qty:1}]});
+  await query("UPDATE return_requests SET status='APPROVED',refund_status='PENDING_REFUND' WHERE id=$1",[returned.request.id]);
+  await query("UPDATE shipments SET status='RTO',delivered_at=NULL WHERE sale_id=$1",[saved.sale_id]);
+  await assert.rejects(refundService.completeReturn(staff,returned.request.id,{amount_paise:returned.request.refund.amount_paise,reference:'BANK_INVALID_001',items_received:true,transfer_confirmed:true}),/collection must be confirmed/);
+  assert.equal((await query('SELECT refund_status FROM return_requests')).rows[0].refund_status,'PENDING_REFUND');
+});
+test('forward cancellation checks shipment pickup even when remote order status is stale',async()=>{
+  const saved=await place();carrierSale=saved.sale_id;carrierShipmentStatus='OUT FOR PICKUP';
+  await query("INSERT INTO shipments(id,sale_id,shiprocket_order_id,shiprocket_shipment_id,status)VALUES($1,$2,'901','902','CONFIRMED')",[crypto.randomUUID(),saved.sale_id]);
+  await cancellations.requestCancellation(user,saved.sale_id,{reason:'Please cancel this order'});
+  await assert.rejects(cancellations.processCancellation(staff,saved.sale_id),/started pickup/);
+  assert.equal(carrierCalls,0);assert.equal((await query('SELECT on_hand FROM branch_variant_stock')).rows[0].on_hand,9);
+});
+test('a return webhook without the optional return flag cannot cancel the original sale',async()=>{
+  const saved=await place();await delivered(saved);
+  const item=(await query('SELECT id FROM sale_items WHERE sale_id=$1',[saved.sale_id])).rows[0];
+  const returned=await returnPolicy.createReturn(pool,saved.sale_id,{reason:'Wrong size delivered',items:[{sale_item_id:item.id,qty:1}]});
+  await query("INSERT INTO reverse_shipments(request_id,shiprocket_order_id,awb,status)VALUES($1,'909','REVERSE-AWB','NEW')",[returned.request.id]);
+  process.env.SHIPROCKET_WEBHOOK_TOKEN='carrier-webhook-fixture';
+  await http.post('/api/webhooks/orders').set('x-api-key',process.env.SHIPROCKET_WEBHOOK_TOKEN).send({sr_order_id:909,awb:'REVERSE-AWB',order_id:saved.sale_id,current_status:'CANCELED'}).expect(200);
+  assert.equal((await query('SELECT status FROM sales')).rows[0].status,'DELIVERED');
+  assert.equal((await query('SELECT status FROM reverse_shipments')).rows[0].status,'CANCELED');
 });

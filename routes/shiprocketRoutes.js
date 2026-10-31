@@ -411,9 +411,9 @@ const handleShiprocketWebhook = async (req, res) => {
   let errorMessage = null
 
   try {
-    if(payload.is_return===true||Number(payload.is_return)===1){
-      const result=await require('../services/returnTracking').syncReturnTracking(pool,payload);
-      return res.status(200).json({ok:true,processed:result.matched>0,is_return:true});
+    const reverse=await require('../services/returnTracking').syncReturnTracking(pool,payload);
+    if(reverse.matched || payload.is_return===true || String(payload.is_return).toLowerCase()==='true' || Number(payload.is_return)===1 || /^RETURN[ _]/i.test(info.raw_status||'')){
+      return res.status(200).json({ok:true,processed:reverse.processed>0,is_return:true});
     }
     rows = await findShipmentRows({
       sale_id: info.sale_id,

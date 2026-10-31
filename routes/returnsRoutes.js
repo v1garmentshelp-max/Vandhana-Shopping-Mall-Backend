@@ -308,12 +308,19 @@ router.get('/returns/:id', requireStaff, async (req, res) => {
       ok: true,
       request: {
         id: row.id,
+        items_received_at: row.items_received_at,
+        inventory_restocked_at: row.inventory_restocked_at,
+        reverse_pickup_attempted: row.reverse_pickup_attempted,
+        reverse_pickup_error: row.reverse_pickup_error,
+        reverse_history: (await pool.query('SELECT id,booking_reference,awb,courier_name,status,cancellation_reason FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC OFFSET 1',[row.id])).rows,
+        reverse_shipment: await pool.query('SELECT * FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC LIMIT 1', [row.id]).then(q=>q.rows[0]?{...q.rows[0],actions:require('../services/returnShippingPolicy').actions(q.rows[0])}:null),
         sale_id: row.sale_id,
         type: row.type,
         reason: row.reason,
         notes: row.notes,
         status: row.status,
         refund_status: row.refund_status,
+        refund_operation: (await pool.query("SELECT status,provider,provider_refund_id FROM order_refund_operations WHERE kind='RETURN' AND request_id=$1",[String(row.id)])).rows[0] || null,
         refund: row.refund_amount_paise == null ? null : refunds.publicRefund(row),
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -379,12 +386,19 @@ router.post('/returns/:id/details', requireStaff, async (req, res) => {
       ok: true,
       request: {
         id: row.id,
+        items_received_at: row.items_received_at,
+        inventory_restocked_at: row.inventory_restocked_at,
+        reverse_pickup_attempted: row.reverse_pickup_attempted,
+        reverse_pickup_error: row.reverse_pickup_error,
+        reverse_history: (await pool.query('SELECT id,booking_reference,awb,courier_name,status,cancellation_reason FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC OFFSET 1',[row.id])).rows,
+        reverse_shipment: await pool.query('SELECT * FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC LIMIT 1', [row.id]).then(q=>q.rows[0]?{...q.rows[0],actions:require('../services/returnShippingPolicy').actions(q.rows[0])}:null),
         sale_id: row.sale_id,
         type: row.type,
         reason: row.reason,
         notes: row.notes,
         status: row.status,
         refund_status: row.refund_status,
+        refund_operation: (await pool.query("SELECT status,provider,provider_refund_id FROM order_refund_operations WHERE kind='RETURN' AND request_id=$1",[String(row.id)])).rows[0] || null,
         refund: row.refund_amount_paise == null ? null : refunds.publicRefund(row),
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -425,8 +439,9 @@ router.post('/returns/:id/approve', requireStaff, async (req, res) => {
       });
       await refunds.prepareReturnRefund(db, request.id);
       let reverse = (await db.query('SELECT * FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC LIMIT 1', [request.id])).rows[0];
-      if (!reverse) {
-        if (request.reverse_pickup_attempted) throw Object.assign(new Error('A reverse pickup may already exist. Check and link the Shiprocket return booking before retrying. No second pickup has been requested.'), {
+      if (reverse && !reverse.shiprocket_order_id && reverse.status !== 'BOOKING_FAILED') throw Object.assign(new Error('The saved return booking needs reconciliation before approval. Link its Shiprocket order ID.'), {status:409});
+      if (!reverse || reverse.status === 'BOOKING_FAILED') {
+        if (!reverse && request.reverse_pickup_attempted) throw Object.assign(new Error('A reverse pickup may already exist. Check and link the Shiprocket return booking before retrying. No second pickup has been requested.'), {
           status: 409
         });
         const items = (await db.query('SELECT * FROM return_items WHERE request_id=$1', [request.id])).rows;
@@ -481,11 +496,19 @@ async function reverseAction(req,res) {
           return {ok:true,reverse};
         }
         if(request.status!=='APPROVED'||request.items_received_at)throw Object.assign(new Error('Approve the return before arranging pickup. Received returns do not need another pickup.'),{status:409});
-        if(action==='couriers'&&req.method==='GET')return svc.couriers(request,sale);
-        if(action==='awb'&&req.method==='POST')return svc.assignAwb(request,req.body.courier_id,sale);
-        if(action==='pickup'&&req.method==='POST')return svc.pickup(request);
+        if(action==='couriers'&&req.method==='GET')return await svc.couriers(request,sale);
+        if(action==='awb'&&req.method==='POST')return await svc.assignAwb(request,req.body.courier_id,sale);
+        if(action==='pickup'&&req.method==='POST')return await svc.pickup(request);
+        if(action==='reassign'&&req.method==='POST')return await svc.assignAwb(request,req.body.courier_id,sale,{reassign:true,reason:req.body.reason});
+        if(action==='cancel'&&req.method==='POST')return await svc.cancel(request,req.body.reason);
+        if(action==='rebook'&&req.method==='POST') {
+          const items=(await db.query('SELECT * FROM return_items WHERE request_id=$1',[request.id])).rows;
+          const branch=(await db.query('SELECT * FROM branches WHERE id=$1',[sale.branch_id])).rows[0];
+          if(!branch)throw Object.assign(new Error('The original branch is unavailable.'),{status:409});
+          return await svc.rebook({request,sale,items,branch,parcel:req.body.parcel||{}});
+        }
         throw Object.assign(new Error('Unknown return shipping action.'),{status:400});
-      }catch(e){await db.query('UPDATE reverse_shipments SET last_error=$2 WHERE request_id=$1',[request.id,String(e.message).slice(0,1000)]);throw e;}
+      }catch(e){await db.query('UPDATE reverse_shipments SET last_error=$2 WHERE id=(SELECT id FROM reverse_shipments WHERE request_id=$1 ORDER BY id DESC LIMIT 1)',[request.id,String(e.message).slice(0,1000)]);throw e;}
     });
     res.json(result);
   }catch(e){res.status(e.status||502).json({message:e.status?e.message:'The return shipping action could not be completed. Check the saved booking before retrying.'});}
