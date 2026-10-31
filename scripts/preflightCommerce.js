@@ -89,6 +89,7 @@ async function preflight(db, logger = console) {
       `Database/schema readiness failed for ${context.database} (search_path: ${context.search_path}).`,
       ...problems,
       'Compare this Vercel project DATABASE_URL host, port and database with the committed DBeaver connection. A PASS from a different server or an uncommitted session does not verify this connection.',
+      ...(problems.some(problem => /^Missing column: public\.reverse_shipments\.(booking_reference|courier_id|courier_name|parcel|operation|awb_history|cancelled_at|reassigned_at|cancellation_reason)\.$/.test(problem)) ? ['Return courier columns need migrations/20261030_return_couriers.sql. With DATABASE_URL set to this exact Vercel production database, run npm run migrate:returns, then npm run preflight:commerce. Commit the SQL transaction if using DBeaver before redeploying.'] : []),
       'If the tables are absent in this exact database, apply the supplied reviewed migration there after a backup. If they exist in public, correct the connection/search_path/permissions. Then redeploy.',
       'This check is read-only. No migrations, refunds, stock or reward changes were performed.'
     ].join('\n'));

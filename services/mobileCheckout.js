@@ -208,7 +208,7 @@ async function paymentOrder(user, key) {
     if (current.payment_method !== 'ONLINE' && !hasAdvance(current) || /CANCEL|DELIVER|RETURN|RTO/.test(current.order_status)) throw fail('Payment is not available for this order.', 409);
     if (!Number.isSafeInteger(Number(current.amount_paise)) || Number(current.amount_paise) < 100) throw fail('Payment amount must be at least 100 paise.', 400, 'INVALID_PAYMENT_AMOUNT');
     if (current.gateway_order_id) return current;
-    if (current.gateway_state !== 'NEW') throw fail('The payment request needs reconciliation. Your order is saved. Please contact the store with its order ID.', 409, 'PAYMENT_RECONCILIATION');
+    if (current.gateway_state !== 'NEW') throw fail('The payment request needs reconciliation. Your order is saved. Please open this order and contact the store for help.', 409, 'PAYMENT_RECONCILIATION');
     await db.query("UPDATE mobile_checkouts SET gateway_state='CREATING',updated_at=now() WHERE request_key=$1", [key]);
     return current;
   });
